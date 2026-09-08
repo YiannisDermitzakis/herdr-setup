@@ -242,3 +242,76 @@ def process_info(pane_id=None, processes=None, group_id=None) -> dict:
     if group_id is not None:
         info["foreground_process_group_id"] = group_id
     return answer
+
+
+# --------------------------------------------------------------------------
+# Captured Claude Code and Codex session state (phase 7)
+#
+# Same discipline as the Herdr captures above, and the same reason: phase 6's
+# own postmortem (tests/fixtures/herdr/README.md) is what this indirection
+# exists to not repeat. Editing a VALUE is fine. Adding, renaming or removing
+# a KEY is not.
+
+CLAUDE_CAPTURES = TESTS_DIR / "fixtures" / "claude"
+CODEX_CAPTURES = TESTS_DIR / "fixtures" / "codex"
+
+
+def claude_session(**values) -> dict:
+    """The captured `~/.claude/sessions/<pid>.json` shape, values replaced.
+
+    See tests/fixtures/claude/README.md for provenance and the time-frame
+    trap this capture exists to test against.
+    """
+    session = json.loads((CLAUDE_CAPTURES / "session.json").read_text(encoding="utf-8"))
+    for key, value in values.items():
+        if key not in session:
+            raise KeyError(f"{key!r} is not a key the capture has; do not invent one")
+        session[key] = value
+    return session
+
+
+def write_claude_session(config_dir: Path, pid, **values) -> Path:
+    """Write a (possibly edited) captured session as `<config_dir>/sessions/<pid>.json`.
+
+    `pid` sets both the filename and the session's own `pid` field, which
+    always agree in a real capture.
+    """
+    session = claude_session(pid=pid, **values)
+    sessions_dir = Path(config_dir) / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    path = sessions_dir / f"{pid}.json"
+    path.write_text(json.dumps(session), encoding="utf-8")
+    return path
+
+
+def codex_session_meta(**values) -> dict:
+    """The captured first line of a Codex rollout file, `payload` values replaced.
+
+    See tests/fixtures/codex/README.md for provenance. `values` are applied
+    to `payload`, since that is the object every real edit in this suite
+    needs to reach.
+    """
+    line = json.loads((CODEX_CAPTURES / "session-meta.json").read_text(encoding="utf-8"))
+    payload = line["payload"]
+    for key, value in values.items():
+        if key not in payload:
+            raise KeyError(f"{key!r} is not a key the capture has; do not invent one")
+        payload[key] = value
+    return line
+
+
+def write_codex_rollout(
+    config_dir: Path, year, month, day, filename, *, extra_lines=(), **values
+) -> Path:
+    """Write a (possibly edited) captured session_meta as one rollout file's first line.
+
+    `extra_lines` are appended verbatim after it, unread by the adapter but
+    useful for asserting that only the first line is ever opened.
+    """
+    day_dir = Path(config_dir) / "sessions" / f"{year:04d}" / f"{month:02d}" / f"{day:02d}"
+    day_dir.mkdir(parents=True, exist_ok=True)
+    path = day_dir / filename
+    lines = [json.dumps(codex_session_meta(**values))]
+    lines.extend(extra_lines)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path

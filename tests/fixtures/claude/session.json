@@ -1,0 +1,25 @@
+{
+  "pid": 21940,
+  "sessionId": "00000000-0000-4000-8000-000000000001",
+  "cwd": "/work/alpha",
+  "startedAt": 1787978497488,
+  "procStart": "Sat Aug 29 04:41:34 2026",
+  "version": "2.1.251",
+  "peerProtocol": 1,
+  "peerFeatures": [
+    "notify_idle",
+    "reply_across_default_dirs",
+    "artifact_yield"
+  ],
+  "kind": "interactive",
+  "entrypoint": "cli",
+  "pidDomain": "darwin",
+  "messagingSocketPath": "/home/placeholder-user/.claude-tmp/cc-socks/21940.sock",
+  "name": "example-session",
+  "nameSource": "user",
+  "nameSince": 1787978499482,
+  "updatedAt": 1788771677477,
+  "status": "idle",
+  "statusUpdatedAt": 1788771677477,
+  "bridgeSessionId": "session_00000000000000000000000"
+}

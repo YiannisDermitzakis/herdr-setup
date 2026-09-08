@@ -1051,3 +1051,105 @@ Documented, because either wrong reading loses sessions.
 ### 0ea0f83b128e · finding [fixed] · Live Herdr captures reached the tree still carrying the operator's project names (phase 6)
 
 Phase 6 fixed the right root cause by replacing invented fixtures with real captures taken from the live server, and masked home paths and session ids correctly. What survived was a second class of identifier the mask did not cover: two of the operator's repository names in cwd fields, and three real work-in-progress branch titles in terminal_title, one of which named the very task in progress. Masked at the orchestrator, values only, shapes untouched, and the suite confirms the captures still parse: 18/18 files on bash 3.2 and 5.3, 105 under pytest. The durable fix is in the plan: phase 10's public-hygiene test excluded tests/fixtures, which is backwards, because captures are the highest-risk files in a public repository rather than the lowest. That step now covers them and checks for unmasked session ids as well as home paths.
+
+<!-- fr:journal kind=discovery scope=plan id=df0e96cb9b2a created=2026-09-08T14:20:53 phase=7 -->
+### df0e96cb9b2a · discovery · Claude adapter: exact by pid, UTC time-frame handled, transcript keyed on the session file's own cwd (phase 7)
+
+adapters/claude implements the exact-by-pid contract. Config dir is
+$CLAUDE_CONFIG_DIR if set, else $HOME/.claude, mirrored by adapters/codex's
+own $CODEX_HOME (not specified in the phase brief; assumed by analogy with
+Claude's env var and with real Codex CLI's own resolution of $CODEX_HOME,
+and needed for the adapter to be testable without touching a real home
+directory -- docs/adapters.md checklist item 6).
+
+Time frame: procStart is a UTC wall-clock string with no zone marker;
+pid_start_epoch is a true epoch integer. parse_proc_start_utc uses
+calendar.timegm, never time.mktime. Tested against tests/fixtures/claude/,
+a real capture whose own procStart differs from this machine's `ps -o
+lstart=` by two hours -- the same offset the phase 6 journal recorded
+independently on a different pid, so it is a property of the host, not a
+fluke of one process. A 5-second slack absorbs the two clocks' own
+rounding. Guard: a pid whose file's own start time disagrees with the
+pane's pid_start_epoch by more than the slack is treated as a recycled pid
+and yields no candidate; a null on either side cannot rule reuse in or out
+and is not treated as either, per docs/adapters.md.
+
+Design decision beyond the phase brief's literal text: once a pid has
+matched a session file, the transcript path is slugified from the SESSION
+FILE's own cwd, not the pane's cwd from the resolve request. They should
+agree in the ordinary case; test_the_transcript_path_uses_the_sessions_own_cwd_not_the_panes
+pins the case where they do not, so a later "simplification" cannot quietly
+switch this to the pane's cwd.
+
+Fixture: tests/fixtures/claude/session.json, one real ~/.claude/sessions/<pid>.json
+capture, masked (cwd, sessionId, bridgeSessionId, messagingSocketPath's home
+path, and the "name" field, which is a human nickname that can name the
+actual work in progress -- the same leak class phase 6 found in Herdr's
+terminal_title). Provenance and full masking rationale in that directory's
+README.
+
+<!-- fr:journal kind=discovery scope=plan id=660690531511 created=2026-09-08T14:21:14 phase=7 -->
+### 660690531511 · discovery · Codex adapter: heuristic by directory, first-line-only, 30-day-dir bound (phase 7)
+
+adapters/codex matches on directory only, so every candidate stays
+heuristic and is never promoted to exact even when it is the only match --
+tested explicitly, since that promotion is exactly the failure mode
+docs/adapters.md warns a heuristic adapter against.
+
+Only the first line of each rollout file is ever opened (readline() once,
+never read() or iterate the file), verified by a test that appends a
+malformed, oversized second line and asserts resolution still succeeds. A
+rollout whose first line is missing, not JSON, or JSON but not
+"session_meta" is skipped, not fatal -- one broken or in-progress rollout
+must not hide the others.
+
+The scan is bounded to the newest 30 day-directories under
+<config>/sessions/. Day directories are zero-padded (yyyy/mm/dd), so a
+plain string sort is already chronological order -- no date parsing needed
+to find the newest ones. Tested with 31 day directories, each holding a
+matching session: the answer contains exactly 30 candidates and excludes
+the oldest.
+
+Fixture: tests/fixtures/codex/session-meta.json, the first line of a real
+rollout, masked (cwd, id/session_id, git.repository_url, git.commit_hash;
+base_instructions.text shortened to a placeholder since it is several KB
+of Codex's own public boilerplate this adapter never reads -- an edited
+value, not a removed key, matching the discipline in
+tests/fixtures/herdr/README.md).
+
+$CODEX_HOME as the override env var (default ~/.codex) is a design
+decision, not a phase-brief requirement -- see the paired claude-adapter
+journal entry for the reasoning. Phase 8's opencode and Copilot adapters
+should each look for whatever their own real CLI actually honours ($XDG
+paths, $COPILOT_HOME per the design doc) rather than assuming this same
+pattern applies without checking.
+
+<!-- fr:journal kind=finding scope=plan id=6877d5ce3da6 created=2026-09-08T14:21:51 phase=7 state=fixed -->
+### 6877d5ce3da6 · finding [fixed] · ruff over a bare adapters/ directory silently lints nothing -- fixed via extend-include (phase 7)
+
+Found while verifying this phase's own work, and relevant to phase 10's
+CI step, which the plan already writes as \"uv run --group dev ruff
+check\" ... over lib/ and adapters/.
+
+ruff's file discovery matches by extension. Passing an adapter file by
+name (ruff check adapters/claude) lints it fine and caught a real SIM102
+finding, now fixed. Passing the DIRECTORY (ruff check adapters/, or the
+combined invocation phase 10 plans) prints \"warning: No Python files
+found under the given path(s)\" and exits 0 -- the adapters are silently
+excluded from lint coverage entirely, while the command still reports
+success. The top-level \"ruff check .\" this repo's own CI would
+plausibly run has the identical blind spot, invisibly, since it also
+exits 0.
+
+Fixed at the config level rather than left for phase 10 to discover the
+same way: pyproject.toml's [tool.ruff] now carries extend-include =
+[\"adapters/*\"] (with adapters/*.md carved back out via extend-exclude,
+matching lib/feed.py's own discover() rule, in case a README lands there
+later). Verified: ruff check adapters/ and ruff format --check adapters/
+lib/ now both see all four Python files (hs.py, feed.py, claude, codex)
+instead of two.
+
+Phase 8's opencode and Copilot adapters need no equivalent fix -- the glob
+already covers the whole adapters/ directory -- but should re-run
+`ruff check adapters/` (the directory form, not just the two new files by
+name) to confirm coverage rather than assuming it from this entry.

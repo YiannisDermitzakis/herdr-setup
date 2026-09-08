@@ -17,6 +17,20 @@ package = false
 [tool.ruff]
 target-version = "py313"
 line-length = 100
+# Adapters are PEP 723 uv scripts named after the agent they cover, with no
+# .py suffix (adapters/claude, adapters/codex, ...) so `herdr-setup feed`
+# can discover them by executability alone. Ruff's own file discovery looks
+# at extensions, so without this an invocation over a directory --
+# `ruff check adapters/`, or the CI job phase 10 wires up over `adapters/`
+# -- silently finds "No Python files" and lints nothing there, while still
+# exiting 0. Passing the files by name (`ruff check adapters/claude`) always
+# worked; this is what makes the directory form work the same way.
+#
+# A future non-Python file under adapters/ -- a README, matching what
+# lib/feed.py's own discover() already ignores -- must not be swept in and
+# handed to ruff as if it were Python, so `.md` is carved back out.
+extend-include = ["adapters/*"]
+extend-exclude = ["adapters/*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
