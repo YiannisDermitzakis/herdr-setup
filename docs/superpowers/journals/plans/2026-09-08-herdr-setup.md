@@ -1046,3 +1046,8 @@ procStart, and says "epoch seconds", so this cannot be quietly dropped.
 
 Null means "cannot rule out pid reuse" -- not a match and not a mismatch.
 Documented, because either wrong reading loses sessions.
+
+<!-- fr:journal kind=finding scope=plan id=0ea0f83b128e created=2026-09-08T13:56:58 phase=6 state=fixed -->
+### 0ea0f83b128e · finding [fixed] · Live Herdr captures reached the tree still carrying the operator's project names (phase 6)
+
+Phase 6 fixed the right root cause by replacing invented fixtures with real captures taken from the live server, and masked home paths and session ids correctly. What survived was a second class of identifier the mask did not cover: two of the operator's repository names in cwd fields, and three real work-in-progress branch titles in terminal_title, one of which named the very task in progress. Masked at the orchestrator, values only, shapes untouched, and the suite confirms the captures still parse: 18/18 files on bash 3.2 and 5.3, 105 under pytest. The durable fix is in the plan: phase 10's public-hygiene test excluded tests/fixtures, which is backwards, because captures are the highest-risk files in a public repository rather than the lowest. That step now covers them and checks for unmasked session ids as well as home paths.

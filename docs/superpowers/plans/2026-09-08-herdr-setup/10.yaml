@@ -15,9 +15,14 @@ tasks:
   - id: P10.T1.S1
     text: |
       Add tests/test_public_hygiene.sh with FAILING asserts over every tracked
-      file except tests/fixtures: no line contains a home directory path
-      (`/Users/` or `/home/`), an email address, or the string `derio`; and
-      manifest/plugins.list parses cleanly through hs_manifest_plugins.
+      file, tests/fixtures INCLUDED. Fixtures are the highest-risk files in the
+      repository, not the lowest: tests/fixtures/herdr/ holds captures taken
+      from a live Herdr, and an earlier capture reached the tree still carrying
+      the operator's repository names and three work-in-progress branch titles.
+      Assert no tracked line contains a home directory path (`/Users/` or a
+      `/home/` other than the documented `/home/placeholder-user`), an email
+      address, or a plausible session UUID that is not the all-zero placeholder;
+      and that manifest/plugins.list parses cleanly through hs_manifest_plugins.
       Run -> expect failure if any file offends, and to prove the test runs.
   - id: P10.T1.S2
     text: |

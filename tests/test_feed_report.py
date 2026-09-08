@@ -66,7 +66,7 @@ DEAD_PID = 0x7FFFFFF
 # Herdr does not return. See that directory's README.
 AGENT_LIST = agent_list(
     [
-        agent_entry(0, pane_id="w1:p1", agent="claude", cwd="/work/frank"),
+        agent_entry(0, pane_id="w1:p1", agent="claude", cwd="/work/beta"),
         agent_entry(1, pane_id="w2:p2", agent="claude", cwd="/work/herdr"),
     ]
 )
@@ -117,7 +117,7 @@ class RunCase(unittest.TestCase):
 
         self.fixture(["agent", "list"], AGENT_LIST)
         self.fixture(["pane", "process-info", "--pane", "w1:p1"],
-                     info("w1:p1", "/work/frank", DEAD_PID))
+                     info("w1:p1", "/work/beta", DEAD_PID))
         self.fixture(["pane", "process-info", "--pane", "w2:p2"],
                      info("w2:p2", "/work/herdr", DEAD_PID + 1))
 
@@ -360,7 +360,7 @@ class TestFailuresAreNotSilent(RunCase):
             "esac\n",
         )
         self.fixture(["agent", "list"], agent_list([
-            agent_entry(0, pane_id="w1:p1", agent="claude", cwd="/work/frank"),
+            agent_entry(0, pane_id="w1:p1", agent="claude", cwd="/work/beta"),
             agent_entry(1, pane_id="w2:p2", agent="codex", cwd="/work/other"),
         ]))
         self.fixture(["pane", "process-info", "--pane", "w2:p2"],

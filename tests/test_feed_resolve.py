@@ -66,7 +66,7 @@ def claude_pane(pane_id, cwd, index=0):
 
 AGENT_LIST = agent_list(
     [
-        claude_pane("w1:p1", "/work/frank", 0),
+        claude_pane("w1:p1", "/work/beta", 0),
         claude_pane("w2:p2", "/work/herdr", 1),
         agent_entry(
             2, pane_id="w3:p3", agent="codex", cwd="/work/other", foreground_cwd="/work/other"
@@ -160,7 +160,7 @@ class TestAgainstTheCapturedShape(FakeHerdrCase):
         self.assertEqual(self.panes()[0]["pid"], 38080)
 
     def test_the_agent_s_own_working_directory_comes_through(self):
-        self.assertEqual(self.panes()[0]["cwd"], "/work/frank")
+        self.assertEqual(self.panes()[0]["cwd"], "/work/beta")
 
     def test_herdr_reports_no_start_time_and_the_runner_supplies_one(self):
         blob = json.dumps(captured("pane-process-info"))
@@ -221,7 +221,7 @@ class TestPanesFor(FakeHerdrCase):
         super().setUp()
         self.fixture(["agent", "list"], AGENT_LIST)
         self.fixture(["pane", "process-info", "--pane", "w1:p1"],
-                     info("w1:p1", "/work/frank", DEAD_PID))
+                     info("w1:p1", "/work/beta", DEAD_PID))
         self.fixture(["pane", "process-info", "--pane", "w2:p2"],
                      info("w2:p2", "/work/herdr", DEAD_PID + 1))
 
@@ -231,7 +231,7 @@ class TestPanesFor(FakeHerdrCase):
             [
                 {
                     "pane_id": "w1:p1",
-                    "cwd": "/work/frank",
+                    "cwd": "/work/beta",
                     "pid": DEAD_PID,
                     "pid_start_epoch": None,
                 },
@@ -246,7 +246,7 @@ class TestPanesFor(FakeHerdrCase):
 
     def test_a_pane_whose_process_is_alive_carries_a_start_time(self):
         self.fixture(["pane", "process-info", "--pane", "w1:p1"],
-                     info("w1:p1", "/work/frank", os.getpid()))
+                     info("w1:p1", "/work/beta", os.getpid()))
         self.assertIsInstance(self.panes()[0]["pid_start_epoch"], int)
 
     def test_panes_of_another_agent_are_not_asked_about(self):
@@ -262,7 +262,7 @@ class TestPanesFor(FakeHerdrCase):
 
     def test_an_adapter_may_name_a_command_that_is_not_the_agent(self):
         self.fixture(["pane", "process-info", "--pane", "w1:p1"],
-                     info("w1:p1", "/work/frank", DEAD_PID, argv0="claude-code"))
+                     info("w1:p1", "/work/beta", DEAD_PID, argv0="claude-code"))
         panes = self.panes(command="claude-code")
         self.assertEqual([p["pane_id"] for p in panes], ["w1:p1"])
 
@@ -283,8 +283,8 @@ class TestPanesFor(FakeHerdrCase):
             process_info(
                 pane_id="w1:p1",
                 processes=[
-                    process_entry(-1, pid=DEAD_PID + 5, argv0="claude", cwd="/work/frank"),
-                    process_entry(-1, pid=DEAD_PID + 6, argv0="claude", cwd="/work/frank"),
+                    process_entry(-1, pid=DEAD_PID + 5, argv0="claude", cwd="/work/beta"),
+                    process_entry(-1, pid=DEAD_PID + 6, argv0="claude", cwd="/work/beta"),
                 ],
                 group_id=DEAD_PID + 6,
             ),
@@ -303,7 +303,7 @@ class TestPanesForFailsClosed(FakeHerdrCase):
         super().setUp()
         self.fixture(["agent", "list"], AGENT_LIST)
         self.fixture(["pane", "process-info", "--pane", "w1:p1"],
-                     info("w1:p1", "/work/frank", DEAD_PID))
+                     info("w1:p1", "/work/beta", DEAD_PID))
         self.fixture(["pane", "process-info", "--pane", "w2:p2"],
                      info("w2:p2", "/work/herdr", DEAD_PID + 1))
 
@@ -374,7 +374,7 @@ class TestResolve(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.dir = Path(self._tmp.name)
         self.panes = [
-            {"pane_id": "w1:p1", "cwd": "/work/frank", "pid": 1, "pid_start_epoch": 10},
+            {"pane_id": "w1:p1", "cwd": "/work/beta", "pid": 1, "pid_start_epoch": 10},
             {"pane_id": "w2:p2", "cwd": "/work/herdr", "pid": 2, "pid_start_epoch": 20},
         ]
 

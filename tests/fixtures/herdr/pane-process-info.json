@@ -16,7 +16,7 @@
             "/home/placeholder-user/.example-plugin/scripts/mcp-server.cjs"
           ],
           "cmdline": "node /home/placeholder-user/.example-plugin/scripts/mcp-server.cjs",
-          "cwd": "/work/frank"
+          "cwd": "/work/beta"
         },
         {
           "pid": 38080,
@@ -25,10 +25,10 @@
           "argv": [
             "claude",
             "--resume",
-            "image-size-availability-fix"
+            "fix-image-size-check"
           ],
-          "cmdline": "claude --resume image-size-availability-fix",
-          "cwd": "/work/frank"
+          "cmdline": "claude --resume fix-image-size-check",
+          "cwd": "/work/beta"
         }
       ]
     }
