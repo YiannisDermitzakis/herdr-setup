@@ -251,11 +251,16 @@ to have installed, which is the same guarantee the tool already offers for
 plugins and configuration. uv joins Herdr and git as a prerequisite, and it also
 pins the development tools.
 
-That costs one interpreter start per invocation: roughly 265 milliseconds against
-about 84 for a bare system python3, measured on the host this was written for. So
-Python stays off hot paths. `hs_herdr_json` runs on every Herdr call and parses
-its error message in shell. Structured work is batched behind subcommands of
-`lib/hs.py`, so one start serves a whole command rather than one per call.
+uv runs the tool's own scripts and nothing else. The host's Herdr is invoked
+exactly as installed, and herdr-setup never replaces, upgrades or reconfigures
+it.
+
+An interpreter start through uv costs roughly 265 milliseconds against about 84
+for a bare system python3. That is not a design constraint here: the tool is run
+by hand when a host is set up or has drifted, and is idle the rest of the time.
+Robustness wins over startup cost. Structured work is batched behind subcommands
+of `lib/hs.py` because one entry point is easier to reason about, not because
+starts are expensive.
 
 Config parsing stays line-based even though a modern interpreter brings
 `tomllib`, because the tool must preserve plugin-written blocks and the
@@ -320,5 +325,5 @@ restart sits in the middle rather than at the end.
 | A preflight gate on the Herdr protocol version | An upgraded command line against an old server fails in a way that reads as "nothing to do" rather than as an error. |
 | `diff` reads configuration from disk, not through the command line | It stays useful in exactly the broken state an operator most wants to inspect. |
 | Python is pinned by uv rather than taken from the host | The tool's purpose is making hosts identical; depending on whichever interpreter a host happens to have is at odds with that. It also matches how the operator already installs their other tools. |
-| The interpreter stays off hot paths | A uv start is about three times a bare python3 start, which a command making twenty Herdr calls would feel. Shell parses the error line; Python is batched behind one entry point. |
+| Robustness over startup cost | The tool is run by hand when a host is set up or has drifted, not in a loop, so an interpreter start is not worth designing around. |
 | Ship Copilot unverified rather than omit it | The seam and the contract are the deliverable. An untested adapter that says so is more useful than an absent one. |

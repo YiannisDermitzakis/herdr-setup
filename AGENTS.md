@@ -38,11 +38,15 @@ inline metadata naming the interpreter it needs, and a
 downloads that interpreter, so every host runs the same one. Write modern Python;
 the version in `pyproject.toml` is the contract.
 
-**Keep the interpreter off hot paths.** A uv start costs roughly 265ms against
-about 84ms for a bare system python3. Anything that runs once per Herdr call,
-such as the error parsing in `hs_herdr_json`, stays in shell. Structured work is
-batched behind a subcommand of `lib/hs.py`, so one start serves a whole command.
-Call it through `hs_py`, which is the only sanctioned door to the interpreter.
+**uv runs our scripts, and only ours.** The host's Herdr is invoked exactly as
+it is installed. herdr-setup never replaces, shadows, upgrades or reconfigures
+it, and it never asks the host for an interpreter of its own.
+
+**This tool runs seldom.** It is invoked by hand when a host is set up, or when
+it has drifted, and it is idle the rest of the time. Startup cost is not a design
+consideration: prefer the robust and obvious construction over the fast one.
+`hs_py` is the only sanctioned door to the interpreter, and structured work is
+batched behind subcommands of `lib/hs.py` for coherence, not for speed.
 
 **Development tools are pinned too**: `uv run --group dev pytest` and
 `uv run --group dev ruff check`.
