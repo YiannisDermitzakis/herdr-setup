@@ -1181,3 +1181,8 @@ most likely): the email check's allowlist could instead exclude anything
 matching the git-remote pattern, which would accept a git@ fixture too.
 Not fixed here because that file was mid-flight from another process while
 this phase ran.
+
+<!-- fr:journal kind=finding scope=plan id=7c51566a9ddb created=2026-09-08T14:41:11 phase=7 state=fixed -->
+### 7c51566a9ddb · finding [fixed] · The orchestrator committed to the shared worktree while a phase was running (phase 7)
+
+Phase 7 reported that a second party appeared to be active on the shared worktree mid-phase. That was the orchestrator, committing tests/test_public_hygiene.sh while phase 7 was capturing fixtures. The intent was to have the guard in place before any capture landed, which it achieved, but it cost phase 7 a debug cycle: the guard's email check matched the git@host:owner/repo form of an SSH remote and reported it as an address, and phase 7 reasonably worked around it rather than questioning a rule that had appeared under it mid-run. Two corrections. The email check now excludes the git@ form, which the git-remote check already owns, so the message names the real problem. And the orchestrator will not commit to the worktree while an executor is running: a cross-cutting change either goes in the executor's brief beforehand or waits for the phase to land. Phase executors run serially on one branch precisely so that only one writer is active at a time, and the orchestrator is not exempt from that.

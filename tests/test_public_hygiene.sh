@@ -53,9 +53,12 @@ absent "a real home directory path" \
   '/home/placeholder-user|/Users/example|/Users/placeholder-user'
 
 # A real email address. Reserved test domains are fine.
+# An SSH git remote (`git@host:owner/repo`) matches an email pattern but is not
+# one, and the git-remote check below owns it. Reporting it as an address sent
+# one phase off debugging the wrong thing.
 absent "a real email address" \
-  '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' tracked \
-  '@(example|test|invalid|localhost)([./]|$)|example\.(com|org|net|invalid)'
+  '(^|[^A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' tracked \
+  '@(example|test|invalid|localhost)([./]|$)|example\.(com|org|net|invalid)|(^|[^A-Za-z0-9])git@'
 
 # From here on, fixtures only.
 
