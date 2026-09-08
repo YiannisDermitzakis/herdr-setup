@@ -35,7 +35,14 @@ rows:
     levels: {}
     status: not-implemented
     notes: Reads plugins.json and config.toml from disk; only integration state comes
-      from the CLI, which stays unblocked.
+      from the CLI, which stays unblocked. Phase 2 (herdr-setup:tests/test_diff_plugins.sh)
+      proves the plugin section is byte-identical whether or not
+      FAKE_HERDR_PROTOCOL_MISMATCH is set, since hs_manifest_plugins/hs_host_plugins/
+      hs_resolve_ref never call herdr. Config and integration sections land in phase 3
+      (herdr-setup:docs/superpowers/plans/2026-09-08-herdr-setup/03.yaml). Left
+      not-implemented on purpose, per phase 10
+      (herdr-setup:docs/superpowers/plans/2026-09-08-herdr-setup/10.yaml), which adds the
+      level reference and flips this row once CI runs the suite.
   - id: socket-commands-refuse-under-mismatch
     capability: Version gate
     acceptance: apply, absorb, onboard and feed stop with one line naming the protocol
@@ -62,7 +69,13 @@ rows:
     levels: {}
     status: not-implemented
     notes: Moved is decided by resolving the ref with git ls-remote against the commit
-      Herdr recorded.
+      Herdr recorded. Implemented and unit-tested in phase 2
+      (herdr-setup:tests/test_diff_plugins.sh, herdr-setup:tests/test_manifest.sh,
+      herdr-setup:tests/test_hostplugins.sh) -- hs_diff_plugins covers missing/ok/moved/
+      ref-gone/unmanaged, and cmd_diff wires it to the real manifest and the host's
+      plugins.json. Left not-implemented on purpose, per phase 10
+      (herdr-setup:docs/superpowers/plans/2026-09-08-herdr-setup/10.yaml), which adds the
+      level reference and flips this row once CI runs the suite.
   - id: apply-reproduces-manifest
     capability: Configuration sync
     acceptance: On a host missing every manifest plugin, apply installs them at their

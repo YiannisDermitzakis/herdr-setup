@@ -46,29 +46,40 @@ status="$(run_entry "$out" "$err" --help)"
 assert_status "--help exits 0" 0 "$status"
 assert_contains "--help prints usage" "$(cat "$out")" "usage:"
 
-# --- each of the five subcommands is accepted with a stub that exits 0 ---
-for sub in diff apply absorb onboard feed; do
+# --- each of apply/absorb/onboard/feed is accepted with a stub that exits
+# 0. diff got a real implementation in phase 2 and is checked separately
+# below: this checkout has no manifest/plugins.list yet (that lands in
+# phase 5/10), so it fails closed per AGENTS.md ("an unreadable manifest
+# ... stops the run") rather than reporting a stub success. ---
+for sub in apply absorb onboard feed; do
   out="$work/out_$sub"; err="$work/err_$sub"
   status="$(run_entry "$out" "$err" "$sub")"
   assert_status "$sub is accepted and exits 0" 0 "$status"
 done
 
+out="$work/out_diff"; err="$work/err_diff"
+status="$(run_entry "$out" "$err" diff)"
+assert_status "diff is accepted; fails closed on a missing manifest" 2 "$status"
+assert_contains "diff names the missing manifest on stderr" "$(cat "$err")" "manifest"
+
 # --- --dry-run / --yes are visible to the subcommand as HS_DRY_RUN / HS_YES,
-# regardless of whether they come before or after the subcommand ---
+# regardless of whether they come before or after the subcommand. Uses
+# `apply`, still a phase-1 stub, since diff no longer echoes the flags it
+# saw. ---
 out="$work/out_flags_before"; err="$work/err_flags_before"
-status="$(run_entry "$out" "$err" --dry-run --yes diff)"
+status="$(run_entry "$out" "$err" --dry-run --yes apply)"
 assert_status "flags before the subcommand still exit 0" 0 "$status"
 assert_contains "HS_DRY_RUN=1 visible (flags before)" "$(cat "$out")" "dry-run=1"
 assert_contains "HS_YES=1 visible (flags before)" "$(cat "$out")" "yes=1"
 
 out="$work/out_flags_after"; err="$work/err_flags_after"
-status="$(run_entry "$out" "$err" diff --dry-run --yes)"
+status="$(run_entry "$out" "$err" apply --dry-run --yes)"
 assert_status "flags after the subcommand still exit 0" 0 "$status"
 assert_contains "HS_DRY_RUN=1 visible (flags after)" "$(cat "$out")" "dry-run=1"
 assert_contains "HS_YES=1 visible (flags after)" "$(cat "$out")" "yes=1"
 
 out="$work/out_noflags"; err="$work/err_noflags"
-status="$(run_entry "$out" "$err" diff)"
+status="$(run_entry "$out" "$err" apply)"
 assert_status "no flags still exits 0" 0 "$status"
 assert_contains "HS_DRY_RUN defaults to 0" "$(cat "$out")" "dry-run=0"
 assert_contains "HS_YES defaults to 0" "$(cat "$out")" "yes=0"

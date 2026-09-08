@@ -85,10 +85,29 @@ fi
 export HS_DRY_RUN
 export HS_YES
 
-# Phase 1 stubs: each later phase fills in its own command. Every stub
-# prints the flags it saw, which is also what the tests use to confirm the
-# flags reach the subcommand regardless of where they appeared on the line.
-cmd_diff()    { echo "stub: diff dry-run=$HS_DRY_RUN yes=$HS_YES"; }
+# cmd_diff: read-only. Each section below reports its own drift and
+# contributes to the overall exit status; none of them stop early, so one
+# section's error doesn't hide another section's report. A section is run
+# with `|| section_rc=$?` (never as a bare statement) so a nonzero exit
+# doesn't trip this script's `set -e` before the status is captured.
+#
+# Exit status: 2 if any section hit a hard parse error (missing/malformed
+# manifest or host state), else 1 if anything drifted, else 0.
+cmd_diff() {
+  local rc=0
+  local plugins_rc=0
+
+  hs_diff_plugins "$HS_ROOT/manifest/plugins.list" "$(hs_plugins_json_path)" || plugins_rc=$?
+
+  if [ "$plugins_rc" -eq 2 ]; then
+    return 2
+  fi
+  if [ "$plugins_rc" -ne 0 ]; then
+    rc=1
+  fi
+
+  return "$rc"
+}
 cmd_apply()   { echo "stub: apply dry-run=$HS_DRY_RUN yes=$HS_YES"; }
 cmd_absorb()  { echo "stub: absorb dry-run=$HS_DRY_RUN yes=$HS_YES"; }
 cmd_onboard() { echo "stub: onboard dry-run=$HS_DRY_RUN yes=$HS_YES"; }
