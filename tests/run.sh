@@ -18,6 +18,13 @@
 # a set of test_*.sh files anywhere runs the same way, which is what lets
 # tests/test_harness.sh exercise it against a throwaway nested suite.
 #
+# Each test file runs under the SAME bash that is running this script, via
+# $BASH, rather than whatever `bash` resolves to on PATH. That is the whole
+# point: `/bin/bash tests/run.sh` then exercises the declared 3.2 floor end to
+# end. Invoking a bare `bash` here silently ran every test on the newest bash
+# installed, which is how a tool that could not start at all on 3.2 kept a green
+# suite for five phases.
+#
 # Bash 3.2 safe: no associative arrays, no mapfile, no `local -n`.
 set -u
 
@@ -35,7 +42,7 @@ for test_file in "$script_dir"/test_*.sh; do
 
   if env -u HERDR_ENV -u HERDR_SOCKET_PATH -u HERDR_BIN_PATH -u HERDR_PANE_ID \
          -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID -u HERDR_CONFIG_DIR \
-         HOME="$tmp_home" PATH="$helpers_dir:$PATH" bash "$test_file"; then
+         HOME="$tmp_home" PATH="$helpers_dir:$PATH" "${BASH:-bash}" "$test_file"; then
     echo "PASS: $name"
   else
     echo "FAIL: $name"

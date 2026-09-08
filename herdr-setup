@@ -251,4 +251,8 @@ cmd_absorb() {
 cmd_onboard() { echo "stub: onboard dry-run=$HS_DRY_RUN yes=$HS_YES"; }
 cmd_feed()    { echo "stub: feed dry-run=$HS_DRY_RUN yes=$HS_YES"; }
 
-"cmd_$HS_COMMAND" "${HS_ARGS[@]}"
+# bash 3.2 (and up to 4.3) treats expansion of an EMPTY array under `set -u`
+# as an unbound variable, and HS_ARGS is empty for every documented
+# invocation. The `+` form expands to nothing at all when the array is
+# empty, which is the portable idiom.
+"cmd_$HS_COMMAND" ${HS_ARGS[@]+"${HS_ARGS[@]}"}
