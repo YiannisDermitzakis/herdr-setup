@@ -201,3 +201,128 @@ phase 2 established for diff-detects-plugin-drift.
 ### 216be8bfed47 · finding [fixed] · hs_herdr_json decided 'is this an error' by substring, and misread good responses (phase 3)
 
 Introduced by me under the since-withdrawn startup-cost rule. A Herdr response is an error when the top-level object has an error key, but the code tested whether the raw text contained the token "error", which a perfectly good response can carry in a value: a plugin list containing "status":"error" was reported as a failed call and its result discarded. Replaced with an authoritative parse, hs_py herdr-error, which reads the response and exits 0 with the message only when there really is an error key. The cheap substring test survives as a filter for whether there is anything to parse at all, which cannot miss a real error because an error key always puts the token in the text. Two regression tests added in tests/test_preflight.sh, one for each direction, plus a check that a multi-line message is folded onto one line.
+
+<!-- fr:journal kind=decision scope=plan id=8f3a0c6f882c created=2026-09-08T11:12:47 phase=4 -->
+### 8f3a0c6f882c · decision · Block re-insertion anchor: a third walk mode, exact in the steady state, order-preserving otherwise (phase 4)
+
+Phase 3 flagged that neither hs_strip_plugin_blocks nor hs_extract_plugin_blocks
+records WHERE a block sat, so apply's config splice has no anchor to reinsert a
+block into a DIFFERENT file (the manifest-derived skeleton) than the host file
+it came from. It suggested either a third mode on the walker or a wrapper
+pairing extract's output with a marker search on the target.
+
+A marker search on the target is not available here: by definition the
+manifest never holds plugin blocks (they are per-host, config-splice-preserves-
+plugin-blocks / the design doc's "Layout" section), so there is nothing to
+search for in the manifest to anchor against.
+
+Chosen: a third mode on _hs_plugin_block_walk, `splice`, extending the same
+shared engine rather than duplicating marker-matching (as phase 3's own note
+warned against). It emits the same thing `extract` does, except each block is
+preceded by one sentinel line, `<HS_SPLICE_SENTINEL><n>`, where `<n>` is the
+number of lines `strip` would have printed before that block began -- the
+block's anchor, counted in the HOST file's own stripped-line terms.
+hs_splice_config feeds this stream to a new hs.py subcommand,
+`splice-config`, which reads the manifest's lines as the new skeleton and
+reinserts each block at position `anchor + offset`, offset accumulating the
+length of every block already inserted (anchors are non-decreasing since
+blocks are walked top to bottom, so this is a straightforward left-to-right
+insertion, not a general interval-merge problem).
+
+Why this is the right level of correctness rather than a heuristic reach for
+more: after every successful apply, the host's own stripped content IS the
+manifest content (that is what apply just wrote) -- so on the very next round,
+the anchor computed against the host lines up exactly with the manifest's own
+line count, and the block lands back in its exact original position. That is
+the steady-state case that matters in practice (nothing but plugin blocks
+changed since the last apply, which is the common day-to-day case this tool
+optimizes for). When the manifest's operator-line shape genuinely changed
+since the last apply (an absorb captured a hand edit, or a fresh host's first
+apply against a manifest shaped like no host it has ever run against), the
+anchor is best-effort: every block still comes back unchanged, markers
+included, and still in original relative order (the actual acceptance-matrix
+wording), just not necessarily at the byte-identical original line. Tests:
+tests/test_apply_config.sh covers both the byte-exact round-trip case (host's
+own stripped content used as the manifest) and same-shape/reshaped-manifest
+drift (values changed / lines added), asserting presence, verbatim content,
+and relative order in the latter two, byte-identical reconstruction in the
+former.
+
+Phase 5 (absorb) needs to know: hs_splice_config takes (host_config,
+manifest_config) and prints the new host content on stdout; it is read-only
+(never writes), so absorb's own writer (rewriting manifest/config.toml FROM
+the host with blocks stripped) is unaffected and does not need this function
+at all -- absorb just needs hs_strip_plugin_blocks, already built in phase 3.
+Phase 8/10's absorb-apply-roundtrip-is-noop test should absorb a host, then
+apply back to the SAME host: that is exactly the byte-exact case above (the
+freshly-absorbed manifest equals the host's current stripped content), so the
+round trip is a true no-op by this design, not by coincidence.
+
+<!-- fr:journal kind=finding scope=plan id=caa0453a638a created=2026-09-08T11:13:03 phase=4 state=fixed -->
+### caa0453a638a · finding [fixed] · Capturing $? right after a negated (!) condition captures the wrong status (phase 4)
+
+Introduced and caught by me in this phase. The pattern used correctly
+elsewhere in this file (hs_diff_plugins, cmd_diff) is
+`cmd || var=$?` -- `$?` inside the `||` right-hand side is cmd's own exit
+status, since `||` only runs its right side when cmd genuinely failed and
+`$?` has not been overwritten yet.
+
+`if ! cmd; then rc=$?; ...; fi` is a different, broken shape: `!` negates
+cmd's exit status for the if-test BEFORE `$?` is read, so when cmd fails
+(exit 2), `! cmd` succeeds (exit 0) and `rc=$?` captures 0, not 2. I wrote
+this exact shape twice while drafting hs_splice_config's internal call to
+_hs_plugin_block_walk and hs_apply_config's call to hs_splice_config, and
+both silently returned 0 on a hard error instead of propagating the real
+exit code -- caught by tests/test_apply_config.sh's "manifest config
+missing" case (expected exit 2, got 0) during the initial full-suite run,
+not by the unit-level assertions I wrote for it, which happened to only
+check the message went to stderr, not the exit status of the outer function
+in that specific path.
+
+Fixed by dropping the `!` and hardcoding `return 2` in both call sites,
+since both callees (_hs_plugin_block_walk and hs_splice_config) only ever
+fail with exit 2, never any other nonzero code -- matching how
+hs_diff_plugins already treats hs_manifest_plugins' failure (also hardcoded
+to 2, also a binary success/2 contract). If a later phase adds a call
+site where the callee's nonzero code needs to be preserved verbatim (not
+just detected), do not reach for `if ! cmd; then rc=$?`; use
+`cmd; rc=$?; if [ "$rc" -ne 0 ]; then ...` instead, or the `cmd || var=$?`
+form already used by cmd_diff/cmd_apply's own section-accumulation.
+
+<!-- fr:journal kind=finding scope=plan id=ceb7e3e0a86d created=2026-09-08T11:13:21 phase=4 state=fixed -->
+### ceb7e3e0a86d · finding [fixed] · A host that itself runs Herdr exports HERDR_SOCKET_PATH into every test subprocess (phase 4)
+
+The machine this phase was built on runs Herdr itself as an agent-pane tool
+and exports HERDR_SOCKET_PATH (and HERDR_BIN_PATH, HERDR_ENV,
+HERDR_PANE_ID, ...) into every shell it spawns, tests/run.sh's included.
+hs_socket_path() reads `${HERDR_SOCKET_PATH:-$HS_DEFAULT_SOCKET_PATH}`, so
+on such a host this ambient value wins over the default derived from the
+sandboxed $HOME tests/run.sh sets up -- a test that expects "no server" by
+relying on a fresh $HOME having no ~/.config/herdr/herdr.sock silently sees
+the OPERATOR'S REAL socket instead, and hs_preflight reports whatever that
+real Herdr's actual state happens to be (matched, on this host), not
+no-server.
+
+This bit tests/test_entrypoint.sh's new apply-fails-closed-on-no-server
+assertion in this phase: it expected exit 3 and got exit 2 (apply got past
+hs_require_socket and failed on the missing manifest instead). Every
+EXISTING test that exercises preflight (tests/test_preflight.sh, and the
+sandbox sections of tests/test_diff_plugins.sh / tests/test_diff_config.sh
+/ tests/test_apply_plugins.sh) was already immune, because all of them
+explicitly pass HERDR_SOCKET_PATH (pointing at a real fixture socket or a
+guaranteed-missing path) rather than relying on the default -- this phase's
+new entrypoint-level test was the first to lean on the default.
+
+Fixed by explicitly setting HERDR_SOCKET_PATH to a guaranteed-nonexistent
+path in that test, matching the established convention. Left unfixed at
+the harness level: tests/run.sh does not scrub HERDR_* environment
+variables before running a test file. Any later phase (6: feed, or
+onboard/absorb if they gain their own preflight-dependent tests) that adds
+a new test relying on the DEFAULT socket/config-dir path, on a host that
+itself runs Herdr, will hit this same trap. The robust fix would be
+tests/run.sh unsetting HERDR_SOCKET_PATH, HERDR_CONFIG_DIR, and
+HERDR_BIN_PATH before each test file runs (alongside the fresh $HOME it
+already sets up) rather than every test file remembering to override them
+individually -- worth doing in phase 6 or whichever phase next touches
+tests/run.sh, since the trap will keep recurring test-file by test-file
+otherwise.

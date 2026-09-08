@@ -324,15 +324,20 @@ hs_config_toml_path() {
 }
 
 # _hs_plugin_block_walk <file> <mode>: the shared engine behind
-# hs_strip_plugin_blocks (mode=strip) and hs_extract_plugin_blocks
-# (mode=extract). A plugin-written block is every line from
+# hs_strip_plugin_blocks (mode=strip), hs_extract_plugin_blocks
+# (mode=extract), and the splice mode used internally by hs_splice_config
+# (mode=splice). A plugin-written block is every line from
 # `# --- added by <id> ...` through the following `# --- end <id> ---`,
 # inclusive, matching the id captured at the begin marker against the id
 # captured at the end marker rather than accepting any end marker. strip
 # prints every line OUTSIDE such a block; extract prints every line INSIDE
 # one, markers included, in file order -- the two outputs partition the
 # file's lines between them, and extract's markers are what let a later
-# splice put a block back exactly as it was.
+# splice put a block back exactly as it was. splice prints the same thing
+# extract does, except each block is preceded by one sentinel line,
+# `<HS_SPLICE_SENTINEL><n>`, where <n> is the number of lines strip would
+# have printed before that block began -- its anchor. hs_py splice-config
+# is the only reader of that sentinel; nothing else needs to care about it.
 #
 # A begin marker is matched by the literal prefix `# --- added by `; its id
 # is everything up to the next space (a trailing `(removed by ...) ---` or
@@ -340,13 +345,15 @@ hs_config_toml_path() {
 # literal prefix `# --- end ` and literal suffix ` ---`; its id is
 # whatever sits between them.
 #
-# Fatal, in both modes, naming the file, line number and plugin id, exit 2:
-# a begin marker reached before the previous block's end marker; an end
-# marker with no open block; an end marker whose id does not match the
+# Fatal, in all three modes, naming the file, line number and plugin id,
+# exit 2: a begin marker reached before the previous block's end marker; an
+# end marker with no open block; an end marker whose id does not match the
 # open block's id; and, at end of file, a block that was never closed.
+HS_SPLICE_SENTINEL=$'\001HS_ANCHOR\001'
+
 _hs_plugin_block_walk() {
   local file="$1" mode="$2"
-  local line line_num=0 open_id="" open_line=0 id
+  local line line_num=0 open_id="" open_line=0 id stripped_count=0
 
   while IFS= read -r line || [ -n "$line" ]; do
     line_num=$((line_num + 1))
@@ -360,7 +367,10 @@ _hs_plugin_block_walk() {
         fi
         open_id="$id"
         open_line="$line_num"
-        if [ "$mode" = "extract" ]; then
+        if [ "$mode" = "splice" ]; then
+          printf '%s%d\n' "$HS_SPLICE_SENTINEL" "$stripped_count"
+        fi
+        if [ "$mode" = "extract" ] || [ "$mode" = "splice" ]; then
           printf '%s\n' "$line"
         fi
         continue
@@ -377,7 +387,7 @@ _hs_plugin_block_walk() {
           return 2
         fi
         open_id=""
-        if [ "$mode" = "extract" ]; then
+        if [ "$mode" = "extract" ] || [ "$mode" = "splice" ]; then
           printf '%s\n' "$line"
         fi
         continue
@@ -385,13 +395,14 @@ _hs_plugin_block_walk() {
     esac
 
     if [ -n "$open_id" ]; then
-      if [ "$mode" = "extract" ]; then
+      if [ "$mode" = "extract" ] || [ "$mode" = "splice" ]; then
         printf '%s\n' "$line"
       fi
     else
       if [ "$mode" = "strip" ]; then
         printf '%s\n' "$line"
       fi
+      stripped_count=$((stripped_count + 1))
     fi
   done < "$file"
 
@@ -455,6 +466,218 @@ hs_diff_config() {
   fi
 
   rm -f "$host_tmp"
+  return "$rc"
+}
+
+# hs_splice_config <host-config> <manifest-config>: builds the config
+# `apply` should write, on stdout. Takes the manifest's operator lines
+# verbatim as the new skeleton, and re-inserts every plugin-written block
+# currently on the host, unchanged and in original relative order.
+#
+# Anchoring a block into a DIFFERENT file than the one it was extracted
+# from has no ground truth in general -- the manifest never holds plugin
+# blocks (they are per-host by definition), so there is no marker in the
+# manifest to splice relative to. This uses the third mode on
+# _hs_plugin_block_walk, `splice`, which records each block's anchor as
+# the number of operator lines that preceded it on the host (the same
+# count hs_strip_plugin_blocks would have emitted up to that point), and
+# reinserts each block after that many lines into the manifest skeleton,
+# offsetting later anchors by the lines already-inserted blocks added.
+# This guarantees an exact reproduction in the steady state that matters
+# most in practice -- when the host's own stripped content already equals
+# the manifest, i.e. nothing but plugin blocks has changed since the last
+# apply, which is the common case round to round -- and degrades
+# gracefully otherwise: a manifest whose operator-line count changed
+# still gets every block back, unchanged, in original relative order,
+# just not necessarily at the exact original line. hs_py splice-config
+# does the actual line-list insertion, since it is ordinary structured
+# work, not a hot path (AGENTS.md: uv runs the tool's own scripts, batched
+# behind lib/hs.py subcommands).
+#
+# A host with no config.toml yet (never ran `apply`) has no blocks to
+# preserve; the manifest content passes through unchanged, the same
+# "missing host is empty" convention hs_diff_config uses. A missing or
+# unreadable manifest config is fail-closed: one stderr line naming the
+# file, exit 2.
+hs_splice_config() {
+  local host_file="$1" manifest_file="$2"
+  local blocks_tmp rc
+
+  if [ ! -r "$manifest_file" ]; then
+    echo "herdr-setup: $manifest_file: manifest config not found or unreadable" >&2
+    return 2
+  fi
+
+  blocks_tmp="$(mktemp)" || return 2
+
+  if [ -e "$host_file" ]; then
+    # _hs_plugin_block_walk always fails with exit 2 (never any other
+    # nonzero code) -- hardcoded here rather than captured via `$?` after
+    # `!`, which would capture the NEGATED condition's status (0), not
+    # the command's own.
+    if ! _hs_plugin_block_walk "$host_file" splice > "$blocks_tmp"; then
+      rm -f "$blocks_tmp"
+      return 2
+    fi
+  fi
+
+  hs_py splice-config "$manifest_file" < "$blocks_tmp"
+  rc=$?
+  rm -f "$blocks_tmp"
+  return "$rc"
+}
+
+# hs_apply_plugins <manifest-file> <plugins-json>: the plugin half of
+# `apply`. Built on the same primitives hs_diff_plugins uses
+# (hs_manifest_plugins, hs_host_plugins, hs_resolve_ref) -- both sides
+# read from disk, only the ref resolution reaches out to git, never to
+# herdr, matching hs_diff_plugins' own contract. For every manifest
+# plugin that is missing from the host, or whose pinned ref no longer
+# resolves to the commit the host has recorded (moved, including a ref
+# that no longer exists upstream), runs
+# `herdr plugin install <source> --ref <ref>`, adding `--yes` when
+# HS_YES=1. A plugin the host already has at the recorded commit makes no
+# call at all, and a host plugin the manifest does not name is left
+# alone -- apply never uninstalls (AGENTS.md: "never uninstall or
+# disable").
+#
+# Reads HS_DRY_RUN and HS_YES from the environment, exactly as the
+# entrypoint exports them: under HS_DRY_RUN=1, prints the command each
+# drifted plugin would run and makes no call at all. Returns 2 if the
+# manifest or the host's plugins.json fails to parse, 1 if any install
+# call itself failed, 0 otherwise. Does not check the preflight state
+# itself -- cmd_apply calls hs_require_socket first, before this or the
+# config half run at all.
+hs_apply_plugins() {
+  local manifest_file="$1" plugins_json="$2"
+  local rc=0
+
+  local manifest_tmp host_tmp
+  manifest_tmp="$(mktemp)" || return 2
+  host_tmp="$(mktemp)" || { rm -f "$manifest_tmp"; return 2; }
+
+  if ! hs_manifest_plugins "$manifest_file" > "$manifest_tmp"; then
+    rm -f "$manifest_tmp" "$host_tmp"
+    return 2
+  fi
+
+  if ! hs_host_plugins "$plugins_json" > "$host_tmp"; then
+    rm -f "$manifest_tmp" "$host_tmp"
+    return 2
+  fi
+
+  local m_source m_ref
+  while IFS=$'\t' read -r m_source m_ref; do
+    [ -z "$m_source" ] && continue
+
+    local h_line needs_install=0
+    h_line="$(awk -F'\t' -v src="$m_source" '$2 == src {print; exit}' "$host_tmp")"
+    if [ -z "$h_line" ]; then
+      needs_install=1
+    else
+      local h_resolved resolved
+      IFS=$'\t' read -r _ _ _ h_resolved <<< "$h_line"
+      if ! resolved="$(hs_resolve_ref "$m_source" "$m_ref")"; then
+        resolved=""
+      fi
+      if [ -z "$resolved" ] || [ "$resolved" != "$h_resolved" ]; then
+        needs_install=1
+      fi
+    fi
+
+    if [ "$needs_install" -eq 1 ]; then
+      local install_args
+      install_args=(plugin install "$m_source" --ref "$m_ref")
+      if [ "$HS_YES" -eq 1 ]; then
+        install_args+=(--yes)
+      fi
+      if [ "$HS_DRY_RUN" -eq 1 ]; then
+        echo "+ herdr ${install_args[*]}"
+      else
+        if ! hs_herdr_json "${install_args[@]}" >/dev/null; then
+          rc=1
+        fi
+      fi
+    fi
+  done < "$manifest_tmp"
+
+  rm -f "$manifest_tmp" "$host_tmp"
+  return "$rc"
+}
+
+# hs_apply_config <host-config> <manifest-config>: the config half of
+# `apply`. Builds the new content with hs_splice_config, writes it only
+# when it actually differs from what is on the host, and only then: backs
+# the previous content up to `<host-config>.bak` first (skipped when the
+# host had no config.toml yet -- nothing to back up), writes the new
+# content to a temporary file in the SAME directory and renames it over
+# the target (so the config is never observed half-written), then calls
+# `herdr server reload-config` exactly once.
+#
+# Reads HS_DRY_RUN from the environment like hs_apply_plugins: under
+# HS_DRY_RUN=1, prints what it would do and makes no write, no backup, and
+# no herdr call, even when the content would have changed.
+#
+# Returns 2 if hs_splice_config hit a hard error (propagated as-is -- a
+# missing/unreadable manifest config, or a malformed plugin block on the
+# host), 1 if the reload-config call itself failed, 0 otherwise (including
+# the no-op case where nothing had changed).
+hs_apply_config() {
+  local host_file="$1" manifest_file="$2"
+  local host_dir new_content_tmp changed rc=0
+
+  host_dir="$(dirname "$host_file")"
+
+  new_content_tmp="$(mktemp)" || return 2
+  # hs_splice_config always fails with exit 2 -- hardcoded here for the
+  # same reason noted in hs_splice_config itself: `$?` captured right
+  # after a `!`-negated condition is the negation's status, not the
+  # command's.
+  if ! hs_splice_config "$host_file" "$manifest_file" > "$new_content_tmp"; then
+    rm -f "$new_content_tmp"
+    return 2
+  fi
+
+  changed=1
+  if [ -e "$host_file" ]; then
+    if diff -q "$host_file" "$new_content_tmp" >/dev/null 2>&1; then
+      changed=0
+    fi
+  elif [ ! -s "$new_content_tmp" ]; then
+    changed=0
+  fi
+
+  if [ "$changed" -eq 0 ]; then
+    rm -f "$new_content_tmp"
+    return 0
+  fi
+
+  if [ "$HS_DRY_RUN" -eq 1 ]; then
+    echo "+ write $host_file"
+    echo "+ herdr server reload-config"
+    rm -f "$new_content_tmp"
+    return 0
+  fi
+
+  mkdir -p "$host_dir"
+
+  if [ -e "$host_file" ]; then
+    cp "$host_file" "${host_file}.bak"
+  fi
+
+  local write_tmp
+  write_tmp="$(mktemp "$host_dir/.herdr-setup-config.XXXXXX")" || {
+    rm -f "$new_content_tmp"
+    return 2
+  }
+  cat "$new_content_tmp" > "$write_tmp"
+  rm -f "$new_content_tmp"
+  mv -f "$write_tmp" "$host_file"
+
+  if ! hs_herdr_json server reload-config >/dev/null; then
+    rc=1
+  fi
+
   return "$rc"
 }
 

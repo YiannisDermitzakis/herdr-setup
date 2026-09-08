@@ -56,6 +56,59 @@ def host_plugins(path: Path) -> int:
     return 0
 
 
+HS_SPLICE_SENTINEL = "\x01HS_ANCHOR\x01"
+
+
+def splice_config(manifest_path: Path) -> int:
+    """Reinsert plugin-written blocks into the manifest's operator lines.
+
+    Reads the manifest config verbatim as the new skeleton, then reads a
+    block stream on stdin, produced by lib/common.sh's `splice` walk mode:
+    each block is introduced by a sentinel line (HS_SPLICE_SENTINEL followed
+    by its anchor, the count of operator lines that preceded it on the
+    host) and followed by the block's own lines, markers included. Blocks
+    are inserted into the manifest's line list at their anchor position,
+    offset by the lines already-inserted blocks added -- see hs_splice_config
+    in lib/common.sh for why an anchor computed against the host is only an
+    approximation once inserted into a different (the manifest's) skeleton,
+    and why it is nonetheless exact in the common case.
+    """
+    try:
+        manifest_text = manifest_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        die(f"{manifest_path}: {exc}")
+    manifest_lines = manifest_text.splitlines()
+
+    raw = sys.stdin.read()
+    blocks: list[tuple[int, list[str]]] = []
+    if raw:
+        current_anchor: int | None = None
+        current_lines: list[str] = []
+        for line in raw.splitlines():
+            if line.startswith(HS_SPLICE_SENTINEL):
+                if current_anchor is not None:
+                    blocks.append((current_anchor, current_lines))
+                current_anchor = int(line[len(HS_SPLICE_SENTINEL) :])
+                current_lines = []
+            else:
+                current_lines.append(line)
+        if current_anchor is not None:
+            blocks.append((current_anchor, current_lines))
+
+    result = list(manifest_lines)
+    offset = 0
+    for anchor, block_lines in blocks:
+        position = min(anchor + offset, len(result))
+        result[position:position] = block_lines
+        offset += len(block_lines)
+
+    text = "\n".join(result)
+    if text:
+        text += "\n"
+    sys.stdout.write(text)
+    return 0
+
+
 def herdr_error() -> int:
     """Decide whether a Herdr response is an error, and print its message.
 
@@ -86,11 +139,18 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("host-plugins", help="read the host's plugins.json from disk")
     p.add_argument("path", type=Path)
     sub.add_parser("herdr-error", help="detect a Herdr error response on stdin")
+    p = sub.add_parser(
+        "splice-config",
+        help="reinsert plugin blocks (read on stdin) into a manifest config",
+    )
+    p.add_argument("manifest_path", type=Path)
     args = parser.parse_args(argv)
     if args.command == "host-plugins":
         return host_plugins(args.path)
     if args.command == "herdr-error":
         return herdr_error()
+    if args.command == "splice-config":
+        return splice_config(args.manifest_path)
     die(f"unknown subcommand: {args.command}")
     return 2
 

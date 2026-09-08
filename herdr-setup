@@ -128,7 +128,42 @@ cmd_diff() {
 
   return "$rc"
 }
-cmd_apply()   { echo "stub: apply dry-run=$HS_DRY_RUN yes=$HS_YES"; }
+# cmd_apply: installs missing/moved plugins and splices the manifest's
+# config into the host, in that order. hs_require_socket runs FIRST and
+# unconditionally -- unlike cmd_diff, apply needs the socket (to install
+# plugins and to reload the host's config) and must not proceed to a
+# partial result under a protocol mismatch, matching the design doc's
+# "apply, onboard, and feed stop with one line naming the mismatch ...
+# rather than proceeding to a confusing partial result." This holds even
+# under --dry-run: a dry run's whole point is to show what a real apply
+# would do, and a mismatched host cannot answer that either.
+#
+# Both halves are invoked as `section || section_rc=$?` (never bare),
+# same as cmd_diff, because of `set -e`. A hard error (2) from either
+# section short-circuits the other and returns 2 immediately; otherwise a
+# non-zero rc from either section (a failed install or a failed
+# reload-config call) makes the whole command exit 1.
+cmd_apply() {
+  hs_require_socket || return 3
+
+  local plugins_rc=0
+  local config_rc=0
+
+  hs_apply_plugins "$HS_ROOT/manifest/plugins.list" "$(hs_plugins_json_path)" || plugins_rc=$?
+  if [ "$plugins_rc" -eq 2 ]; then
+    return 2
+  fi
+
+  hs_apply_config "$(hs_config_toml_path)" "$HS_ROOT/manifest/config.toml" || config_rc=$?
+  if [ "$config_rc" -eq 2 ]; then
+    return 2
+  fi
+
+  if [ "$plugins_rc" -ne 0 ] || [ "$config_rc" -ne 0 ]; then
+    return 1
+  fi
+  return 0
+}
 cmd_absorb()  { echo "stub: absorb dry-run=$HS_DRY_RUN yes=$HS_YES"; }
 cmd_onboard() { echo "stub: onboard dry-run=$HS_DRY_RUN yes=$HS_YES"; }
 cmd_feed()    { echo "stub: feed dry-run=$HS_DRY_RUN yes=$HS_YES"; }
