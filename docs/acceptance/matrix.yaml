@@ -46,6 +46,13 @@ rows:
     levels: {}
     status: not-implemented
     notes: The failure this guards against reads as success having done nothing.
+      Phase 1 (herdr-setup:tests/test_preflight.sh) unit-tests the two primitives
+      this row depends on -- hs_require_socket refuses under mismatched/no-server/
+      no-herdr with one stderr line and exit 3, and hs_herdr_json never returns a
+      result from a failed herdr call -- but apply/absorb/onboard/feed are still
+      phase 1 stubs that do not call hs_require_socket yet. Left not-implemented on
+      purpose, pending phase 6 (herdr-setup:docs/superpowers/plans/2026-09-08-herdr-setup/06.yaml),
+      which wires cmd_feed to hs_require_socket and is where this row actually flips.
   - id: diff-detects-plugin-drift
     capability: Configuration sync
     acceptance: diff reports each manifest plugin as missing, matching its pinned ref,

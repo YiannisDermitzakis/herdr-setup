@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# herdr-setup: reproduce and sync a Herdr setup across machines.
+#
+# See docs/superpowers/specs/2026-09-08-herdr-setup-design.md for the design.
+# Bash 3.2 / Python 3.9 floor: no associative arrays, no mapfile, no
+# `local -n`.
+set -euo pipefail
+
+# Resolve the directory this script lives in, following symlinks, so it can
+# be invoked as (or symlinked from) anywhere and still find lib/ next to it.
+hs_resolve_root() {
+  local target="$1"
+  local dir
+  while [ -h "$target" ]; do
+    dir="$(cd -P "$(dirname "$target")" && pwd)"
+    target="$(readlink "$target")"
+    case "$target" in
+      /*) ;;
+      *) target="$dir/$target" ;;
+    esac
+  done
+  cd -P "$(dirname "$target")" && pwd
+}
+
+HS_ROOT="$(hs_resolve_root "$0")"
+# shellcheck source=lib/common.sh
+. "$HS_ROOT/lib/common.sh"
+
+hs_usage() {
+  cat <<'EOF'
+usage: herdr-setup [--dry-run] [--yes] <command> [args]
+
+commands:
+  diff      report how this host differs from the checkout (read-only)
+  apply     install missing plugins and splice the checkout's config in
+  absorb    rewrite the checkout from this host's Herdr configuration
+  onboard   detect coding agents and offer their Herdr integration
+  feed      report live agent sessions to Herdr so a restart can resume them
+EOF
+}
+
+HS_DRY_RUN=0
+HS_YES=0
+HS_COMMAND=""
+HS_ARGS=()
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --help|-h)
+      hs_usage
+      exit 0
+      ;;
+    --dry-run)
+      HS_DRY_RUN=1
+      shift
+      ;;
+    --yes)
+      HS_YES=1
+      shift
+      ;;
+    diff|apply|absorb|onboard|feed)
+      if [ -z "$HS_COMMAND" ]; then
+        HS_COMMAND="$1"
+      else
+        HS_ARGS+=("$1")
+      fi
+      shift
+      ;;
+    *)
+      if [ -z "$HS_COMMAND" ]; then
+        echo "herdr-setup: unknown subcommand '$1'" >&2
+        exit 2
+      fi
+      HS_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$HS_COMMAND" ]; then
+  hs_usage >&2
+  exit 2
+fi
+
+export HS_DRY_RUN
+export HS_YES
+
+# Phase 1 stubs: each later phase fills in its own command. Every stub
+# prints the flags it saw, which is also what the tests use to confirm the
+# flags reach the subcommand regardless of where they appeared on the line.
+cmd_diff()    { echo "stub: diff dry-run=$HS_DRY_RUN yes=$HS_YES"; }
+cmd_apply()   { echo "stub: apply dry-run=$HS_DRY_RUN yes=$HS_YES"; }
+cmd_absorb()  { echo "stub: absorb dry-run=$HS_DRY_RUN yes=$HS_YES"; }
+cmd_onboard() { echo "stub: onboard dry-run=$HS_DRY_RUN yes=$HS_YES"; }
+cmd_feed()    { echo "stub: feed dry-run=$HS_DRY_RUN yes=$HS_YES"; }
+
+"cmd_$HS_COMMAND" "${HS_ARGS[@]}"

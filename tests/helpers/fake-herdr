@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# tests/helpers/fake-herdr
+#
+# A stand-in for the real `herdr` command line, so tests never touch a real
+# Herdr, a real socket, or the operator's home directory. Put this directory
+# on PATH ahead of the real one (tests/run.sh does this for every test file).
+# lib/common.sh and the entrypoint call the bare `herdr` command, so this
+# directory also carries a `herdr` symlink pointing at this file — that is
+# what PATH resolution actually finds.
+#
+# Behaviour:
+#   - Every call appends its full argv, space-joined, as one line to the file
+#     named by $FAKE_HERDR_LOG (when set).
+#   - If $FAKE_HERDR_FIXTURES/<argv words joined by "->">.json exists, its
+#     contents are printed to stdout.
+#   - If $FAKE_HERDR_PROTOCOL_MISMATCH=1 is set, every call fails with a
+#     protocol_mismatch error object and exits 1, EXCEPT `--version` and
+#     `integration status`, which behave as if there were no mismatch. This
+#     mirrors a real herdr 0.9.0 command line stuck against a 0.8.2 server:
+#     those two still work, everything else is blocked.
+#
+# Bash 3.2 safe: no associative arrays, no mapfile, no `local -n`.
+set -u
+
+if [ -n "${FAKE_HERDR_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$FAKE_HERDR_LOG"
+fi
+
+joined=""
+for arg in "$@"; do
+  if [ -z "$joined" ]; then
+    joined="$arg"
+  else
+    joined="$joined->$arg"
+  fi
+done
+
+exempt_from_mismatch=0
+if [ "$*" = "integration status" ] || [ "$*" = "--version" ]; then
+  exempt_from_mismatch=1
+fi
+
+if [ "${FAKE_HERDR_PROTOCOL_MISMATCH:-}" = "1" ] && [ "$exempt_from_mismatch" -eq 0 ]; then
+  printf '%s\n' '{"id":"x","error":{"code":"protocol_mismatch","message":"client protocol 22 is newer than server protocol 20; restart the Herdr server before using this command."}}'
+  exit 1
+fi
+
+if [ -n "${FAKE_HERDR_FIXTURES:-}" ] && [ -f "$FAKE_HERDR_FIXTURES/$joined.json" ]; then
+  cat "$FAKE_HERDR_FIXTURES/$joined.json"
+fi
+
+exit 0
