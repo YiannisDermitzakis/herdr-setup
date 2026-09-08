@@ -164,7 +164,90 @@ cmd_apply() {
   fi
   return 0
 }
-cmd_absorb()  { echo "stub: absorb dry-run=$HS_DRY_RUN yes=$HS_YES"; }
+# cmd_absorb: the reverse of apply -- rewrites manifest/plugins.list and
+# manifest/config.toml FROM the host's own Herdr state (plugins.json and
+# config.toml, both read straight from disk, exactly like the plugin and
+# config sections of `diff`). It never calls herdr at all, so unlike
+# apply/onboard/feed it does not gate on hs_require_socket -- there is no
+# socket call here to be blocked by a protocol mismatch.
+#
+# It overwrites rather than merges, so hs_require_clean_manifest runs
+# first and unconditionally: a dirty manifest/ (uncommitted changes,
+# hand-edited since the last absorb) refuses the whole command before
+# anything is read from the host, exit 4. Every line of both files is then
+# checked with hs_absorb_check_no_home_path before anything is written or
+# printed -- this repository is public, and absorb is the one command most
+# able to leak a real path into it -- a hit refuses with exit 2 and writes
+# nothing. --dry-run prints both files' content to stdout and writes
+# neither. A real run writes each file via a temporary file in the
+# manifest directory, then renames it over the target, so neither file is
+# ever observed half-written; nothing outside the manifest directory is
+# touched.
+cmd_absorb() {
+  local manifest_dir="$HS_ROOT/manifest"
+  local plugins_out="$manifest_dir/plugins.list"
+  local config_out="$manifest_dir/config.toml"
+
+  hs_require_clean_manifest "$HS_ROOT" || return "$?"
+
+  local plugins_tmp config_tmp
+  plugins_tmp="$(mktemp)" || return 2
+  config_tmp="$(mktemp)" || { rm -f "$plugins_tmp"; return 2; }
+
+  local rc=0
+  hs_absorb_plugins "$(hs_plugins_json_path)" > "$plugins_tmp" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$plugins_tmp" "$config_tmp"
+    return 2
+  fi
+
+  hs_absorb_config "$(hs_config_toml_path)" > "$config_tmp" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$plugins_tmp" "$config_tmp"
+    return 2
+  fi
+
+  if ! hs_absorb_check_no_home_path "$plugins_tmp"; then
+    echo "herdr-setup: absorb: refusing to write $plugins_out: it would contain a home directory path" >&2
+    rm -f "$plugins_tmp" "$config_tmp"
+    return 2
+  fi
+  if ! hs_absorb_check_no_home_path "$config_tmp"; then
+    echo "herdr-setup: absorb: refusing to write $config_out: it would contain a home directory path" >&2
+    rm -f "$plugins_tmp" "$config_tmp"
+    return 2
+  fi
+
+  if [ "$HS_DRY_RUN" -eq 1 ]; then
+    echo "+ $plugins_out"
+    cat "$plugins_tmp"
+    echo "+ $config_out"
+    cat "$config_tmp"
+    rm -f "$plugins_tmp" "$config_tmp"
+    return 0
+  fi
+
+  mkdir -p "$manifest_dir"
+
+  local write_tmp
+  write_tmp="$(mktemp "$manifest_dir/.herdr-setup-absorb.XXXXXX")" || {
+    rm -f "$plugins_tmp" "$config_tmp"
+    return 2
+  }
+  cat "$plugins_tmp" > "$write_tmp"
+  mv -f "$write_tmp" "$plugins_out"
+  rm -f "$plugins_tmp"
+
+  write_tmp="$(mktemp "$manifest_dir/.herdr-setup-absorb.XXXXXX")" || {
+    rm -f "$config_tmp"
+    return 2
+  }
+  cat "$config_tmp" > "$write_tmp"
+  mv -f "$write_tmp" "$config_out"
+  rm -f "$config_tmp"
+
+  return 0
+}
 cmd_onboard() { echo "stub: onboard dry-run=$HS_DRY_RUN yes=$HS_YES"; }
 cmd_feed()    { echo "stub: feed dry-run=$HS_DRY_RUN yes=$HS_YES"; }
 

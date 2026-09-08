@@ -331,3 +331,60 @@ otherwise.
 ### 900abc826c49 · finding [fixed] · The test runner inherited the operator's live Herdr environment (phase 4)
 
 Phase 4 hit this and flagged it for a later phase; fixing it at the harness level now, because it silently weakens every test written from here on. Herdr exports HERDR_ENV, HERDR_SOCKET_PATH, HERDR_BIN_PATH, HERDR_PANE_ID, HERDR_TAB_ID and HERDR_WORKSPACE_ID into every process it starts. The suite is normally run from inside a Herdr pane, so all six reached every test, and hs_socket_path resolved to the operator's real socket. A test meaning to exercise the no-server path found a real server and proved nothing. tests/run.sh now clears all of them plus HERDR_CONFIG_DIR with env -u before each file; tests that need one set it themselves. tests/test_env_isolation.sh is a permanent guard: it asserts the six are unset, that HOME is a throwaway directory, and that herdr resolves inside tests/helpers rather than to the real binary. Verified it fails when a variable is leaked back in.
+
+<!-- fr:journal kind=decision scope=plan id=c7ec9445b528 created=2026-09-08T11:40:25 phase=5 -->
+### c7ec9445b528 · decision · manifest/config.toml carries no header -- it is spliced verbatim into a live host (phase 5)
+
+hs_absorb_plugins writes a header comment atop manifest/plugins.list (a herdr-setup-only
+format whose `#` lines hs_manifest_plugins already treats as comments, per tests/fixtures/manifest_valid.list),
+but hs_absorb_config deliberately writes NO header at all into manifest/config.toml.
+
+Tried adding one first, since the task read "a short header comment naming the tool" as applying to
+both files. It broke the round trip immediately: manifest/config.toml is not free-form documentation,
+it is the exact skeleton hs_splice_config (phase 4) reinserts plugin blocks into and hs_apply_config
+then writes byte-for-byte onto a real host's live config.toml. A header line there would (a) get
+permanently baked into the operator's actual Herdr config on the very first apply, re-appearing (and
+potentially duplicating, since it is not a plugin-marked block hs_strip_plugin_blocks would ever remove)
+on every absorb/apply cycle after, and (b) break the byte-exact steady-state case journal 8f3a0c6f882c
+(phase 4) documents: the manifest would then differ from the host's own stripped content by exactly
+those header lines, forcing hs_apply_config to see `changed=1` and write + reload-config even when
+nothing meaningful drifted, and forcing every plugin block's anchor to be recomputed against a
+reshaped (not identical) skeleton instead of landing back at its exact original position.
+
+tests/test_roundtrip.sh caught this directly: with the header in config.toml, "the round trip makes no
+reload-config call" failed (got 1 call) and the host's config.toml came back reordered (blocks moved
+relative to operator lines) rather than byte-identical. Removed the header from hs_absorb_config and the
+round trip passed clean on the first try after that.
+
+manifest/plugins.list has no such constraint -- absorb OVERWRITES it wholesale every time (never spliced
+into anything, never merged), and hs_manifest_plugins already skips `#`-prefixed lines, so a header
+there is free: it never reaches a host, and re-adding it every absorb is idempotent by construction.
+
+Anything later touching manifest/config.toml (documentation, a future `--annotate` flag, etc.) should
+keep this asymmetry in mind: config.toml is host-file-shaped and gets spliced verbatim; plugins.list is
+herdr-setup-shaped and is safe to decorate.
+
+<!-- fr:journal kind=finding scope=plan id=4be56ee4550b created=2026-09-08T11:40:43 phase=5 state=open -->
+### 4be56ee4550b · finding [open] · absorb does not gate on hs_require_socket, contrary to the socket-commands-refuse-under-mismatch row's wording (phase 5)
+
+The acceptance-matrix row socket-commands-refuse-under-mismatch says "apply, absorb, onboard and
+feed stop with one line naming the protocol mismatch". The design doc's own Commands > absorb section and
+Errors and safety > Preflight section do NOT list absorb among the commands that stop under a mismatch or
+no-server host -- only apply, onboard and feed are named there, and absorb's own description ("It touches
+only the checkout") never mentions calling herdr at all.
+
+Checked absorb's actual data path: it reads plugins.json and config.toml straight from disk via
+hs_absorb_plugins/hs_absorb_config, exactly like the plugin/config sections of `diff` (which also does not
+gate on hs_require_socket, by design, so it stays useful under a mismatch). Neither absorb function makes a
+single herdr call. There is nothing for a protocol mismatch to block.
+
+Decision this phase: followed the design doc's dedicated absorb/Preflight sections over the acceptance
+row's summary wording. cmd_absorb (herdr-setup) does NOT call hs_require_socket; it runs the same whether
+the host is matched, mismatched, or has no server at all -- consistent with `diff`.
+
+Left open rather than resolved unilaterally: I updated this row's notes (docs/acceptance/matrix.yaml) to
+flag the mismatch, but did not edit the acceptance wording itself or add a socket gate to absorb. Phase 6
+(which the row's existing notes already point at as the flip point, for cmd_feed) should either drop
+"absorb" from this row's acceptance text to match the design doc, or make a deliberate call that absorb
+should gate on the socket too and wire hs_require_socket into cmd_absorb at that point -- whichever it
+picks, phase 5 deliberately left cmd_absorb ungated rather than guess.

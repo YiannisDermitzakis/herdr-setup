@@ -46,13 +46,14 @@ status="$(run_entry "$out" "$err" --help)"
 assert_status "--help exits 0" 0 "$status"
 assert_contains "--help prints usage" "$(cat "$out")" "usage:"
 
-# --- each of absorb/onboard/feed is accepted with a stub that exits 0.
-# diff (phase 2) and apply (phase 4) got real implementations and are
-# checked separately below: this checkout has no manifest/plugins.list
-# yet (that lands in phase 5/10), so they fail closed per AGENTS.md ("an
-# unreadable manifest ... stops the run") rather than reporting a stub
-# success. ---
-for sub in absorb onboard feed; do
+# --- each of onboard/feed is accepted with a stub that exits 0. diff
+# (phase 2), apply (phase 4) and absorb (phase 5) got real implementations
+# and are checked separately below: this checkout has no manifest/
+# directory yet (that lands only when a real absorb or apply runs, and
+# this file never lets that happen against the real checkout -- see
+# below), so diff fails closed per AGENTS.md ("an unreadable manifest ...
+# stops the run") rather than reporting a stub success. ---
+for sub in onboard feed; do
   out="$work/out_$sub"; err="$work/err_$sub"
   status="$(run_entry "$out" "$err" "$sub")"
   assert_status "$sub is accepted and exits 0" 0 "$status"
@@ -62,6 +63,21 @@ out="$work/out_diff"; err="$work/err_diff"
 status="$(run_entry "$out" "$err" diff)"
 assert_status "diff is accepted; fails closed on a missing manifest" 2 "$status"
 assert_contains "diff names the missing manifest on stderr" "$(cat "$err")" "manifest"
+
+# --- absorb is real now too (phase 5): it WRITES manifest/plugins.list
+# and manifest/config.toml under $HS_ROOT, which resolves to this actual
+# checkout when invoked as "$repo_root/herdr-setup" -- a real (non-dry-run)
+# absorb here would create files in the real repository this test suite
+# lives in. --dry-run never writes, so it is the only safe way to exercise
+# absorb directly against $repo_root; the full read/write/dirty-guard
+# behaviour is covered end to end, via sandbox copies, by
+# tests/test_absorb.sh and tests/test_roundtrip.sh. ---
+out="$work/out_absorb"; err="$work/err_absorb"
+status="$(run_entry "$out" "$err" --dry-run absorb)"
+assert_status "absorb --dry-run is accepted and exits 0 against a clean checkout" 0 "$status"
+assert_contains "absorb --dry-run names the plugins.list target" "$(cat "$out")" "manifest/plugins.list"
+assert_contains "absorb --dry-run names the config.toml target" "$(cat "$out")" "manifest/config.toml"
+[ ! -e "$repo_root/manifest" ] && pass || fail "absorb --dry-run created manifest/ in the real checkout"
 
 # --- apply calls hs_require_socket first, unconditionally, and fails
 # closed there before it ever gets to a missing manifest -- proving the
@@ -79,22 +95,22 @@ assert_contains "apply names the missing server on stderr" "$(cat "$err")" "serv
 
 # --- --dry-run / --yes are visible to the subcommand as HS_DRY_RUN / HS_YES,
 # regardless of whether they come before or after the subcommand. Uses
-# `absorb`, still a phase-1 stub, since neither diff nor apply echoes the
-# flags it saw any more. ---
+# `onboard`, still a stub, since none of diff/apply/absorb echo the flags
+# they saw any more. ---
 out="$work/out_flags_before"; err="$work/err_flags_before"
-status="$(run_entry "$out" "$err" --dry-run --yes absorb)"
+status="$(run_entry "$out" "$err" --dry-run --yes onboard)"
 assert_status "flags before the subcommand still exit 0" 0 "$status"
 assert_contains "HS_DRY_RUN=1 visible (flags before)" "$(cat "$out")" "dry-run=1"
 assert_contains "HS_YES=1 visible (flags before)" "$(cat "$out")" "yes=1"
 
 out="$work/out_flags_after"; err="$work/err_flags_after"
-status="$(run_entry "$out" "$err" absorb --dry-run --yes)"
+status="$(run_entry "$out" "$err" onboard --dry-run --yes)"
 assert_status "flags after the subcommand still exit 0" 0 "$status"
 assert_contains "HS_DRY_RUN=1 visible (flags after)" "$(cat "$out")" "dry-run=1"
 assert_contains "HS_YES=1 visible (flags after)" "$(cat "$out")" "yes=1"
 
 out="$work/out_noflags"; err="$work/err_noflags"
-status="$(run_entry "$out" "$err" absorb)"
+status="$(run_entry "$out" "$err" onboard)"
 assert_status "no flags still exits 0" 0 "$status"
 assert_contains "HS_DRY_RUN defaults to 0" "$(cat "$out")" "dry-run=0"
 assert_contains "HS_YES defaults to 0" "$(cat "$out")" "yes=0"

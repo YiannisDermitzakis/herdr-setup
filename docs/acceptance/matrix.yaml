@@ -65,6 +65,16 @@ rows:
       phase 1 stubs that do not call hs_require_socket yet. Left not-implemented on
       purpose, pending phase 6 (herdr-setup:docs/superpowers/plans/2026-09-08-herdr-setup/06.yaml),
       which wires cmd_feed to hs_require_socket and is where this row actually flips.
+      Phase 5 finding, not yet resolved -- this row's own wording names absorb
+      alongside apply/onboard/feed, but the design doc's Commands > absorb and
+      Errors and safety > Preflight sections do not name absorb there -- absorb never
+      crosses the socket at all (it reads plugins.json and config.toml straight from
+      disk, exactly like diff's plugin/config sections), so cmd_absorb (herdr-setup)
+      deliberately does NOT call hs_require_socket -- a protocol mismatch or
+      no-server host still lets absorb run. Whoever flips this row at phase 6 should
+      either drop "absorb" from the acceptance wording to match the design doc, or
+      decide absorb should gate on the socket after all and wire it there -- phase 5
+      did not make that call unilaterally.
   - id: diff-detects-plugin-drift
     capability: Configuration sync
     acceptance: diff reports each manifest plugin as missing, matching its pinned ref,
@@ -138,6 +148,20 @@ rows:
     levels: {}
     status: not-implemented
     notes: Guards the overwrite-not-merge design against eating a hand edit.
+      Implemented and unit-tested in phase 5 (herdr-setup:tests/test_absorb.sh,
+      herdr-setup:tests/test_roundtrip.sh) -- cmd_absorb rewrites manifest/plugins.list
+      (source + requested_ref only, sorted by source, resolved_commit and managed_path
+      dropped) and manifest/config.toml (plugin-written blocks stripped) straight from
+      the host's plugins.json and config.toml on disk, refuses with exit 4 and writes
+      nothing when `git status --porcelain -- manifest/` reports anything, and refuses
+      with exit 2 rather than write a line containing $HOME or a /Users/ or /home/
+      path. test_roundtrip.sh drives absorb then apply against one unchanged fake host
+      and asserts zero plugin-install and zero reload-config calls, then a following
+      diff exits 0 -- this is phase 4's byte-exact anchor case by construction, since
+      the freshly-absorbed manifest/config.toml IS the host's own stripped content.
+      Left not-implemented on purpose, per phase 10
+      (herdr-setup:docs/superpowers/plans/2026-09-08-herdr-setup/10.yaml), which adds
+      the level reference and flips this row once CI runs the suite.
   - id: onboard-offers-stale-integration
     capability: Agent onboarding
     acceptance: onboard lists the agents present on the host, reports an integration

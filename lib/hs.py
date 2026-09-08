@@ -23,6 +23,24 @@ def die(message: str, code: int = 2) -> None:
     raise SystemExit(code)
 
 
+def _load_plugins_array(path: Path) -> list:
+    """Read plugins.json from disk as a list of entries.
+
+    Shared disk-read step for host_plugins and absorb_plugins: a missing file
+    means a host with no plugins yet ([]), not an error; anything that isn't
+    valid JSON or isn't a JSON array is fatal, naming the file, exit 2.
+    """
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as exc:
+        die(f"{path}: {exc}")
+    if not isinstance(data, list):
+        die(f"{path}: expected a JSON array of plugins")
+    return data
+
+
 def host_plugins(path: Path) -> int:
     """Print the host's installed plugins, one TSV row each, sorted by id.
 
@@ -30,17 +48,8 @@ def host_plugins(path: Path) -> int:
     `diff` keep working when the command line and the server disagree on the
     protocol version. A missing file means a host with no plugins, not an error.
     """
-    if not path.exists():
-        return 0
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (ValueError, OSError) as exc:
-        die(f"{path}: {exc}")
-    if not isinstance(data, list):
-        die(f"{path}: expected a JSON array of plugins")
-
     rows: list[tuple[str, str, str, str]] = []
-    for entry in data:
+    for entry in _load_plugins_array(path):
         try:
             plugin_id = entry["plugin_id"]
             source = entry["source"]
@@ -53,6 +62,34 @@ def host_plugins(path: Path) -> int:
 
     for row in sorted(rows, key=lambda r: r[0]):
         print("\t".join(row))
+    return 0
+
+
+def absorb_plugins(path: Path) -> int:
+    """Print manifest/plugins.list content from the host's plugins.json.
+
+    One "<source> <ref>" line per plugin, sorted by source, keeping only
+    source.owner/source.repo[/subdir] and source.requested_ref -- dropping
+    source.resolved_commit and source.managed_path entirely, since the
+    manifest pins a ref for every host to converge on, not one host's
+    installed commit or filesystem path (the latter would also leak a
+    real path into this public repository). Same disk-read contract as
+    host_plugins: a missing file is a host with no plugins yet (no output,
+    exit 0); anything malformed is fatal, naming the file, exit 2.
+    """
+    rows: list[tuple[str, str]] = []
+    for entry in _load_plugins_array(path):
+        try:
+            source = entry["source"]
+            src = f"{source['owner']}/{source['repo']}"
+            if source.get("subdir"):
+                src = f"{src}/{source['subdir']}"
+            rows.append((src, source["requested_ref"]))
+        except (KeyError, TypeError):
+            die(f"{path}: malformed plugin entry: {entry!r}")
+
+    for src, ref in sorted(rows, key=lambda r: r[0]):
+        print(f"{src} {ref}")
     return 0
 
 
@@ -138,6 +175,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("host-plugins", help="read the host's plugins.json from disk")
     p.add_argument("path", type=Path)
+    p = sub.add_parser(
+        "absorb-plugins", help="read the host's plugins.json, print manifest/plugins.list content"
+    )
+    p.add_argument("path", type=Path)
     sub.add_parser("herdr-error", help="detect a Herdr error response on stdin")
     p = sub.add_parser(
         "splice-config",
@@ -147,6 +188,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "host-plugins":
         return host_plugins(args.path)
+    if args.command == "absorb-plugins":
+        return absorb_plugins(args.path)
     if args.command == "herdr-error":
         return herdr_error()
     if args.command == "splice-config":

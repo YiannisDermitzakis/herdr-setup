@@ -681,6 +681,122 @@ hs_apply_config() {
   return "$rc"
 }
 
+# hs_absorb_header: the short header comment `absorb` writes atop both
+# manifest files it rewrites. Names the tool only -- no hostname, username,
+# or absolute path (AGENTS.md: "this repository is public"). Never fails.
+hs_absorb_header() {
+  cat <<'EOF'
+# Written by `herdr-setup absorb` from a host's own Herdr state.
+# Edit here, or run `herdr-setup absorb` again to refresh from a host;
+# `herdr-setup apply` pushes this content back out to a host.
+EOF
+}
+
+# hs_absorb_plugins <plugins-json>: prints the manifest/plugins.list
+# content `absorb` should write -- the header, then one "<source> <ref>"
+# line per host plugin, sorted by source, via hs_py's absorb-plugins
+# subcommand (same disk-read contract as hs_host_plugins: a missing file
+# is a host with no plugins yet, header only, exit 0; a malformed one is
+# fatal, exit 2, naming the file).
+hs_absorb_plugins() {
+  local plugins_json="$1"
+  hs_absorb_header
+  hs_py absorb-plugins "$plugins_json"
+}
+
+# hs_absorb_config <host-config>: prints the manifest/config.toml content
+# `absorb` should write -- the host config with every plugin-written block
+# stripped (hs_strip_plugin_blocks), and NOTHING else. Deliberately
+# carries no header, unlike hs_absorb_plugins: manifest/config.toml is not
+# a herdr-setup-only format the way plugins.list is (whose `#` lines
+# hs_manifest_plugins already treats as comments) -- it is spliced
+# byte-for-byte back into a real host's live Herdr config by
+# hs_apply_config, and a prepended header would (a) get written into the
+# operator's actual config.toml on every apply, permanently, and (b)
+# break the round trip's byte-exact steady-state case (journal
+# 8f3a0c6f882c / P4): the manifest would then differ from the host's own
+# stripped content by exactly those lines, forcing an unnecessary rewrite
+# and reload-config call, and re-anchoring every plugin block. A host with
+# no config.toml yet has nothing to absorb: no output, exit 0. A malformed
+# plugin block on the host is fatal, exit 2 (hs_strip_plugin_blocks names
+# the file, line and id) -- called as the condition of `if !`, never bare,
+# and the failure is reported with a hardcoded `return 2` rather than a
+# captured $?, matching the convention noted at hs_apply_config's own call
+# site (a `!`-negated condition's $? is the negation's status, not the
+# command's).
+hs_absorb_config() {
+  local host_file="$1"
+  if [ -e "$host_file" ]; then
+    if ! hs_strip_plugin_blocks "$host_file"; then
+      return 2
+    fi
+  fi
+  return 0
+}
+
+# hs_require_clean_manifest <repo-root>: absorb's whole safety net against
+# eating an uncommitted hand edit (the design doc: "It refuses to run when
+# the manifest has uncommitted changes", since absorb overwrites rather
+# than merges). Prints one stderr line per dirty path under manifest/,
+# from `git status --porcelain -- manifest/`, and returns 4 when there is
+# any; a clean tree, or no manifest/ directory at all yet (a first-ever
+# absorb), returns 0 with no output. A missing `git` is a different,
+# fail-closed failure mode (AGENTS.md: git is a prerequisite of this
+# tool) -- one stderr line, exit 2 -- kept distinguishable from the
+# dirty-manifest exit 4 by its own exit status.
+hs_require_clean_manifest() {
+  local repo_root="$1"
+
+  if ! command -v git >/dev/null 2>&1; then
+    echo "herdr-setup: git is not on PATH; install git, then retry." >&2
+    return 2
+  fi
+
+  local dirty
+  dirty="$(git -C "$repo_root" status --porcelain -- manifest/ 2>/dev/null | cut -c4-)"
+
+  if [ -n "$dirty" ]; then
+    echo "herdr-setup: absorb: manifest/ has uncommitted changes, refusing to overwrite:" >&2
+    local f
+    while IFS= read -r f; do
+      [ -z "$f" ] && continue
+      echo "  $f" >&2
+    done <<< "$dirty"
+    return 4
+  fi
+
+  return 0
+}
+
+# hs_absorb_check_no_home_path <file>: the last line of defense against
+# leaking a real path into this public repository. Returns 1 (dirty) if
+# any line in <file> contains this process's own $HOME, or a `/Users/` or
+# `/home/` substring, and 0 (clean) otherwise. Absorb is the one command
+# whose entire job is copying host state into the checkout, so it is the
+# most able of any command here to leak one -- this check runs on every
+# file absorb is about to write or print, regardless of --dry-run, and a
+# hit refuses the whole command (cmd_absorb decides what to say and what
+# exit status to use; this only decides pass/fail). Never writes, never
+# prints on its own.
+hs_absorb_check_no_home_path() {
+  local file="$1" home="${HOME:-}" line
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *"/Users/"*|*"/home/"*)
+        return 1
+        ;;
+    esac
+    if [ -n "$home" ]; then
+      case "$line" in
+        *"$home"*)
+          return 1
+          ;;
+      esac
+    fi
+  done < "$file"
+  return 0
+}
+
 # hs_diff_integrations: the integration section of `diff`. Informational
 # only -- integrations are never in the manifest (different hosts run
 # different agents), so this never affects the exit status and always
