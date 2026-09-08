@@ -118,8 +118,9 @@ host config up first. Herdr's own trust preview is shown for each install unless
 The reverse of `apply`, and the reason the tool is usable day to day: change Herdr
 interactively on any host, absorb, commit, apply elsewhere.
 
-It rewrites `manifest/plugins.list` from the host's `plugins.json`, keeping the
-source and the requested ref and dropping the resolved commit, and rewrites
+It rewrites `manifest/plugins.list` from the host's `plugins.json`, taking
+`source.owner`, `source.repo`, and `source.requested_ref` from each entry and
+dropping `source.resolved_commit` and `source.managed_path`, and rewrites
 `manifest/config.toml` from the host config with plugin-written blocks stripped. It
 touches only the checkout. Review with `git diff` and commit.
 
@@ -215,6 +216,29 @@ the CLI and confirms a resume.
   every socket call it would make, and makes none.
 - No secrets and no personal paths in the repository. Paths are derived at runtime.
 
+## Preflight: the Herdr version gate
+
+Upgrading the Herdr command line without restarting the server leaves the two
+speaking different protocol versions. The command line then refuses most calls with
+`protocol_mismatch` and exits 1. This is not a rare corner: a package manager
+upgrade produces it, and the machine this was written on sat in that state.
+
+The tool therefore runs a preflight before any command and reports which of three
+states the host is in:
+
+- **Matched.** Everything works.
+- **Mismatched.** `diff` still runs in full, because it reads `plugins.json` and
+  `config.toml` from disk and reads integration state through `herdr integration
+  status`, none of which cross the socket. `apply`, `onboard`, and `feed` stop with
+  one line naming the mismatch and the restart needed, rather than proceeding to a
+  confusing partial result.
+- **No server.** `diff` still runs. The rest stop.
+
+Every Herdr call checks its exit status, and no result is parsed from a failed call.
+Herdr answers a blocked call with a JSON error object rather than an empty result,
+so a parser that ignores the exit status sees zero agents and reports success having
+done nothing. That failure mode is the reason the gate exists.
+
 ## Portability
 
 bash 3.2 and Python 3.9 are the floor, which is what macOS ships. No `tomllib`, no
@@ -235,19 +259,28 @@ the plugins in the manifest.
 
 ## Test Plan
 
-Post-merge, operator-driven, on the machine that prompted this. It currently runs
-Herdr 0.9.0 on the command line against a 0.8.2 server, with a Claude integration at
-v8 where 0.9.0 wants v9, and 21 live Claude sessions.
+Post-merge, operator-driven, on the machine that prompted this. It runs Herdr 0.9.0
+on the command line against a 0.8.2 server, with a Claude integration at v8 where
+0.9.0 wants v9, and 21 live Claude sessions whose ids are already recorded in
+Herdr's session file.
 
-1. `herdr-setup diff` reports the host's two plugins as matching the manifest, and
-   reports the Claude integration as outdated.
-2. `herdr-setup onboard` lists the agents present, offers the Claude refresh from v8
-   to v9, installs it on acceptance, and offers nothing for agents that are absent.
-3. `herdr-setup feed` reports every live session and prints a persisted count equal
-   to the number of live agent panes.
+The order matters: a protocol mismatch blocks the socket-dependent commands, so the
+restart sits in the middle rather than at the end.
+
+1. `herdr-setup diff` runs in full despite the mismatch, reports the two plugins as
+   matching the manifest, reports the Claude integration as outdated at v8, and
+   names the protocol mismatch.
+2. `herdr-setup feed` refuses, naming the mismatch and the restart. This is the
+   check that the preflight gate works.
+3. `herdr-setup onboard` offers the Claude integration refresh from v8 to v9 and
+   installs it on acceptance, which needs no socket. It reports that the feed step
+   is deferred until after the restart.
 4. `herdr server stop`, then `herdr`. Every pane that held a session comes back
-   running its agent's resume command, and no pane comes back as a bare shell.
-5. `herdr-setup diff` on a second machine reports every manifest plugin as missing;
+   running its agent's resume command and no pane comes back as a bare shell. This
+   also proves that session records written by the older server survive the upgrade.
+5. `herdr-setup feed` now runs, and is a no-op or tops up any pane that came back
+   without a record.
+6. `herdr-setup diff` on a second machine reports every manifest plugin as missing;
    `apply` installs them; `diff` then reports a match.
 
 ## Decisions
@@ -262,4 +295,6 @@ v8 where 0.9.0 wants v9, and 21 live Claude sessions.
 | The runner confirms; the adapter never reports | A wrong session id resumes the wrong conversation. One place decides. |
 | Refs pinned to a branch or tag, never a commit | Herdr's `--ref` rejects a bare commit. The recorded resolved commit gives drift detection anyway. |
 | `absorb` refuses a dirty manifest | It overwrites rather than merges, so it must never eat an uncommitted hand edit. |
+| A preflight gate on the Herdr protocol version | An upgraded command line against an old server fails in a way that reads as "nothing to do" rather than as an error. |
+| `diff` reads configuration from disk, not through the command line | It stays useful in exactly the broken state an operator most wants to inspect. |
 | Ship Copilot unverified rather than omit it | The seam and the contract are the deliverable. An untested adapter that says so is more useful than an absent one. |
