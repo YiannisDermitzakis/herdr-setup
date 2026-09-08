@@ -283,6 +283,12 @@ restart sits in the middle rather than at the end.
 6. `herdr-setup diff` on a second machine reports every manifest plugin as missing;
    `apply` installs them; `diff` then reports a match.
 
+## Implementation Plans
+
+| Plan | Repo | File | Depends on |
+|------|------|------|------------|
+| 2026-09-08-herdr-setup | `YiannisDermitzakis/herdr-setup` | `2026-09-08-herdr-setup` | — |
+
 ## Decisions
 
 | Decision | Reasoning |

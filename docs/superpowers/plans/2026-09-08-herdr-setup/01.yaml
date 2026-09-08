@@ -1,0 +1,112 @@
+schema_version: 2
+phase:
+  number: 1
+  title: Foundation — entrypoint, preflight gate, fake-herdr test harness
+  tag: agentic
+  depends_on: []
+  tracking_issue: null
+  acceptance:
+  - socket-commands-refuse-under-mismatch
+tasks:
+- number: 1
+  title: Fake-herdr test harness
+  steps:
+  - id: P1.T1.S1
+    text: |
+      Add tests/test_harness.sh with FAILING plain-bash asserts (no bats; a
+      `fail()` helper plus a pass/fail counter, exit 1 on any failure) for a
+      fake herdr and a runner that do not exist yet:
+      (a) tests/helpers/fake-herdr appends its full argv as one line to
+      $FAKE_HERDR_LOG and prints the file $FAKE_HERDR_FIXTURES/<subcommand
+      words joined by ->>.json when it exists;
+      (b) with FAKE_HERDR_PROTOCOL_MISMATCH=1 it prints
+      {"id":"x","error":{"code":"protocol_mismatch","message":"client protocol
+      22 is newer than server protocol 20; restart the Herdr server before
+      using this command."}} and exits 1, for every subcommand EXCEPT
+      `integration status` and `--version`, which still succeed (this mirrors
+      real herdr 0.9.0 against a 0.8.2 server);
+      (c) tests/run.sh finds every tests/test_*.sh, runs each with HOME set to
+      a fresh mktemp -d and PATH prefixed by tests/helpers, and exits non-zero
+      if any fails.
+      Run: `bash tests/run.sh` -> expect failure (helpers absent).
+  - id: P1.T1.S2
+    text: |
+      Write tests/helpers/fake-herdr and tests/run.sh to satisfy those asserts.
+      Keep both POSIX-ish and bash 3.2 safe: no associative arrays, no mapfile,
+      no `local -n`. chmod +x both. Run `bash tests/run.sh` -> all green.
+- number: 2
+  title: Entrypoint and subcommand dispatch
+  steps:
+  - id: P1.T2.S1
+    text: |
+      Add tests/test_entrypoint.sh with FAILING asserts: `./herdr-setup` with
+      no arguments prints usage to stderr and exits 2; an unknown subcommand
+      exits 2 naming the subcommand; `--help` prints usage and exits 0; each of
+      diff, apply, absorb, onboard, feed is accepted (a stub body is fine and
+      must exit 0); `--dry-run` and `--yes` are accepted before or after the
+      subcommand and are visible to it as HS_DRY_RUN=1 / HS_YES=1.
+      Run `bash tests/run.sh` -> expect failure.
+  - id: P1.T2.S2
+    text: |
+      Write the `herdr-setup` bash entrypoint: `set -euo pipefail`, resolve the
+      repository root from $0 following symlinks, source lib/common.sh, parse
+      global flags in any position, dispatch to a `cmd_<name>` function, and
+      print usage listing the five subcommands with a one-line description
+      each. Add lib/common.sh with just the shared constants for now. chmod +x.
+      Run `bash tests/run.sh` -> green.
+- number: 3
+  title: Preflight version gate
+  steps:
+  - id: P1.T3.S1
+    text: |
+      Add tests/test_preflight.sh with FAILING asserts for two functions in
+      lib/common.sh. `hs_preflight` echoes exactly one of: `no-herdr` when
+      herdr is not on PATH; `no-server` when herdr is present but the socket
+      path from HERDR_SOCKET_PATH (default $HOME/.config/herdr/herdr.sock) does
+      not exist; `mismatched` when the fake herdr is in
+      FAKE_HERDR_PROTOCOL_MISMATCH mode; `matched` otherwise.
+      `hs_require_socket` returns 0 when matched, and otherwise prints ONE line
+      to stderr naming the state and the fix (for `mismatched`: that the Herdr
+      command line is newer than the running server and the server must be
+      restarted) and exits 3.
+      Run -> expect failure.
+  - id: P1.T3.S2
+    text: |
+      Implement both in lib/common.sh. Detect the mismatch by running
+      `herdr plugin list`, checking its exit status FIRST, then looking for
+      `"code":"protocol_mismatch"` in the output. Never parse a result from a
+      call whose exit status was non-zero. Add `hs_herdr_json` as the single
+      wrapper every later phase uses to call herdr: it runs the command,
+      returns non-zero on a failed exit status or on an `"error"` key in the
+      output, and prints the error message to stderr.
+      Run `bash tests/run.sh` -> green.
+state:
+  steps:
+    P1.T1.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P1.T1.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P1.T2.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P1.T2.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P1.T3.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P1.T3.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+  completion:
+    at: null
+    note: null
+    observed_prs: []

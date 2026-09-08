@@ -1,0 +1,78 @@
+schema_version: 2
+phase:
+  number: 9
+  title: onboard
+  tag: agentic
+  depends_on:
+  - 6
+  - 7
+  - 8
+  tracking_issue: null
+  acceptance:
+  - onboard-offers-stale-integration
+tasks:
+- number: 1
+  title: Agent detection and integration state
+  steps:
+  - id: P9.T1.S1
+    text: |
+      Add tests/test_onboard_detect.sh with FAILING asserts for
+      `hs_detect_agents`: it prints one
+      `<target><TAB><how><TAB><state><TAB><detail>` line per agent, where
+      `how` is `path` when the agent's command is on PATH, `config` when only
+      its configuration directory exists, and `both`; `state` is `absent`,
+      `current` or `outdated`, parsed from `herdr integration status`, with
+      `detail` carrying both versions for an outdated one. Agents neither on
+      PATH nor with a configuration directory are omitted entirely. Drive the
+      list of agents and their command and directory from a table in
+      lib/common.sh covering at least claude, codex, opencode, copilot,
+      cursor and hermes.
+      Run -> expect failure.
+  - id: P9.T1.S2
+    text: |
+      Implement hs_detect_agents. Read the target names from
+      `herdr integration status` itself rather than hard-coding the full list,
+      so a Herdr release that adds an agent needs no change here; the local
+      table supplies only the command name and configuration directory used for
+      detection. Run `bash tests/run.sh` -> green.
+- number: 2
+  title: The offer, the install, and the hand-off to feed
+  steps:
+  - id: P9.T2.S1
+    text: |
+      Add tests/test_onboard_offer.sh with FAILING asserts: onboard prints the
+      detection table, then for each agent whose state is `absent` or
+      `outdated` asks a single y/n question naming the agent and, for an
+      outdated one, both versions; answering y runs
+      `herdr integration install <target>` exactly once; answering n runs
+      nothing; a non-interactive run prints the table and exits 0 having
+      installed nothing unless --yes is given, in which case it installs every
+      offered integration; nothing is written for an agent whose state is
+      `current`; the run refuses with exit 3 under a mismatched preflight; and
+      after any successful install it invokes feed for exactly those agents.
+      Run -> expect failure.
+  - id: P9.T2.S2
+    text: |
+      Implement cmd_onboard. Run `bash tests/run.sh` -> green.
+state:
+  steps:
+    P9.T1.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P9.T1.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P9.T2.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P9.T2.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+  completion:
+    at: null
+    note: null
+    observed_prs: []

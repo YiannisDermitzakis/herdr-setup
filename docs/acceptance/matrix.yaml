@@ -1,0 +1,105 @@
+# Acceptance matrix — the registry of business-level acceptance tests and
+# where each is verified. Rendered by `fr acceptance report`; gated in CI by
+# .github/workflows/acceptance-report.yml (`fr acceptance check`).
+#
+# Row schema:
+#   id:         kebab-case, stable
+#   capability: grouping (tables render in first-seen order)
+#   acceptance: the business-level statement
+#   origin:     list of "repo:path[#anchor]" refs (spec §, design doc)
+#   levels:     unit/api/int/ui → list of "repo:path[#Lline]" test refs
+#               ([] = level does not verify this row)
+#   status:     ci | scheduled | skipped | not-implemented | failing
+#     ci               automated on every PR — cannot drift silently
+#     scheduled        automated on cron/path triggers
+#     skipped          verification exists but does not run in CI (proven
+#                      live once / manual walk) → CI warning, backfill owed
+#     not-implemented  no test or surface exists yet → CI warning
+#     failing          known red → `fr acceptance check` exits 2, CI FAILS
+#   notes:      evidence detail, drift context
+#
+# Rule: .claude/rules/acceptance-matrix.md — update rows in the SAME PR that
+# changes a Test Plan, adds tests, ships a surface, or touches CI.
+# Add rows with `fr acceptance add` (schema-validated append). Keep `rows:`
+# as the LAST top-level key — `add` appends to the end of this file.
+
+org: YiannisDermitzakis
+repo: herdr-setup
+rows:
+  - id: diff-runs-under-protocol-mismatch
+    capability: Version gate
+    acceptance: diff reports plugins, config and integration state in full even when
+      the Herdr command line and the running server speak different protocol versions.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    levels: {}
+    status: not-implemented
+    notes: Reads plugins.json and config.toml from disk; only integration state comes
+      from the CLI, which stays unblocked.
+  - id: socket-commands-refuse-under-mismatch
+    capability: Version gate
+    acceptance: apply, absorb, onboard and feed stop with one line naming the protocol
+      mismatch and the restart needed, instead of parsing a JSON error object as an
+      empty result.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    levels: {}
+    status: not-implemented
+    notes: The failure this guards against reads as success having done nothing.
+  - id: diff-detects-plugin-drift
+    capability: Configuration sync
+    acceptance: diff reports each manifest plugin as missing, matching its pinned ref,
+      or moved, and lists host plugins the manifest does not name as unmanaged.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    levels: {}
+    status: not-implemented
+    notes: Moved is decided by resolving the ref with git ls-remote against the commit
+      Herdr recorded.
+  - id: apply-reproduces-manifest
+    capability: Configuration sync
+    acceptance: On a host missing every manifest plugin, apply installs them at their
+      pinned refs and a following diff reports a match.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    levels: {}
+    status: not-implemented
+    notes: The second-machine case the tool exists for.
+  - id: config-splice-preserves-plugin-blocks
+    capability: Configuration sync
+    acceptance: apply updates the operator's own config lines while leaving plugin-written
+      marked blocks exactly where they were.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    levels: {}
+    status: not-implemented
+    notes: A plugin owns its block; the tool must never eat it.
+  - id: absorb-apply-roundtrip-is-noop
+    capability: Configuration sync
+    acceptance: absorb followed by apply against an unchanged host makes no further
+      change, and absorb refuses to run when the manifest has uncommitted edits.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    levels: {}
+    status: not-implemented
+    notes: Guards the overwrite-not-merge design against eating a hand edit.
+  - id: onboard-offers-stale-integration
+    capability: Agent onboarding
+    acceptance: onboard lists the agents present on the host, reports an integration
+      Herdr calls outdated with both versions, and installs a refresh only when accepted.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    levels: {}
+    status: not-implemented
+    notes: Different hosts run different agents, so this is per-host and interactive.
+  - id: feed-reports-live-sessions
+    capability: Agent onboarding
+    acceptance: feed reports a session id for every live agent pane and Herdr persists
+      a record per pane; a following server restart brings each pane back running its
+      agent's resume command rather than a bare shell.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    levels: {}
+    status: not-implemented
+    notes: The end-to-end reason the tool exists. Verified live post-merge; Copilot
+      unverified until a host with the CLI runs it.

@@ -1,0 +1,71 @@
+schema_version: 2
+phase:
+  number: 10
+  title: Documentation, seeded manifest, and CI
+  tag: agentic
+  depends_on:
+  - 4
+  - 5
+  - 9
+  tracking_issue: null
+tasks:
+- number: 1
+  title: README and a seeded manifest
+  steps:
+  - id: P10.T1.S1
+    text: |
+      Add tests/test_public_hygiene.sh with FAILING asserts over every tracked
+      file except tests/fixtures: no line contains a home directory path
+      (`/Users/` or `/home/`), an email address, or the string `derio`; and
+      manifest/plugins.list parses cleanly through hs_manifest_plugins.
+      Run -> expect failure if any file offends, and to prove the test runs.
+  - id: P10.T1.S2
+    text: |
+      Rewrite README.md: what the tool is, the external-checkout model and why
+      it copies rather than symlinks, install (clone it, put the entrypoint on
+      PATH), the five subcommands with an example of each, the adapter seam
+      pointing at docs/adapters.md, the Copilot adapter's unverified status,
+      and the dependency floor. Seed manifest/plugins.list with
+      kryptamine/herdr-auto-title at v0.3.3 and
+      ezcorp-org/herdr-pc-ram-and-cpu-usage-overlay at main, and
+      manifest/config.toml with a minimal `[ui]` section. Run -> green.
+- number: 2
+  title: Continuous integration
+  steps:
+  - id: P10.T2.S1
+    text: |
+      Add .github/workflows/ci.yml running `bash tests/run.sh` on
+      ubuntu-latest and macos-latest, plus a shellcheck job over the
+      entrypoint, lib/*.sh and adapters/*, and `python3 -m compileall lib
+      adapters`. Fix every shellcheck finding rather than suppressing it,
+      except where a suppression is justified by a comment naming the reason.
+      Run the same commands locally -> all green.
+  - id: P10.T2.S2
+    text: |
+      Update docs/acceptance/matrix.yaml: move every row this plan implemented
+      from `not-implemented` to `ci`, adding the level reference for the test
+      file that proves it, except feed-reports-live-sessions, which stays
+      `skipped` with a note that the live half is the post-merge test plan.
+      Run `fr acceptance check` -> clean.
+state:
+  steps:
+    P10.T1.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P10.T1.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P10.T2.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P10.T2.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+  completion:
+    at: null
+    note: null
+    observed_prs: []

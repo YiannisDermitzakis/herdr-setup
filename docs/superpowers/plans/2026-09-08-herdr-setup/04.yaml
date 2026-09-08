@@ -1,0 +1,82 @@
+schema_version: 2
+phase:
+  number: 4
+  title: apply
+  tag: agentic
+  depends_on:
+  - 2
+  - 3
+  tracking_issue: null
+  acceptance:
+  - apply-reproduces-manifest
+  - config-splice-preserves-plugin-blocks
+tasks:
+- number: 1
+  title: Plugin installation
+  steps:
+  - id: P4.T1.S1
+    text: |
+      Add tests/test_apply_plugins.sh with FAILING asserts, reading the fake
+      herdr call log: a `missing` plugin causes exactly one
+      `plugin install <source> --ref <ref>` call; a `moved` plugin causes the
+      same; an `ok` plugin causes none; `--yes` adds `--yes` to the call and
+      its absence does not; `--dry-run` causes no call at all but prints each
+      command it would run; the run stops with exit 3 and makes no call when
+      the preflight is `mismatched`.
+      Run -> expect failure.
+  - id: P4.T1.S2
+    text: |
+      Implement the plugin half of cmd_apply on top of hs_compare_plugins from
+      phase 2. Call hs_require_socket first. Run `bash tests/run.sh` -> green.
+- number: 2
+  title: Config splice and atomic write
+  steps:
+  - id: P4.T2.S1
+    text: |
+      Add tests/test_apply_config.sh with FAILING asserts: after apply, the
+      host config contains the manifest's operator lines AND every
+      plugin-written block unchanged and in its original relative order; a
+      backup of the previous content exists next to it; the write went through
+      a temporary file in the same directory and a rename, so no partial file
+      is ever observable; `herdr server reload-config` is called exactly once
+      and only when the config actually changed; `--dry-run` writes nothing and
+      makes no call. Cover the case where the host config does not exist yet.
+      Run -> expect failure.
+  - id: P4.T2.S2
+    text: |
+      Implement hs_splice_config and the config half of cmd_apply: strip the
+      host's plugin blocks, replace the remainder with the manifest content,
+      re-append the extracted blocks in their original order, write to
+      `<config>.herdr-setup-tmp.$$` and rename over the target.
+      Run `bash tests/run.sh` -> green.
+  - id: P4.T2.S3
+    text: |
+      OPTIONAL refactor: if backup naming and the temp-and-rename dance are
+      duplicated between here and a future writer, extract `hs_write_atomic`
+      into lib/common.sh. Stay green. Skip if nothing is duplicated.
+state:
+  steps:
+    P4.T1.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P4.T1.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P4.T2.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P4.T2.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P4.T2.S3:
+      state: ' '
+      ticked_at: null
+      note: null
+  completion:
+    at: null
+    note: null
+    observed_prs: []

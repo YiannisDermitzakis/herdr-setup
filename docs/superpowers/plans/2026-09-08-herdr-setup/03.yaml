@@ -1,0 +1,77 @@
+schema_version: 2
+phase:
+  number: 3
+  title: Config block splitter, and `diff` for config and integrations
+  tag: agentic
+  depends_on:
+  - 1
+  tracking_issue: null
+  acceptance:
+  - config-splice-preserves-plugin-blocks
+  - diff-runs-under-protocol-mismatch
+tasks:
+- number: 1
+  title: Plugin-written block splitter
+  steps:
+  - id: P3.T1.S1
+    text: |
+      Add tests/test_blocks.sh with FAILING asserts for two functions.
+      `hs_strip_plugin_blocks <file>` prints the file with every region from a
+      line matching `^# --- added by <id>` through the following
+      `^# --- end <id> ---` removed, inclusive. `hs_extract_plugin_blocks
+      <file>` prints only those regions, in order. Cover: no markers at all;
+      two different plugins' blocks; a begin marker with no matching end (fatal
+      error naming the plugin id, exit 2); an end marker with no begin (same);
+      content after the last block is preserved. Use a fixture config.toml
+      carrying an operator section plus a `[ui.sidebar.spaces]` block written
+      by a plugin.
+      Run -> expect failure.
+  - id: P3.T1.S2
+    text: |
+      Implement both with awk or a bash read loop. Match the id in the begin
+      marker against the id in the end marker rather than accepting any end
+      marker. Run `bash tests/run.sh` -> green.
+- number: 2
+  title: diff for config and integrations
+  steps:
+  - id: P3.T2.S1
+    text: |
+      Add tests/test_diff_config.sh with FAILING asserts: when the host config
+      with blocks stripped equals manifest/config.toml, the config section
+      reports a match and contributes 0 to the exit status; when they differ it
+      prints a unified diff labelled `host` and `manifest` and contributes 1;
+      the integrations section lists each installed integration from
+      `herdr integration status` as current or outdated, showing both versions
+      for an outdated one, and never affects the exit status. Fixture the
+      integration output as the real command formats it, for example
+      `claude: outdated (v8 < v9) (/path/to/hook)` and
+      `codex: current (v8) (/path)`.
+      Run -> expect failure.
+  - id: P3.T2.S2
+    text: |
+      Implement the config and integration sections of cmd_diff, and a
+      `hs_preflight_banner` that prints the preflight state as the first line
+      of diff output so a mismatched host says so up front.
+      Run `bash tests/run.sh` -> green.
+state:
+  steps:
+    P3.T1.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P3.T1.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P3.T2.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P3.T2.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+  completion:
+    at: null
+    note: null
+    observed_prs: []
