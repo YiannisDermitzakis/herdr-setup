@@ -364,8 +364,8 @@ Anything later touching manifest/config.toml (documentation, a future `--annotat
 keep this asymmetry in mind: config.toml is host-file-shaped and gets spliced verbatim; plugins.list is
 herdr-setup-shaped and is safe to decorate.
 
-<!-- fr:journal kind=finding scope=plan id=4be56ee4550b created=2026-09-08T11:40:43 phase=5 state=open -->
-### 4be56ee4550b · finding [open] · absorb does not gate on hs_require_socket, contrary to the socket-commands-refuse-under-mismatch row's wording (phase 5)
+<!-- fr:journal kind=finding scope=plan id=4be56ee4550b created=2026-09-08T11:40:43 phase=5 state=fixed -->
+### 4be56ee4550b · finding [fixed] · absorb does not gate on hs_require_socket, contrary to the socket-commands-refuse-under-mismatch row's wording (phase 5)
 
 The acceptance-matrix row socket-commands-refuse-under-mismatch says "apply, absorb, onboard and
 feed stop with one line naming the protocol mismatch". The design doc's own Commands > absorb section and
@@ -651,8 +651,8 @@ config that did not exist before gets 0644. Tested with a 0640 host config, and 
 9. HS_DRY_RUN and HS_YES were read unguarded, so sourcing lib/common.sh under
    `set -u` without them died. Every read is `${VAR:-0}` now.
 
-<!-- fr:journal kind=finding scope=plan id=85aeab2b149b created=2026-09-08T12:37:44 state=open -->
-### 85aeab2b149b · finding [open] · Minor 10 -- a host config with no trailing newline still causes one extra write; deliberately not fixed
+<!-- fr:journal kind=finding scope=plan id=85aeab2b149b created=2026-09-08T12:37:44 state=refuted -->
+### 85aeab2b149b · finding [refuted] · Minor 10 -- a host config with no trailing newline still causes one extra write; deliberately not fixed
 
 Reviewer's minor 10, left open with reasoning rather than fixed.
 
@@ -668,6 +668,12 @@ without a newline" through the splice as a separate signal and letting the host'
 shape override the manifest's on that one byte -- a special case with no principle
 behind it, in the function that has to stay byte-exact for the steady-state anchor
 guarantee (journal 8f3a0c6f882c).
+
+**Orchestrator, settling this:** agreed, and refuted rather than deferred. The
+behaviour is real but it is not a defect: it is the manifest correcting drift, which
+is the tool's whole job. It is now written into the design doc under "One deliberate
+normalisation", so it is specified behaviour rather than an accident, and a later
+phase that wants it changed is changing the spec, not fixing a bug.
 
 If a later phase disagrees, the place to change it is splice_config in lib/hs.py,
 where the trailing newline is added, and the test to write first is one that

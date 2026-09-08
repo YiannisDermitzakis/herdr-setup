@@ -239,6 +239,18 @@ the CLI and confirms a resume.
   every socket call it would make, and makes none.
 - No secrets and no personal paths in the repository. Paths are derived at runtime.
 
+### One deliberate normalisation
+
+The manifest is the source of truth for the operator's own configuration lines,
+and what `apply` writes always ends with a newline. A host file whose last line
+has none therefore differs from the spliced content on the first `apply`, takes
+one write and one `reload-config`, and matches from then on. That is drift the
+manifest corrects, like any other. The alternative is to carry "did the host end
+without a newline" through the splice as a separate signal and let the host's
+shape override the manifest's on that one byte, which is a special case with no
+principle behind it, inside the one function that has to stay byte-exact for the
+steady-state anchor guarantee.
+
 ## Preflight: the Herdr version gate
 
 Upgrading the Herdr command line without restarting the server leaves the two
