@@ -42,7 +42,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      # Pinned to an exact tag on purpose: astral-sh/setup-uv publishes no
+      # floating `v10` major tag (its major tags stop at v7), so `@v10` does
+      # not resolve and every job fails in three seconds at "Set up job".
+      - uses: astral-sh/setup-uv@v10.0.1
       - name: Confirm which bash is actually running this
         run: ${{ matrix.bash }} --version
       - name: tests/run.sh
@@ -53,7 +56,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.0.1
       - name: pytest (uv-pinned dev group)
         run: uv run --group dev pytest
       - name: ruff check
