@@ -7,8 +7,8 @@ it and carry no content of their own.
 ## What this repository is
 
 A host-side tool for reproducing and syncing a Herdr configuration across machines.
-It is a bash entrypoint plus a small set of Python helpers. It has no build step and
-no runtime dependencies beyond what Herdr's own integrations already require.
+It is a bash entrypoint plus a small set of Python helpers. It has no build step.
+Its prerequisites are Herdr, git, and uv.
 
 ## Hard rules
 
@@ -26,5 +26,23 @@ no runtime dependencies beyond what Herdr's own integrations already require.
 
 ## Portability
 
-Targets macOS and Linux. bash 3.2 (the macOS system bash) and Python 3.9 are the
-floor; do not use `tomllib`, associative arrays, or `mapfile`.
+Targets macOS and Linux.
+
+**Shell.** bash 3.2 is the floor, because that is what macOS ships. No associative
+arrays, no `mapfile`, no `local -n`. Never name a local `status`: it is read-only
+in zsh and breaks anyone who sources the library there.
+
+**Python comes from uv, not from the host.** Every Python file carries PEP 723
+inline metadata naming the interpreter it needs, and a
+`#!/usr/bin/env -S uv run --script` shebang. uv resolves and if necessary
+downloads that interpreter, so every host runs the same one. Write modern Python;
+the version in `pyproject.toml` is the contract.
+
+**Keep the interpreter off hot paths.** A uv start costs roughly 265ms against
+about 84ms for a bare system python3. Anything that runs once per Herdr call,
+such as the error parsing in `hs_herdr_json`, stays in shell. Structured work is
+batched behind a subcommand of `lib/hs.py`, so one start serves a whole command.
+Call it through `hs_py`, which is the only sanctioned door to the interpreter.
+
+**Development tools are pinned too**: `uv run --group dev pytest` and
+`uv run --group dev ruff check`.

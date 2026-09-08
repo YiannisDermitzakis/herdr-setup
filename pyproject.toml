@@ -1,0 +1,26 @@
+# herdr-setup is a collection of scripts, not an installable package. This file
+# exists so `uv` can pin the interpreter and the development tools, which is the
+# same guarantee the tool itself offers its users: the same versions everywhere.
+[project]
+name = "herdr-setup"
+version = "0.1.0"
+description = "Reproduce and sync a Herdr setup across machines."
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.9"]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

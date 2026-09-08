@@ -45,9 +45,9 @@ tasks:
       Run -> expect failure.
   - id: P2.T2.S2
     text: |
-      Implement hs_host_plugins as a small python3 helper invoked from bash
-      (python3 is already required by Herdr's own hooks; jq is not). Target
-      python 3.9: no match statement, no tomllib.
+      Implement hs_host_plugins on top of `hs_py host-plugins`, a subcommand
+      of the pinned PEP 723 uv script lib/hs.py. jq is not available and must
+      not be assumed.
       Run `bash tests/run.sh` -> green.
 - number: 3
   title: diff for plugins

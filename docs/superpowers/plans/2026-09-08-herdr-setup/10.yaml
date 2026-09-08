@@ -36,8 +36,9 @@ tasks:
     text: |
       Add .github/workflows/ci.yml running `bash tests/run.sh` on
       ubuntu-latest and macos-latest, plus a shellcheck job over the
-      entrypoint, lib/*.sh and adapters/*, and `python3 -m compileall lib
-      adapters`. Fix every shellcheck finding rather than suppressing it,
+      entrypoint, lib/*.sh and adapters/*, and, through the pinned dev group,
+      `uv run --group dev ruff check` and `uv run --group dev ruff format
+      --check` over lib/ and adapters/. Fix every shellcheck finding rather than suppressing it,
       except where a suppression is justified by a comment naming the reason.
       Run the same commands locally -> all green.
   - id: P10.T2.S2

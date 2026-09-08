@@ -111,20 +111,21 @@ hs_herdr_json() {
   output="$(herdr "$@" 2>&1)"
   rc=$?
 
+  # Extract the human-readable message without starting an interpreter: this
+  # runs on every herdr call, and a uv start would dominate a command that makes
+  # twenty of them. Falls back to the raw output when the shape is unfamiliar.
   message=""
-  if [ -n "$output" ]; then
-    message="$(printf '%s' "$output" | python3 -c '
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except ValueError:
-    data = None
-if isinstance(data, dict):
-    err = data.get("error")
-    if isinstance(err, dict):
-        print(err.get("message", ""))
-' 2>/dev/null)"
-  fi
+  case "$output" in
+    *'"error"'*)
+      message="$(printf '%s' "$output" \
+        | sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        | sed 's/\\n/ /g' \
+        | head -1)"
+      if [ -z "$message" ]; then
+        message="$output"
+      fi
+      ;;
+  esac
 
   if [ "$rc" -ne 0 ] || [ -n "$message" ]; then
     echo "herdr-setup: herdr $*: ${message:-$output}" >&2
@@ -202,48 +203,7 @@ hs_host_plugins() {
   if [ ! -e "$file" ]; then
     return 0
   fi
-
-  python3 - "$file" <<'PYEOF'
-import json
-import sys
-
-path = sys.argv[1]
-
-try:
-    with open(path) as fh:
-        data = json.load(fh)
-except (ValueError, OSError) as exc:
-    sys.stderr.write("herdr-setup: %s: %s\n" % (path, exc))
-    sys.exit(2)
-
-if not isinstance(data, list):
-    sys.stderr.write("herdr-setup: %s: expected a JSON array of plugins\n" % path)
-    sys.exit(2)
-
-rows = []
-for entry in data:
-    try:
-        plugin_id = entry["plugin_id"]
-        source = entry["source"]
-        owner = source["owner"]
-        repo = source["repo"]
-        requested_ref = source["requested_ref"]
-        resolved_commit = source["resolved_commit"]
-    except (KeyError, TypeError):
-        sys.stderr.write("herdr-setup: %s: malformed plugin entry: %r\n" % (path, entry))
-        sys.exit(2)
-
-    src = "%s/%s" % (owner, repo)
-    subdir = source.get("subdir")
-    if subdir:
-        src = "%s/%s" % (src, subdir)
-
-    rows.append((plugin_id, src, requested_ref, resolved_commit))
-
-rows.sort(key=lambda row: row[0])
-for plugin_id, src, requested_ref, resolved_commit in rows:
-    print("%s\t%s\t%s\t%s" % (plugin_id, src, requested_ref, resolved_commit))
-PYEOF
+  hs_py host-plugins "$file"
 }
 
 # hs_resolve_ref <source> <ref>: resolves <ref> against the GitHub repo
@@ -350,4 +310,20 @@ hs_diff_plugins() {
 
   rm -f "$manifest_tmp" "$host_tmp" "$sources_tmp"
   return "$rc"
+}
+
+# Directory holding this library, so the Python helper is found however the
+# entrypoint was invoked (PATH, symlink, or an explicit path).
+HS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Run the pinned Python helper. uv resolves the interpreter named in the
+# script's own PEP 723 header, so every host runs the same version regardless of
+# what it happens to have installed. Keep this off hot paths: a uv start costs
+# roughly a quarter of a second.
+hs_py() {
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "herdr-setup: uv is not on PATH; install it from https://docs.astral.sh/uv/ and retry." >&2
+    return 2
+  fi
+  uv run --quiet --script "$HS_LIB_DIR/hs.py" "$@"
 }

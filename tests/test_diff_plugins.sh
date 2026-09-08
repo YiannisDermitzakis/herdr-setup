@@ -201,6 +201,7 @@ sandbox="$work/sandbox"
 mkdir -p "$sandbox/lib" "$sandbox/manifest"
 cp "$repo_root/herdr-setup" "$sandbox/herdr-setup"
 cp "$repo_root/lib/common.sh" "$sandbox/lib/common.sh"
+cp "$repo_root/lib/hs.py" "$sandbox/lib/hs.py"
 chmod +x "$sandbox/herdr-setup"
 echo "kryptamine/herdr-auto-title   v0.3.3" > "$sandbox/manifest/plugins.list"
 

@@ -29,8 +29,10 @@ tasks:
       Run `bash tests/run.sh` -> expect failure.
   - id: P6.T1.S2
     text: |
-      Implement discover and probe in lib/feed.py. Standard library only,
-      python 3.9 compatible. Run `bash tests/run.sh` -> green.
+      Implement discover and probe in lib/feed.py. Standard library only. Make
+      it a PEP 723 uv script: the `#!/usr/bin/env -S uv run --script` shebang
+      and the `# /// script` header, exactly as lib/hs.py has them, and invoke
+      it through uv. Run `bash tests/run.sh` -> green.
 - number: 2
   title: Pane gathering and resolve
   steps:

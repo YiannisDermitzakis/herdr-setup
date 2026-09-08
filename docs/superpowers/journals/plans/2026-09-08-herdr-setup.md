@@ -103,3 +103,8 @@ phase 10 (P10.T2.S2) does the bulk flip to `ci` with level references, once
 the phase-2 coverage and point at phase 10 as the flip point -- don't flip them
 in phase 3 either; just add a similar note when phase 3's config/integration
 tests land.
+
+<!-- fr:journal kind=decision scope=plan id=0e3bba1e3da0 created=2026-09-08T10:32:34 phase=2 -->
+### 0e3bba1e3da0 · decision · Python comes from uv, pinned per script, not from the host (phase 2)
+
+Operator decision, taken after phase 2. The portability floor was system bash 3.2 plus whatever python3 the host had, at least 3.9, stdlib only. It is now: bash 3.2 for the shell, and for Python a uv-resolved interpreter named in each file's PEP 723 header, with a '#!/usr/bin/env -S uv run --script' shebang. uv joins Herdr and git as a prerequisite and also pins the dev tools (pytest, ruff) through a dependency group in pyproject.toml. Rationale: the tool's purpose is making hosts identical, so depending on whichever interpreter a host happens to carry works against it; and it matches how the operator already installs fr and browser-harness. Measured cost on this host: a uv start is about 265ms against about 84ms for a bare system python3, so the interpreter must stay off hot paths. hs_herdr_json runs once per Herdr call and now parses the error line in shell with sed; all structured work is batched behind subcommands of lib/hs.py, reached only through hs_py, which is also where the uv-missing check lives. tomllib is now available but config parsing stays line-based, because plugin-written blocks and the operator's formatting must survive byte for byte and a TOML round trip would discard both. Phases 6, 8 and 10 were rewritten to match; phase 2's own step text was corrected to describe what now exists.

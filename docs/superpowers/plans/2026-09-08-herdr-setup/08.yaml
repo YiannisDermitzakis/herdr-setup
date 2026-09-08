@@ -27,8 +27,8 @@ tasks:
       Run -> expect failure.
   - id: P8.T1.S2
     text: |
-      Write adapters/opencode using python3 sqlite3 with a `file:...?mode=ro`
-      URI, chmod +x. Run `bash tests/run.sh` -> green.
+      Write adapters/opencode as a PEP 723 uv script (same shebang and header
+      as lib/hs.py) using sqlite3 with a `file:...?mode=ro` URI, chmod +x. Run `bash tests/run.sh` -> green.
 - number: 2
   title: Copilot CLI adapter, shipped unverified
   steps:

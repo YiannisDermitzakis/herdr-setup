@@ -28,8 +28,8 @@ Claude Code sessions in exactly that state.
 
 ## Non-goals
 
-- Installing Herdr. That is a one-time, host-specific, often privileged act. The
-  tool checks for Herdr and stops with an install hint if it is absent.
+- Installing Herdr or uv. Both are one-time, host-specific acts. The tool checks
+  for each and stops with an install hint when one is missing.
 - Uninstalling or disabling anything. The tool adds and updates only.
 - A daemon, a watcher, or any background process.
 - Merging two hosts' configurations. Last write wins, and git shows what changed.
@@ -241,10 +241,26 @@ done nothing. That failure mode is the reason the gate exists.
 
 ## Portability
 
-bash 3.2 and Python 3.9 are the floor, which is what macOS ships. No `tomllib`, no
-associative arrays, no `mapfile`. Config parsing is line-based, which is enough for
-splicing marked blocks and never needs a TOML parser. macOS and Linux only, matching
-the plugins in the manifest.
+The shell floor is bash 3.2, because that is what macOS ships: no associative
+arrays, no `mapfile`, no `local -n`.
+
+Python does not come from the host. Every Python file carries PEP 723 inline
+metadata naming the interpreter it needs, and uv resolves and if necessary
+downloads it. Two hosts therefore run the same interpreter whatever they happen
+to have installed, which is the same guarantee the tool already offers for
+plugins and configuration. uv joins Herdr and git as a prerequisite, and it also
+pins the development tools.
+
+That costs one interpreter start per invocation: roughly 265 milliseconds against
+about 84 for a bare system python3, measured on the host this was written for. So
+Python stays off hot paths. `hs_herdr_json` runs on every Herdr call and parses
+its error message in shell. Structured work is batched behind subcommands of
+`lib/hs.py`, so one start serves a whole command rather than one per call.
+
+Config parsing stays line-based even though a modern interpreter brings
+`tomllib`, because the tool must preserve plugin-written blocks and the
+operator's own formatting byte for byte, and a TOML round trip would discard
+both. macOS and Linux only, matching the plugins in the manifest.
 
 ## Testing
 
@@ -303,4 +319,6 @@ restart sits in the middle rather than at the end.
 | `absorb` refuses a dirty manifest | It overwrites rather than merges, so it must never eat an uncommitted hand edit. |
 | A preflight gate on the Herdr protocol version | An upgraded command line against an old server fails in a way that reads as "nothing to do" rather than as an error. |
 | `diff` reads configuration from disk, not through the command line | It stays useful in exactly the broken state an operator most wants to inspect. |
+| Python is pinned by uv rather than taken from the host | The tool's purpose is making hosts identical; depending on whichever interpreter a host happens to have is at odds with that. It also matches how the operator already installs their other tools. |
+| The interpreter stays off hot paths | A uv start is about three times a bare python3 start, which a command making twenty Herdr calls would feel. Shell parses the error line; Python is batched behind one entry point. |
 | Ship Copilot unverified rather than omit it | The seam and the contract are the deliverable. An untested adapter that says so is more useful than an absent one. |
