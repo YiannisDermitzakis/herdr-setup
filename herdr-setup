@@ -85,17 +85,26 @@ fi
 export HS_DRY_RUN
 export HS_YES
 
-# cmd_diff: read-only. Each section below reports its own drift and
-# contributes to the overall exit status; none of them stop early, so one
-# section's error doesn't hide another section's report. A section is run
-# with `|| section_rc=$?` (never as a bare statement) so a nonzero exit
-# doesn't trip this script's `set -e` before the status is captured.
+# cmd_diff: read-only. hs_preflight_banner prints first, so a mismatched
+# or serverless host says so up front. Each section below reports its own
+# drift and contributes to the overall exit status; none of them stop
+# early on a soft failure, so one section's drift doesn't hide another
+# section's report. A section is run with `|| section_rc=$?` (never as a
+# bare statement) so a nonzero exit doesn't trip this script's `set -e`
+# before the status is captured. The integration section never affects
+# the exit status at all (informational only -- integrations aren't in
+# the manifest), so it is invoked with `|| true` and never contributes to
+# $rc.
 #
 # Exit status: 2 if any section hit a hard parse error (missing/malformed
-# manifest or host state), else 1 if anything drifted, else 0.
+# manifest or host state) -- which also skips every section after it --
+# else 1 if anything drifted, else 0.
 cmd_diff() {
   local rc=0
   local plugins_rc=0
+  local config_rc=0
+
+  hs_preflight_banner
 
   hs_diff_plugins "$HS_ROOT/manifest/plugins.list" "$(hs_plugins_json_path)" || plugins_rc=$?
 
@@ -105,6 +114,17 @@ cmd_diff() {
   if [ "$plugins_rc" -ne 0 ]; then
     rc=1
   fi
+
+  hs_diff_config "$(hs_config_toml_path)" "$HS_ROOT/manifest/config.toml" || config_rc=$?
+
+  if [ "$config_rc" -eq 2 ]; then
+    return 2
+  fi
+  if [ "$config_rc" -ne 0 ]; then
+    rc=1
+  fi
+
+  hs_diff_integrations || true
 
   return "$rc"
 }

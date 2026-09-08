@@ -108,3 +108,91 @@ tests land.
 ### 0e3bba1e3da0 · decision · Python comes from uv, pinned per script, not from the host (phase 2)
 
 Operator decision, taken after phase 2. The portability floor was system bash 3.2 plus whatever python3 the host had, at least 3.9, stdlib only. It is now: bash 3.2 for the shell, and for Python a uv-resolved interpreter named in each file's PEP 723 header, with a '#!/usr/bin/env -S uv run --script' shebang. uv joins Herdr and git as a prerequisite and also pins the dev tools (pytest, ruff) through a dependency group in pyproject.toml. Rationale: the tool's purpose is making hosts identical, so depending on whichever interpreter a host happens to carry works against it; and it matches how the operator already installs fr and browser-harness. Measured cost on this host: a uv start is about 265ms against about 84ms for a bare system python3, so the interpreter must stay off hot paths. hs_herdr_json runs once per Herdr call and now parses the error line in shell with sed; all structured work is batched behind subcommands of lib/hs.py, reached only through hs_py, which is also where the uv-missing check lives. tomllib is now available but config parsing stays line-based, because plugin-written blocks and the operator's formatting must survive byte for byte and a TOML round trip would discard both. Phases 6, 8 and 10 were rewritten to match; phase 2's own step text was corrected to describe what now exists.
+
+<!-- fr:journal kind=discovery scope=plan id=06856d9d6197 created=2026-09-08T10:50:15 phase=3 -->
+### 06856d9d6197 · discovery · Block splitter contract, cmd_diff's config/integration sections, and what apply (phase 4) needs (phase 3)
+
+Two new lib/common.sh primitives, both bash-3.2 loops (no awk, no associative
+arrays), and both fail the same way: fatal, exit 2, one stderr line naming the
+file, line number and plugin id, on an unterminated block (begin with no
+matching end) or a stray/mismatched end marker (no open block, or an id that
+does not match the currently open one).
+
+hs_strip_plugin_blocks <file>: prints every line OUTSIDE a plugin-written
+block. hs_extract_plugin_blocks <file>: prints every line INSIDE one,
+**markers included** (both the `# --- added by <id> ...` and the
+`# --- end <id> ---` line come out with the block). This was a deliberate
+choice, not the only reading of "prints only those regions": apply (phase 4)
+needs the markers back verbatim to re-splice a block as a still-valid,
+still-identifiable plugin block, not just bare content. Both share one
+internal engine, `_hs_plugin_block_walk <file> <mode>` (mode=strip|extract) --
+don't duplicate the marker-matching logic if you touch this again, extend the
+walker.
+
+What apply likely needs to do the reverse: hs_strip_plugin_blocks(host_config)
+gives the operator-line skeleton to update from manifest/config.toml;
+hs_extract_plugin_blocks(host_config) gives the ordered list of blocks
+(markers included) to preserve untouched. The two outputs partition the
+host file's lines exactly -- concatenating strip's output back together
+with extract's blocks reinserted at their original relative position
+(blocks stay in their original order and appear after all the operator
+lines that preceded them in the source, since strip and extract both walk
+top to bottom) reconstructs the host file. Neither function currently
+tags a block with a line number or anchor for re-insertion elsewhere in a
+*different* file (e.g. spliced into an updated manifest skeleton) -- if
+apply needs "insert this block after this operator line", that positional
+bookkeeping doesn't exist yet and would need its own pass, possibly a third
+mode on the same walker.
+
+cmd_diff (herdr-setup) is now: hs_preflight_banner (always first, one line,
+never fails) -> plugin section (hs_diff_plugins, hard-error escalates to
+`return 2` immediately, skipping config/integrations) -> config section
+(hs_diff_config, same hard-error contract) -> integration section
+(hs_diff_integrations, invoked as `hs_diff_integrations || true`, return
+value never consulted, never touches $rc). Every section call uses the
+established `section || section_rc=$?` shape -- never bare -- because of
+`set -e`.
+
+hs_diff_config <host-config> <manifest-config>: strips the host file, diffs
+it against the manifest file with `diff -u -L host -L manifest` (BSD diff on
+macOS supports -L same as GNU's --label; verified on this host). "config
+match" / rc=0 on identity, "config drift:\n<unified diff>" / rc=1 otherwise.
+A missing host file is treated as empty (a host that never ran `apply`), not
+an error. A missing/unreadable manifest file is the fail-closed case, exit 2,
+matching hs_manifest_plugins' contract. New hs_config_toml_path() sits next
+to hs_plugins_json_path() in common.sh, same HERDR_CONFIG_DIR override.
+
+hs_diff_integrations: calls `herdr integration status` directly (never
+through hs_herdr_json -- this is plain text, not the JSON-with-error-object
+shape, and it does not cross the socket, so it must keep working under a
+mismatch or with no server). Filters out `<agent>: not installed (...)`
+lines (an integration section reports on *installed* integrations only, per
+the design doc's "Lists each installed integration"); everything else is
+echoed back prefixed `integration: `. Always returns 0, same contract as
+hs_preflight -- cmd_diff never lets its return value move $rc. No herdr on
+PATH at all degrades to one informational line rather than failing the
+whole `diff` run.
+
+Test gotcha for anyone adding another end-to-end cmd_diff sandbox test
+(tests/test_diff_config.sh): the plugin section's hs_resolve_ref shells out
+to `git ls-remote`, so a sandbox invocation needs its OWN fake `git` on PATH
+(copy the inline fake-git-in-a-tempdir technique from
+tests/test_diff_plugins.sh) -- forgetting it means the sandbox silently hits
+the real GitHub repo instead of a fixture, which doesn't error, it just
+returns a real, wrong sha and reports a false "moved" drift. Also: any
+sandbox that exercises cmd_diff now needs a manifest/config.toml to exist
+(even empty) or the new config section fails closed with exit 2 before
+reaching the plugin/integration output at all -- had to add an empty one to
+tests/test_diff_plugins.sh's existing sandbox for this reason, since that
+test predates the config section and only ever built manifest/plugins.list.
+
+Acceptance matrix gotcha: `fr acceptance check` parses notes as plain YAML
+scalars -- a literal ": " (colon then space) inside a multi-line unquoted
+notes value breaks the parse ("mapping values are not allowed here") even
+though the file elsewhere reads fine. Use " -- " instead of ": " when hand-
+editing an existing row's notes field.
+
+diff-runs-under-protocol-mismatch and config-splice-preserves-plugin-blocks
+rows both got their notes updated to describe phase 3's coverage; both stay
+`not-implemented` on purpose, per the same phase-10 bulk-flip convention
+phase 2 established for diff-detects-plugin-drift.

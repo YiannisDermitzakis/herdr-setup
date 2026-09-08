@@ -312,6 +312,201 @@ hs_diff_plugins() {
   return "$rc"
 }
 
+# hs_herdr_config_dir()/config.toml -- the host's own Herdr config file,
+# read directly from disk (never through herdr) by the config section of
+# `diff`, for the same reason hs_plugins_json_path is read from disk: it
+# keeps working under a protocol mismatch.
+hs_config_toml_path() {
+  echo "$(hs_herdr_config_dir)/config.toml"
+}
+
+# _hs_plugin_block_walk <file> <mode>: the shared engine behind
+# hs_strip_plugin_blocks (mode=strip) and hs_extract_plugin_blocks
+# (mode=extract). A plugin-written block is every line from
+# `# --- added by <id> ...` through the following `# --- end <id> ---`,
+# inclusive, matching the id captured at the begin marker against the id
+# captured at the end marker rather than accepting any end marker. strip
+# prints every line OUTSIDE such a block; extract prints every line INSIDE
+# one, markers included, in file order -- the two outputs partition the
+# file's lines between them, and extract's markers are what let a later
+# splice put a block back exactly as it was.
+#
+# A begin marker is matched by the literal prefix `# --- added by `; its id
+# is everything up to the next space (a trailing `(removed by ...) ---` or
+# a bare ` ---` both fall off there). An end marker is matched by the
+# literal prefix `# --- end ` and literal suffix ` ---`; its id is
+# whatever sits between them.
+#
+# Fatal, in both modes, naming the file, line number and plugin id, exit 2:
+# a begin marker reached before the previous block's end marker; an end
+# marker with no open block; an end marker whose id does not match the
+# open block's id; and, at end of file, a block that was never closed.
+_hs_plugin_block_walk() {
+  local file="$1" mode="$2"
+  local line line_num=0 open_id="" open_line=0 id
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    line_num=$((line_num + 1))
+    case "$line" in
+      '# --- added by '*)
+        id="${line#\# --- added by }"
+        id="${id%% *}"
+        if [ -n "$open_id" ]; then
+          echo "herdr-setup: $file:$line_num: plugin block '$id' opened before '$open_id' (opened at line $open_line) was closed" >&2
+          return 2
+        fi
+        open_id="$id"
+        open_line="$line_num"
+        if [ "$mode" = "extract" ]; then
+          printf '%s\n' "$line"
+        fi
+        continue
+        ;;
+      '# --- end '*' ---')
+        id="${line#\# --- end }"
+        id="${id% ---}"
+        if [ -z "$open_id" ]; then
+          echo "herdr-setup: $file:$line_num: end marker for plugin block '$id' with no matching begin" >&2
+          return 2
+        fi
+        if [ "$id" != "$open_id" ]; then
+          echo "herdr-setup: $file:$line_num: end marker '$id' does not match open block '$open_id' (opened at line $open_line)" >&2
+          return 2
+        fi
+        open_id=""
+        if [ "$mode" = "extract" ]; then
+          printf '%s\n' "$line"
+        fi
+        continue
+        ;;
+    esac
+
+    if [ -n "$open_id" ]; then
+      if [ "$mode" = "extract" ]; then
+        printf '%s\n' "$line"
+      fi
+    else
+      if [ "$mode" = "strip" ]; then
+        printf '%s\n' "$line"
+      fi
+    fi
+  done < "$file"
+
+  if [ -n "$open_id" ]; then
+    echo "herdr-setup: $file: unterminated plugin block '$open_id' (opened at line $open_line, no matching end marker)" >&2
+    return 2
+  fi
+
+  return 0
+}
+
+# hs_strip_plugin_blocks <file>: prints the file with every plugin-written
+# block removed (see _hs_plugin_block_walk).
+hs_strip_plugin_blocks() {
+  _hs_plugin_block_walk "$1" strip
+}
+
+# hs_extract_plugin_blocks <file>: prints only the plugin-written blocks,
+# markers included, in order (see _hs_plugin_block_walk).
+hs_extract_plugin_blocks() {
+  _hs_plugin_block_walk "$1" extract
+}
+
+# hs_diff_config <host-config> <manifest-config>: the config section of
+# `diff`. Compares the host's config.toml, with every plugin-written block
+# stripped, against manifest/config.toml, byte for byte -- stripping is
+# what makes the comparison fair, since the manifest never holds a
+# plugin's own lines. Prints "config match" and returns 0 when the two are
+# identical; otherwise prints "config drift:" followed by a unified diff
+# labelled `host` and `manifest`, and returns 1.
+#
+# A host with no config.toml yet (a fresh host that has never run `apply`)
+# is treated as empty, not an error. A missing or unreadable manifest
+# config is fail-closed, matching hs_manifest_plugins: one stderr line
+# naming the file, exit 2.
+hs_diff_config() {
+  local host_file="$1" manifest_file="$2"
+  local host_tmp rc
+
+  if [ ! -r "$manifest_file" ]; then
+    echo "herdr-setup: $manifest_file: manifest config not found or unreadable" >&2
+    return 2
+  fi
+
+  host_tmp="$(mktemp)" || return 2
+
+  if [ -e "$host_file" ]; then
+    if ! hs_strip_plugin_blocks "$host_file" > "$host_tmp"; then
+      rm -f "$host_tmp"
+      return 2
+    fi
+  fi
+
+  if diff -q "$host_tmp" "$manifest_file" >/dev/null 2>&1; then
+    echo "config match"
+    rc=0
+  else
+    echo "config drift:"
+    diff -u -L host -L manifest "$host_tmp" "$manifest_file" || true
+    rc=1
+  fi
+
+  rm -f "$host_tmp"
+  return "$rc"
+}
+
+# hs_diff_integrations: the integration section of `diff`. Informational
+# only -- integrations are never in the manifest (different hosts run
+# different agents), so this never affects the exit status and always
+# returns 0, the same contract as hs_preflight. Reads `herdr integration
+# status` directly rather than through hs_herdr_json, because that call
+# does not cross the socket and keeps working under a protocol mismatch or
+# with no server running (only a missing herdr binary stops it, and even
+# that is reported rather than treated as fatal).
+#
+# `herdr integration status` prints one line per detected agent:
+#   <agent>: current (v<n>) (<path>)
+#   <agent>: outdated (v<old> < v<new>) (<path>)
+#   <agent>: not installed (<path>)
+# Installed integrations (current or outdated) are reported, prefixed
+# `integration: `; a not-installed agent is not an integration to report
+# on and is skipped.
+hs_diff_integrations() {
+  if ! command -v herdr >/dev/null 2>&1; then
+    echo "integrations: herdr not on PATH, skipped"
+    return 0
+  fi
+
+  local output rc
+  output="$(herdr integration status 2>&1)"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "integrations: herdr integration status failed: $output"
+    return 0
+  fi
+
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -z "$line" ] && continue
+    case "$line" in
+      *': not installed'*) continue ;;
+    esac
+    echo "integration: $line"
+  done <<< "$output"
+
+  return 0
+}
+
+# hs_preflight_banner: prints the preflight state (see hs_preflight) as
+# one line, so `diff` says up front whether the host and server actually
+# agree before the sections below report their own detail. Purely
+# informational: never fails, never affects the exit status.
+hs_preflight_banner() {
+  local state
+  state="$(hs_preflight)"
+  echo "preflight: $state"
+}
+
 # Directory holding this library, so the Python helper is found however the
 # entrypoint was invoked (PATH, symlink, or an explicit path).
 HS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -38,9 +38,14 @@ rows:
       from the CLI, which stays unblocked. Phase 2 (herdr-setup:tests/test_diff_plugins.sh)
       proves the plugin section is byte-identical whether or not
       FAKE_HERDR_PROTOCOL_MISMATCH is set, since hs_manifest_plugins/hs_host_plugins/
-      hs_resolve_ref never call herdr. Config and integration sections land in phase 3
-      (herdr-setup:docs/superpowers/plans/2026-09-08-herdr-setup/03.yaml). Left
-      not-implemented on purpose, per phase 10
+      hs_resolve_ref never call herdr. Phase 3 (herdr-setup:tests/test_diff_config.sh)
+      implements and unit-tests the config and integration sections and a
+      hs_preflight_banner that names the state as cmd_diff's first line -- hs_diff_config
+      reads config.toml from disk (never through herdr) and hs_diff_integrations calls
+      `herdr integration status` directly, which the fake herdr harness exempts from its
+      protocol-mismatch simulation, matching the real command. An end-to-end
+      herdr-setup diff run proves the exit status (0 match / 1 drift) is unchanged
+      under FAKE_HERDR_PROTOCOL_MISMATCH=1. Left not-implemented on purpose, per phase 10
       (herdr-setup:docs/superpowers/plans/2026-09-08-herdr-setup/10.yaml), which adds the
       level reference and flips this row once CI runs the suite.
   - id: socket-commands-refuse-under-mismatch
@@ -93,7 +98,15 @@ rows:
     - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
     levels: {}
     status: not-implemented
-    notes: A plugin owns its block; the tool must never eat it.
+    notes: A plugin owns its block; the tool must never eat it. Phase 3
+      (herdr-setup:tests/test_blocks.sh) builds and unit-tests the two primitives this
+      depends on -- hs_strip_plugin_blocks and hs_extract_plugin_blocks, matching the id
+      in a `# --- added by <id> ...` marker against the id in its `# --- end <id> ---`
+      rather than accepting any end marker, fatal (exit 2, naming the id) on an
+      unterminated block or a stray end marker. Left not-implemented -- these are read-only
+      primitives used by `diff`'s config section (herdr-setup:tests/test_diff_config.sh);
+      the actual splice-and-preserve behaviour this row names is `apply`'s job, in
+      phase 4 (herdr-setup:docs/superpowers/plans/2026-09-08-herdr-setup/04.yaml).
   - id: absorb-apply-roundtrip-is-noop
     capability: Configuration sync
     acceptance: absorb followed by apply against an unchanged host makes no further

@@ -204,6 +204,13 @@ cp "$repo_root/lib/common.sh" "$sandbox/lib/common.sh"
 cp "$repo_root/lib/hs.py" "$sandbox/lib/hs.py"
 chmod +x "$sandbox/herdr-setup"
 echo "kryptamine/herdr-auto-title   v0.3.3" > "$sandbox/manifest/plugins.list"
+# Phase 3 added a config section to cmd_diff that fails closed on a
+# missing manifest config.toml (see tests/test_diff_config.sh); an empty
+# one here keeps these plugin-focused assertions about the plugin section
+# only -- none of the HERDR_CONFIG_DIR fixtures below carry a host
+# config.toml either, so the config section compares empty against empty
+# and always reports a match.
+: > "$sandbox/manifest/config.toml"
 
 config_ok="$work/config_ok"
 mkdir -p "$config_ok"
