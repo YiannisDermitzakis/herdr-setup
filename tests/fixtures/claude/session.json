@@ -14,7 +14,7 @@
   "kind": "interactive",
   "entrypoint": "cli",
   "pidDomain": "darwin",
-  "messagingSocketPath": "/home/placeholder-user/.claude-tmp/cc-socks/21940.sock",
+  "messagingSocketPath": "/tmp/placeholder/cc-socks/21940.sock",
   "name": "example-session",
   "nameSource": "user",
   "nameSince": 1787978499482,

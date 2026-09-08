@@ -17,28 +17,30 @@ too.
 
 ## What was masked
 
-- `payload.cwd` -> `/work/alpha`, the same placeholder used throughout this
-  fixture set.
-- `payload.id` and `payload.session_id` -> the same placeholder UUID
-  (`00000000-0000-4000-8000-000000000001`) used in `tests/fixtures/claude/`.
-  The real capture has session_id == id, so the fixture keeps that equality
-  rather than inventing a difference that was never observed.
-- `payload.git.repository_url` -> a placeholder `owner/repo`. The real value
-  named one of the operator's own repositories.
-- `payload.git.commit_hash` -> forty zeros. The real value was a real commit
-  in that repository.
-- `payload.base_instructions.text` -> elided to a short note. The real value
-  is several kilobytes of Codex's own standard system prompt: public,
-  generic, and not something `adapters/codex` reads at all (only `cwd`,
-  `originator`, `cli_version`, `timestamp`, `git`, and `source` are read, per
-  the phase brief). Shortening a string value is the same move as trimming
-  `agent-list.json`'s entry list to three -- an edit to a value the fixture
-  rule explicitly allows, not the removal of a key.
+`tests/test_public_hygiene.sh` enforces this rather than merely stating it
+(whole-tree: home paths, real emails; `tests/fixtures/` additionally: real
+session ids, git remotes, commit hashes, embedded system prompts). **Every
+key from the real capture is kept; only values were changed.** The
+field-by-field table, so the next capture (phase 8's opencode and Copilot
+fixtures) does not have to re-derive it:
 
-`timestamp` (both the envelope's and the payload's own), `type`,
-`originator`, `cli_version`, `source`, `thread_source`, `model_provider`, and
-`git.branch` are kept as captured: none of them is personally identifying,
-and `branch: "main"` was already the least specific value it could have been.
+| field | why it matters | replaced with |
+|---|---|---|
+| `payload.session_id`, `payload.id` | real ids -- `id` is also embedded in the real rollout's own FILENAME | the same placeholder UUID used throughout this fixture set, `00000000-0000-4000-8000-000000000001` (the real capture has `session_id == id`, kept equal rather than inventing a difference never observed) |
+| `payload.cwd` | a real path naming a real private repository | `/work/alpha`, the placeholder used throughout `tests/fixtures/` |
+| `payload.git.repository_url` | `git@github.com:<real-org>/<real-repo>.git` for a private organisation | `https://github.com/example-org/example-repo.git` -- an https form rather than the real capture's `git@` SSH form, because `tests/test_public_hygiene.sh`'s email-address check reads `git@host:` as a `local@domain` address; the https form still satisfies that same test's git-remote check and its `example` allowlist |
+| `payload.git.commit_hash` | a real commit in a real, named repository | forty zeros |
+| `payload.base_instructions.text` | several KB of Codex's own standard system prompt: public and generic, but not this adapter's to redistribute, and not something it reads at all (only `cwd`, `originator`, `cli_version`, `timestamp`, `git`, `source` are read, per the phase brief) | a one-line placeholder string naming what was removed and why -- shortening a string value, the same move as trimming `tests/fixtures/herdr/agent-list.json`'s entry list, not the removal of a key |
+| `timestamp` (envelope and payload), `type`, `originator`, `cli_version`, `source`, `thread_source`, `model_provider`, `git.branch` | shape only, no identity | kept as captured (`branch: "main"` was already the least specific value it could have been) |
+
+**On the filename.** A real rollout embeds its own session id in its name
+(`rollout-<timestamp>-<id>.jsonl`), which would leak the real id even with
+the content masked if this fixture reused that name verbatim. It does not:
+this file is named for what it holds (`session-meta.json`, the first line of
+one), never for the session it came from, so there is nothing in the
+filename to rename away. `tests/helpers/write_codex_rollout()` is what
+constructs an actual `rollout-*.jsonl`-shaped path for a test, and every
+caller supplies its own (masked or synthetic) timestamp and id there.
 
 ## What this settles
 

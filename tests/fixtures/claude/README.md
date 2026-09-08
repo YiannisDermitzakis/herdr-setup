@@ -23,25 +23,28 @@ host while working by accident on one that happens to run at UTC.
 
 ## What was masked
 
-This repository is public. Only values were changed, never a key:
+This repository is public, and `tests/test_public_hygiene.sh` enforces the
+rule below rather than merely stating it: it scans the whole tree for a real
+home directory path or email address, and holds `tests/fixtures/` to a
+stricter bar on top of that (real session ids, git remotes, commit hashes,
+embedded system prompts). **Every key from the real file is kept; only
+values were changed.** The field-by-field mask table, so the next capture
+(phase 8's opencode and Copilot fixtures) does not have to re-derive it:
 
-- `cwd` -> `/work/alpha`, matching the placeholder style already used in
-  `tests/fixtures/herdr/`.
-- `sessionId` -> a placeholder UUID (`00000000-0000-4000-8000-000000000001`).
-- `bridgeSessionId` -> a placeholder of the same shape as the real value
-  (`session_<24 zeros>`), which is an internal pairing id this adapter never
-  reads.
-- `messagingSocketPath` -> the real value carries the operator's home
-  directory; replaced with `/home/placeholder-user/...`.
-- `name` -> the real value was a short slug describing the actual work in
-  progress in that pane (Claude Code derives it from context, and it can name
-  the very task underway -- exactly the leak phase 6 found and fixed in the
-  Herdr captures). Replaced with `example-session`; `nameSource` is kept as
-  `"user"` since it describes the mechanism, not the content.
+| field | why it matters | replaced with |
+|---|---|---|
+| `sessionId` | identifies a real conversation | the all-zero placeholder UUID, `00000000-0000-4000-8000-000000000001` |
+| `bridgeSessionId` | same, an internal pairing id this adapter never reads | a placeholder in the same shape, `session_<24 zeros>` |
+| `cwd` | a real path naming a real private repository | `/work/alpha`, matching `tests/fixtures/herdr/`'s placeholder style |
+| `messagingSocketPath` | the real value carries the operator's home directory and username | `/tmp/placeholder/cc-socks/<pid>.sock` |
+| `name` | Claude Code derives this from context, and it can name the actual work in progress in that pane -- the same leak class phase 6 found and fixed in Herdr's `terminal_title` | a neutral topic, `example-session` (`nameSource` stays `"user"`: it describes the mechanism, not the content) |
+| `pid`, `startedAt`, `procStart`, `version`, `peerFeatures`, `kind`, `entrypoint`, `pidDomain`, `nameSince`, `updatedAt`, `status`, `statusUpdatedAt` | shape and timing only, no identity | kept as captured |
 
-`pid`, `startedAt`, `updatedAt`, `statusUpdatedAt`, `version`, `peerFeatures`,
-`kind`, `entrypoint`, `pidDomain`, `nameSince`, and `status` are kept as
-captured: none of them names a person, a machine, a path, or a piece of work.
+One coupling in that last row is load-bearing, not incidental: `procStart`
+and `startedAt` are kept as a matched PAIR from the same real instant, because
+their disagreement (see below) is the whole fixture this adapter's timezone
+test depends on. Substituting either one alone, or inventing new values for
+both, would erase that offset and stop the test from testing anything.
 
 ## What this settles
 
