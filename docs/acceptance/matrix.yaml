@@ -94,8 +94,14 @@ rows:
       FAKE_HERDR_ERROR_EXIT (herdr-setup:tests/test_feed_resolve.py). The absorb
       question this row's notes raised at phase 5 was already settled -- the wording
       now reads apply, onboard and feed, matching the design doc, and absorb is
-      correctly ungated. Still not-implemented on purpose -- onboard is a phase 9 stub,
-      and phase 10 does the level references and the bulk flip once CI runs the suite.
+      correctly ungated. Phase 9 wired cmd_onboard (herdr-setup) to hs_require_socket
+      too, first and unconditionally like apply and feed, and covered it end to end in
+      herdr-setup:tests/test_onboard_offer.sh (a mismatch and a missing server both
+      refuse with exit 3, naming the fix, before the detection table is ever printed)
+      and herdr-setup:tests/test_entrypoint.sh (the same no-server assertion at
+      dispatch level, alongside apply and feed's own). Still not-implemented on
+      purpose -- phase 10 does the level references and the bulk flip once CI runs
+      the suite.
   - id: diff-detects-plugin-drift
     capability: Configuration sync
     acceptance: diff reports each manifest plugin as missing, matching its pinned ref,
@@ -227,6 +233,34 @@ rows:
     levels: {}
     status: not-implemented
     notes: Different hosts run different agents, so this is per-host and interactive.
+      Implemented and unit-tested in phase 9 (herdr-setup:tests/test_onboard_detect.sh,
+      herdr-setup:tests/test_onboard_offer.sh) -- hs_detect_agents (lib/common.sh) reads
+      its target LIST and each target's state from `herdr integration status` itself,
+      never a list this tool maintains, and a small local table
+      (hs_agent_detect_spec) supplies only the command name and configuration
+      directory used to decide `how` a known target was detected (path, config, or
+      both); an agent neither on PATH nor with a configuration directory present is
+      omitted entirely, same as a target the table has never heard of. cmd_onboard
+      (herdr-setup) prints the table, then offers each `absent` or `outdated` agent
+      one y/n question via the existing hs_confirm (naming the agent and, for
+      outdated, both versions), installs on accept through hs_herdr_interactive (the
+      same trust-preview reasoning as hs_apply_plugins' own install path), and feeds
+      exactly the agents it actually installed via a new
+      hs_onboard_feed_adapters_dir helper -- a scratch directory holding only
+      their adapters, symlinked in, so lib/feed.py's own directory-based discovery
+      scopes the hand-off without a new CLI flag. --yes installs every offered
+      agent without asking; --dry-run prints the would-run install line for each
+      offered agent and asks nothing, matching hs_apply_plugins' own dry-run
+      precedent, and never triggers the feed hand-off (nothing was actually
+      installed to feed). hs_require_socket gates the whole command first and
+      unconditionally, matching apply and feed. The one path this phase's own tests
+      do not exercise end to end, on purpose, and documented as such in
+      tests/test_onboard_offer.sh's own header -- hs_confirm's real-terminal y/n
+      branch, which needs an actual pty to prove -- the same gap
+      tests/test_apply_config.sh already carries for hs_confirm's only other
+      caller. Left not-implemented on purpose, per phase 10
+      (herdr-setup:docs/superpowers/plans/2026-09-08-herdr-setup/10.yaml), which
+      adds the level reference and flips this row once CI runs the suite.
   - id: feed-reports-live-sessions
     capability: Agent onboarding
     acceptance: feed reports a session id for every live agent pane and Herdr persists

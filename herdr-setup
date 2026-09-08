@@ -255,7 +255,139 @@ cmd_absorb() {
 
   return 0
 }
-cmd_onboard() { echo "stub: onboard dry-run=$HS_DRY_RUN yes=$HS_YES"; }
+# cmd_onboard: detect coding agents on this host, offer each one's Herdr
+# integration individually, install what is accepted, and feed exactly the
+# agents this run changed.
+#
+# hs_require_socket runs FIRST and unconditionally, like cmd_apply's and
+# cmd_feed's -- both `herdr integration install` and the feed hand-off cross
+# the socket, and the design doc's "apply, onboard, and feed stop ... rather
+# than proceeding to a confusing partial result" names onboard explicitly.
+# Nothing -- not even the detection table -- is printed under a mismatch.
+#
+# hs_detect_agents supplies the rows, read into a temp file and then read on
+# fd 3 for the offer loop below, never on stdin: a `while read` loop that
+# read the table on stdin would answer hs_confirm's own read with the NEXT
+# agent's detection line instead of the operator's keystroke -- the exact
+# trap hs_apply_plugins' manifest loop already had to avoid.
+#
+# Under --yes every offered agent (state absent or outdated) is installed
+# without asking, matching hs_apply_plugins' own --yes shortcut. Otherwise
+# hs_confirm asks, once per offered agent, naming the agent and -- for an
+# outdated one -- both versions; hs_confirm's own "no terminal to confirm
+# on" refusal (lib/common.sh) is exactly the non-interactive contract this
+# command needs, so nothing here re-implements it. An agent already
+# `current` is never asked about and never appears in the install loop at
+# all. --dry-run never asks either: it prints the command each offered
+# agent would run, the same "show what a real run would do, make none"
+# contract --dry-run keeps everywhere else, so a script running with
+# --dry-run never blocks on a question it cannot answer.
+#
+# Each accepted install runs through hs_herdr_interactive, not hs_herdr_json
+# -- `herdr integration install` shows its own trust preview the same way
+# `plugin install` does (hs_apply_plugins' own comment explains why a
+# command substitution would swallow it). A failed install counts against
+# the exit status but does not stop the remaining agents from being offered.
+#
+# feed then runs once, through hs_onboard_feed_adapters_dir, scoped to
+# exactly the agents this run actually installed or refreshed -- never the
+# full agent set, and never anything under --dry-run, since nothing was
+# actually installed to feed.
+cmd_onboard() {
+  hs_require_socket || return 3
+
+  local table_tmp
+  table_tmp="$(mktemp)" || return 2
+  if ! hs_detect_agents > "$table_tmp"; then
+    rm -f "$table_tmp"
+    return 2
+  fi
+
+  if [ ! -s "$table_tmp" ]; then
+    echo "onboard: no coding agent detected on this host."
+    rm -f "$table_tmp"
+    return 0
+  fi
+
+  echo "onboard: detected agents"
+  local d_target d_how d_state d_detail
+  while IFS=$'\t' read -r d_target d_how d_state d_detail; do
+    [ -z "$d_target" ] && continue
+    if [ -n "$d_detail" ]; then
+      printf '  %s\t%s\t%s (%s)\n' "$d_target" "$d_how" "$d_state" "$d_detail"
+    else
+      printf '  %s\t%s\t%s\n' "$d_target" "$d_how" "$d_state"
+    fi
+  done < "$table_tmp"
+
+  local rc=0
+  local fed_agents=""
+
+  local t_target t_how t_state t_detail
+  while IFS=$'\t' read -r t_target t_how t_state t_detail <&3; do
+    [ -z "$t_target" ] && continue
+    case "$t_state" in
+      absent|outdated) ;;
+      *) continue ;;
+    esac
+
+    local question
+    if [ "$t_state" = "outdated" ]; then
+      question="$t_target is outdated ($t_detail); install the Herdr integration"
+    else
+      question="$t_target has no Herdr integration; install it"
+    fi
+
+    if [ "$HS_DRY_RUN" -eq 1 ]; then
+      echo "+ herdr integration install $t_target"
+      continue
+    fi
+
+    local do_install=0
+    if [ "$HS_YES" -eq 1 ]; then
+      do_install=1
+    elif hs_confirm "$question"; then
+      do_install=1
+    fi
+
+    if [ "$do_install" -eq 1 ]; then
+      local install_rc=0
+      hs_herdr_interactive integration install "$t_target" || install_rc=$?
+      if [ "$install_rc" -ne 0 ]; then
+        rc=1
+      else
+        fed_agents="$fed_agents $t_target"
+      fi
+    fi
+  done 3< "$table_tmp"
+
+  rm -f "$table_tmp"
+
+  if [ -n "$fed_agents" ]; then
+    local feed_dir feed_rc=0
+    # Intentional word-splitting on $fed_agents: it is a list of agent
+    # names built one space-separated word at a time above, the same
+    # pattern hs_manifest_plugins documents for its own field-count check.
+    feed_dir="$(hs_onboard_feed_adapters_dir "$HS_ROOT/adapters" $fed_agents)" || {
+      echo "herdr-setup: onboard: could not build a scratch adapters directory for feed" >&2
+      return 1
+    }
+
+    local feed_args
+    feed_args=(--adapters "$feed_dir" --socket "$(hs_socket_path)")
+    if [ "$HS_YES" -eq 1 ]; then
+      feed_args+=(--yes)
+    fi
+
+    hs_feed "${feed_args[@]}" || feed_rc=$?
+    rm -rf "$feed_dir"
+    if [ "$feed_rc" -ne 0 ]; then
+      rc=1
+    fi
+  fi
+
+  return "$rc"
+}
 
 # cmd_feed: report every live agent pane's session to Herdr, so a server
 # restart brings the pane back running its agent's resume command instead of

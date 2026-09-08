@@ -46,19 +46,13 @@ status="$(run_entry "$out" "$err" --help)"
 assert_status "--help exits 0" 0 "$status"
 assert_contains "--help prints usage" "$(cat "$out")" "usage:"
 
-# --- onboard is still a stub and exits 0. diff (phase 2), apply (phase 4),
-# absorb (phase 5) and feed (phase 6) got real implementations and are
-# checked separately below: this checkout has no manifest/ directory yet
-# (that lands only when a real absorb or apply runs, and this file never
-# lets that happen against the real checkout -- see below), so diff fails
-# closed per AGENTS.md ("an unreadable manifest ... stops the run") rather
-# than reporting a stub success. ---
-for sub in onboard; do
-  out="$work/out_$sub"; err="$work/err_$sub"
-  status="$(run_entry "$out" "$err" "$sub")"
-  assert_status "$sub is accepted and exits 0" 0 "$status"
-done
-
+# --- diff (phase 2), apply (phase 4), absorb (phase 5), feed (phase 6) and
+# onboard (phase 9) all now have real implementations. diff never had a
+# stub state to check here in the first place: this checkout has no
+# manifest/ directory yet (that lands only when a real absorb or apply
+# runs, and this file never lets that happen against the real checkout --
+# see below), so diff fails closed per AGENTS.md ("an unreadable manifest
+# ... stops the run") rather than reporting a stub success. ---
 out="$work/out_diff"; err="$work/err_diff"
 status="$(run_entry "$out" "$err" diff)"
 assert_status "diff is accepted; fails closed on a missing manifest" 2 "$status"
@@ -104,26 +98,78 @@ assert_status "feed is accepted; fails closed with no Herdr server reachable" 3 
 assert_contains "feed names the missing server on stderr" "$(cat "$err")" "server"
 assert_eq "a refused feed prints nothing to stdout" "" "$(cat "$out")"
 
+# --- onboard (phase 9) gates on the same hs_require_socket too, and just
+# as unconditionally -- it refuses here identically, before the detection
+# table is ever printed. The rest of onboard's own entrypoint behaviour
+# (detection, the offer loop, the feed hand-off) is
+# tests/test_onboard_offer.sh's, against a sandbox copy with its own
+# adapters/, the same split feed gets above. ---
+out="$work/out_onboard"; err="$work/err_onboard"
+status="$(HERDR_SOCKET_PATH="$work/no-such-herdr.sock" run_entry "$out" "$err" onboard)"
+assert_status "onboard is accepted; fails closed with no Herdr server reachable" 3 "$status"
+assert_contains "onboard names the missing server on stderr" "$(cat "$err")" "server"
+assert_eq "a refused onboard prints nothing to stdout" "" "$(cat "$out")"
+
 # --- --dry-run / --yes are visible to the subcommand as HS_DRY_RUN / HS_YES,
-# regardless of whether they come before or after the subcommand. Uses
-# `onboard`, still a stub, since none of diff/apply/absorb echo the flags
-# they saw any more. ---
+# regardless of whether they come before or after the subcommand. onboard
+# used to be the stub that echoed them directly; now that it is real (like
+# diff/apply/absorb/feed, none of which echo the flags they saw either),
+# the flags are proven visible by their OBSERVABLE EFFECT on a real onboard
+# run instead: under --dry-run, an offered agent gets a
+# "+ herdr integration install <target>" preview line and no
+# `integration install` call ever reaches herdr; with no flags at all (and
+# no terminal, which every test process here has none of) nothing is
+# installed either, but there is no preview line -- the two are
+# distinguishable on stdout alone.
+#
+# A tiny local sandbox, not the real checkout: HERDR_SOCKET_PATH points at
+# a plain file (hs_preflight only needs it to exist; nothing here calls
+# real herdr's own preflight probe), FAKE_HERDR_FIXTURES answers
+# `integration status` with one absent agent, and $HOME/.claude gives that
+# agent a configuration directory so hs_detect_agents finds it without
+# depending on whether a real `claude` happens to be on this machine's own
+# PATH. `herdr` itself is already the fake one: tests/run.sh puts
+# tests/helpers ahead of the rest of PATH for every file in this suite. ---
+flags_socket="$work/flags-herdr.sock"
+: > "$flags_socket"
+flags_fixtures="$work/flags-fixtures"
+mkdir -p "$flags_fixtures"
+cat > "$flags_fixtures/integration->status.json" <<'EOF'
+claude: not installed (/home/placeholder-user/.claude/hooks/herdr-agent-state.sh)
+EOF
+mkdir -p "$HOME/.claude"
+flags_log="$work/flags-herdr.log"
+
 out="$work/out_flags_before"; err="$work/err_flags_before"
-status="$(run_entry "$out" "$err" --dry-run --yes onboard)"
+rm -f "$flags_log"
+status="$(HERDR_SOCKET_PATH="$flags_socket" FAKE_HERDR_FIXTURES="$flags_fixtures" \
+  FAKE_HERDR_LOG="$flags_log" run_entry "$out" "$err" --dry-run --yes onboard </dev/null)"
 assert_status "flags before the subcommand still exit 0" 0 "$status"
-assert_contains "HS_DRY_RUN=1 visible (flags before)" "$(cat "$out")" "dry-run=1"
-assert_contains "HS_YES=1 visible (flags before)" "$(cat "$out")" "yes=1"
+assert_contains "--dry-run visible (flags before): a preview line, not a real call" \
+  "$(cat "$out")" "+ herdr integration install claude"
+assert_eq "--dry-run visible (flags before): herdr never actually saw the install" "0" \
+  "$(grep -c '^integration install' "$flags_log")"
 
 out="$work/out_flags_after"; err="$work/err_flags_after"
-status="$(run_entry "$out" "$err" onboard --dry-run --yes)"
+rm -f "$flags_log"
+status="$(HERDR_SOCKET_PATH="$flags_socket" FAKE_HERDR_FIXTURES="$flags_fixtures" \
+  FAKE_HERDR_LOG="$flags_log" run_entry "$out" "$err" onboard --dry-run --yes </dev/null)"
 assert_status "flags after the subcommand still exit 0" 0 "$status"
-assert_contains "HS_DRY_RUN=1 visible (flags after)" "$(cat "$out")" "dry-run=1"
-assert_contains "HS_YES=1 visible (flags after)" "$(cat "$out")" "yes=1"
+assert_contains "--dry-run visible (flags after): a preview line, not a real call" \
+  "$(cat "$out")" "+ herdr integration install claude"
+assert_eq "--dry-run visible (flags after): herdr never actually saw the install" "0" \
+  "$(grep -c '^integration install' "$flags_log")"
 
 out="$work/out_noflags"; err="$work/err_noflags"
-status="$(run_entry "$out" "$err" onboard)"
+rm -f "$flags_log"
+status="$(HERDR_SOCKET_PATH="$flags_socket" FAKE_HERDR_FIXTURES="$flags_fixtures" \
+  FAKE_HERDR_LOG="$flags_log" run_entry "$out" "$err" onboard </dev/null)"
 assert_status "no flags still exits 0" 0 "$status"
-assert_contains "HS_DRY_RUN defaults to 0" "$(cat "$out")" "dry-run=0"
-assert_contains "HS_YES defaults to 0" "$(cat "$out")" "yes=0"
+case "$(cat "$out")" in
+  *"integration install"*) fail "HS_DRY_RUN defaults to 0, but a preview line still printed: $(cat "$out")" ;;
+  *) pass ;;
+esac
+assert_eq "HS_YES defaults to 0: no terminal and no --yes installs nothing" "0" \
+  "$(grep -c '^integration install' "$flags_log")"
 
 hs_test_report

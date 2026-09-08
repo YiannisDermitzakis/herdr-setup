@@ -1145,6 +1145,175 @@ hs_diff_integrations() {
   return 0
 }
 
+# hs_agent_detect_spec <target>: prints "<command><TAB><dir>" for one
+# coding-agent target `onboard` (phase 9) knows how to look for, or returns
+# 1 for a target it does not -- the caller then leaves that target out of
+# the table entirely, the same as an agent this host shows no sign of.
+#
+# The command defaults to the target's own name and the directory to
+# $HOME/.<target>, which is confirmed true for claude and codex ($HOME/.claude,
+# $HOME/.codex -- CLAUDE_CONFIG_DIR/CODEX_HOME's own defaults, phase 7) and for
+# copilot ($HOME/.copilot -- phase 8's COPILOT_HOME discovery). cursor and
+# hermes follow the same convention by analogy, unconfirmed on a host with
+# either CLI installed, the same status phase 7 recorded for CODEX_HOME before
+# a later phase could check it.
+#
+# Two of Herdr's own integration targets break the pattern and are named
+# explicitly rather than guessed, from a live `herdr integration status` on
+# the host this phase was written against: antigravity-cli's own
+# configuration lives under $HOME/.gemini, not $HOME/.antigravity-cli, and
+# kimi's lives under $HOME/.kimi-code, not $HOME/.kimi.
+#
+# `herdr integration status` on that host also named nine further targets
+# (pi, omp, devin, droid, kilo, qodercli, qwen, mastracode, grok) this table
+# has no entry for. Rather than guess a command and a directory for a CLI
+# this host cannot confirm, they are left out -- hs_detect_agents then omits
+# them from its output, indistinguishable from an agent that is genuinely
+# absent. Extending coverage is adding a case here, never touching the
+# detection loop itself.
+hs_agent_detect_spec() {
+  local target="$1"
+  case "$target" in
+    claude) printf 'claude\t%s/.claude\n' "$HOME" ;;
+    codex) printf 'codex\t%s/.codex\n' "$HOME" ;;
+    opencode) printf 'opencode\t%s/.opencode\n' "$HOME" ;;
+    copilot) printf 'copilot\t%s/.copilot\n' "$HOME" ;;
+    cursor) printf 'cursor\t%s/.cursor\n' "$HOME" ;;
+    hermes) printf 'hermes\t%s/.hermes\n' "$HOME" ;;
+    antigravity-cli) printf 'antigravity-cli\t%s/.gemini\n' "$HOME" ;;
+    kimi) printf 'kimi\t%s/.kimi-code\n' "$HOME" ;;
+    *) return 1 ;;
+  esac
+}
+
+# hs_detect_agents: prints one <target><TAB><how><TAB><state><TAB><detail>
+# line per agent this host shows some sign of AND hs_agent_detect_spec
+# knows how to look for. `how` is `path` when the agent's own command is on
+# PATH, `config` when only its configuration directory exists, `both` for
+# either. An agent with neither signal is omitted entirely -- there would
+# be nothing to onboard.
+#
+# The target list, and each target's state, come from `herdr integration
+# status` itself -- never a list this tool maintains, so a Herdr release
+# that adds an eighteenth agent needs no change here to keep working (it
+# stays omitted, same as any unrecognised target, until hs_agent_detect_spec
+# above learns it). That call does not cross the socket (hs_diff_integrations,
+# above, relies on the same fact), so this keeps working under a protocol
+# mismatch or with no server running; cmd_onboard still gates the parts of
+# onboard that DO need the socket -- installing, and the feed hand-off --
+# on hs_require_socket separately.
+#
+# `state` is absent | current | outdated, read off herdr's own wording
+# ("not installed" / "current (vN)" / "outdated (vOLD < vNEW)"); `detail`
+# carries the "(...)" version text for current and outdated, and is empty
+# for absent. A status line in none of those three shapes is skipped --
+# better to omit an agent than report a state guessed from a line this
+# tool does not recognise.
+#
+# Returns 2 if herdr is missing or `herdr integration status` itself fails
+# (the state genuinely cannot be read); 0 otherwise, whether or not any
+# agent was printed.
+hs_detect_agents() {
+  if ! command -v herdr >/dev/null 2>&1; then
+    echo "herdr-setup: herdr is not on PATH; install Herdr, then retry." >&2
+    return 2
+  fi
+
+  local output rc
+  output="$(herdr integration status 2>&1)"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "herdr-setup: herdr integration status: $(printf '%s' "$output" | hs_flatten)" >&2
+    return 2
+  fi
+
+  local line target rest spec cmd dir how state detail
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -z "$line" ] && continue
+    case "$line" in
+      *:*) ;;
+      *) continue ;;
+    esac
+
+    target="${line%%:*}"
+    rest="${line#*: }"
+
+    if ! spec="$(hs_agent_detect_spec "$target")"; then
+      continue
+    fi
+    IFS=$'\t' read -r cmd dir <<< "$spec"
+
+    how=""
+    if command -v "$cmd" >/dev/null 2>&1; then
+      how="path"
+    fi
+    if [ -d "$dir" ]; then
+      if [ -n "$how" ]; then how="both"; else how="config"; fi
+    fi
+    [ -z "$how" ] && continue
+
+    detail=""
+    case "$rest" in
+      outdated\ \(*\)\ \(*\))
+        state="outdated"
+        detail="$(printf '%s' "$rest" | sed -E 's/^outdated \(([^)]*)\) \(.*\)$/\1/')"
+        ;;
+      current\ \(*\)\ \(*\))
+        state="current"
+        detail="$(printf '%s' "$rest" | sed -E 's/^current \(([^)]*)\) \(.*\)$/\1/')"
+        ;;
+      not\ installed\ \(*\))
+        state="absent"
+        detail=""
+        ;;
+      *)
+        continue
+        ;;
+    esac
+
+    printf '%s\t%s\t%s\t%s\n' "$target" "$how" "$state" "$detail"
+  done <<< "$output"
+
+  return 0
+}
+
+# hs_onboard_feed_adapters_dir <adapters_dir> <agent>...: builds a scratch
+# directory holding only the named agents' adapters, symlinked in from
+# <adapters_dir>, and prints its path. An agent with no adapter file there
+# (cursor and hermes ship none yet -- design doc, "The four adapters")
+# contributes nothing and is silently skipped; there is nothing feed could
+# report for it anyway.
+#
+# This is how cmd_onboard scopes its post-install feed call to "exactly
+# those agents" (the design doc's own phrase for onboard's hand-off):
+# lib/feed.py discovers adapters by directory CONTENT (discover(), phase 6),
+# so handing it a directory that holds only the agents just installed or
+# refreshed scopes the run without teaching feed.py a filter flag no other
+# caller needs. An agent whose integration was already current before this
+# run is never in that directory, so it is never re-fed here -- a stale
+# pane, if there is one, is `herdr-setup feed`'s own job on its own
+# schedule, not onboard's.
+#
+# Prints nothing and returns 1 if the scratch directory itself cannot be
+# created. The caller is responsible for removing the directory when done;
+# this function only builds it.
+hs_onboard_feed_adapters_dir() {
+  local adapters_dir="$1"
+  shift
+  local dir
+  dir="$(mktemp -d)" || return 1
+
+  local agent
+  for agent in "$@"; do
+    [ -z "$agent" ] && continue
+    if [ -x "$adapters_dir/$agent" ]; then
+      ln -s "$adapters_dir/$agent" "$dir/$agent"
+    fi
+  done
+
+  printf '%s\n' "$dir"
+}
+
 # hs_preflight_banner: prints the preflight state (see hs_preflight) as
 # one line, so `diff` says up front whether the host and server actually
 # agree before the sections below report their own detail. Purely
