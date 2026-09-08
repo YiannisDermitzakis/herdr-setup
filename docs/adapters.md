@@ -117,10 +117,49 @@ Every pane the runner found for this agent arrives at once:
 }
 ```
 
-`pid` is the pane's foreground process — the agent itself — and
-`pid_start_epoch` is when it started, which is what stops a recycled pid from
-matching a stale session file. Either may be `null` if Herdr did not report
-it.
+`cwd` is the agent process's own working directory. `pid` is the pane's
+foreground agent process, picked out of the pane's foreground processes by
+`argv0` — a pane usually holds more than one, since a child of the agent is
+foreground too.
+
+### `pid_start_epoch` is epoch seconds, UTC
+
+**This is the one thing in this document most likely to cost you an
+afternoon.** Read it before comparing a start time to anything.
+
+`pid_start_epoch` is when the agent process started, as **integer seconds
+since the Unix epoch** — an absolute instant, the number `time.time()`
+returns. It exists for one job: to stop a **recycled pid** from matching a
+stale session file. An `exact` adapter identifies a session by process id,
+and a process id that has been handed out again points at somebody else's
+session.
+
+Herdr does not report a start time at all, so the runner reads it from the
+operating system with `ps -o lstart=`, which prints **local** wall-clock time,
+and converts it to epoch seconds in the local frame.
+
+The trap is on your side. An agent that records its own process start
+normally does so as a **wall-clock string with no zone marker**, and the zone
+is not necessarily local. Claude Code's `~/.claude/sessions/<pid>.json`
+records `procStart` in **UTC**. On a host at UTC+2 the two describe the same
+instant two hours apart:
+
+```
+ps -o lstart=            Fri Sep  4 10:59:46 2026     (local)
+Claude Code procStart    Fri Sep  4 08:59:46 2026     (UTC)
+```
+
+An adapter that parses `procStart` as local time and compares it to
+`pid_start_epoch` rejects **every** session on such a host, and accepts
+everything on a host that happens to run in UTC — which is the worst possible
+combination, because it works on the machine you test it on. Parse a UTC
+string with `calendar.timegm`, not `time.mktime`, and compare with a second
+or two of slack, since the sources round differently.
+
+`pid_start_epoch` may be `null` when the process has already exited or the
+start time could not be read. Treat `null` as "cannot rule out pid reuse" —
+do not treat it as a match and do not treat it as a mismatch. `pid` may be
+`null` too.
 
 The answer is one entry per pane, candidates best first:
 

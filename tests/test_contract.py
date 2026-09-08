@@ -76,6 +76,20 @@ class TestTheDocumentIsPresent(unittest.TestCase):
         for word in ("exact", "heuristic", "unverified", "available"):
             self.assertIn(word, text, f"the contract must explain {word}")
 
+    def test_it_states_which_time_frame_pid_start_epoch_uses(self):
+        """Phases 7 and 8 compare an agent's own recorded start against this.
+
+        Claude Code writes `procStart` in UTC while `ps -o lstart=` is local,
+        so an adapter that guesses is wrong by the host's offset -- and right
+        on a host running in UTC, which is how such a bug survives testing.
+        The contract has to say the frame out loud.
+        """
+        text = DOC.read_text("utf-8")
+        self.assertIn("pid_start_epoch", text)
+        self.assertIn("epoch seconds", text.lower())
+        self.assertIn("UTC", text)
+        self.assertIn("procStart", text)
+
 
 class TestValidateProbe(unittest.TestCase):
     def setUp(self) -> None:

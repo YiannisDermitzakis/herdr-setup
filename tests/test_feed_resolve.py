@@ -5,22 +5,26 @@
 # ///
 """Pane gathering and adapter resolution (lib/feed.py).
 
-The whole point of this file is one distinction: **no panes** and **could not
-find out** are different answers, and only one of them is safe to carry on
-from.
+Two things are under test here, and the second one was learned the hard way.
 
-A blocked Herdr does not answer an empty list. It answers a JSON error
-object, and it may put that object on stderr, and it may return it while
-exiting 0. Every one of those, read by a parser that reaches for
-`result.agents` and shrugs when the key is missing, becomes zero panes -- and
-zero panes prints a cheerful summary having fed nothing, which is exactly
-what the operator's 21 stranded Claude sessions looked like. So every
-unreadable answer here has to raise, and each of these tests drives the fake
-herdr into one of those shapes to prove it does.
+**No panes and could not find out are different answers.** A blocked Herdr
+does not answer an empty list. It answers a JSON error object, and it may put
+that object on stderr, and it may return it while exiting 0. Every one of
+those, read by a parser that reaches for a key and shrugs when it is missing,
+becomes zero panes -- and zero panes prints a cheerful summary having fed
+nothing, which is exactly what the operator's stranded Claude sessions looked
+like. So every unreadable answer raises, and each test below drives the fake
+herdr into one of those shapes to prove it.
 
-The second call matters as much as the first. `agent list` succeeding and
-`pane process-info` then failing is the same fail-open with one more step:
-each pane silently drops out and the run reports success over an empty set.
+**A fixture for a Herdr call is a capture, not a construction.** The first cut
+of this file built its own `agent list` and `pane process-info` payloads by
+hand and got three things wrong at once -- a `result.processes` list, a
+`foreground` boolean on each process, and a `pid_start_epoch` field. Herdr
+returns none of the three. The tests passed anyway, because the fixture and
+the code shared one misunderstanding, and the code failed against the first
+real host it met. Every Herdr answer below is now loaded from
+tests/fixtures/herdr/ and edited by VALUE only; TestAgainstTheCapturedShape
+replays a capture verbatim. See that directory's README.
 """
 
 from __future__ import annotations
@@ -29,38 +33,60 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "helpers"))
 
-from feedlib import isolate_environment, load_feed, write_adapter  # noqa: E402
+from feedlib import (  # noqa: E402
+    agent_entry,
+    agent_list,
+    captured,
+    isolate_environment,
+    load_feed,
+    process_entry,
+    process_info,
+    write_adapter,
+)
 
 isolate_environment()
 
 feed = load_feed()
 
-AGENT_LIST = {
-    "id": "cli:agent:list",
-    "result": {
-        "agents": [
-            {"pane_id": "w1:p1", "agent": "claude", "state": "working"},
-            {"pane_id": "w2:p2", "agent": "claude", "state": "idle"},
-            {"pane_id": "w3:p3", "agent": "codex", "state": "idle"},
-        ]
-    },
-}
+# A pid that cannot be running, so pid_start_epoch is deterministically None.
+# Every assertion about a real start time uses this process's own pid instead.
+DEAD_PID = 0x7FFFFFF
 
 
-def process_info(pane_id, cwd, processes):
-    return {
-        "id": "cli:pane:process-info",
-        "result": {"pane_id": pane_id, "cwd": cwd, "processes": processes},
-    }
+def claude_pane(pane_id, cwd, index=0):
+    """A captured agent-list entry, repointed at a pane and a directory."""
+    return agent_entry(index, pane_id=pane_id, cwd=cwd, foreground_cwd=cwd)
 
 
-def proc(pid, argv0, *, foreground=True, start=1788500000):
-    return {"pid": pid, "argv0": argv0, "foreground": foreground, "pid_start_epoch": start}
+AGENT_LIST = agent_list(
+    [
+        claude_pane("w1:p1", "/work/frank", 0),
+        claude_pane("w2:p2", "/work/herdr", 1),
+        agent_entry(
+            2, pane_id="w3:p3", agent="codex", cwd="/work/other", foreground_cwd="/work/other"
+        ),
+    ]
+)
+
+
+def info(pane_id, cwd, pid, argv0="claude", extra=None):
+    """A captured process-info answer for one pane.
+
+    The capture holds two foreground processes -- a `node` child and the agent
+    itself -- and both are kept, because "several foreground processes, one of
+    which is the agent" is the ordinary case, not a special one.
+    """
+    processes = [process_entry(0, cwd=cwd)]
+    if extra:
+        processes.extend(extra)
+    processes.append(process_entry(-1, pid=pid, argv0=argv0, cwd=cwd))
+    return process_info(pane_id=pane_id, processes=processes, group_id=pid)
 
 
 class FakeHerdrCase(unittest.TestCase):
@@ -95,39 +121,133 @@ class FakeHerdrCase(unittest.TestCase):
         return feed.panes_for(agent, warn=self.warnings.append, **kwargs)
 
 
+class TestAgainstTheCapturedShape(FakeHerdrCase):
+    """Replay a real Herdr answer, verbatim, and read it.
+
+    Nothing in this class can be satisfied by the code agreeing with itself:
+    the bytes come from tests/fixtures/herdr/, captured from a live server.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.fixture(["agent", "list"], captured("agent-list"))
+        for entry in captured("agent-list")["result"]["agents"]:
+            self.fixture(
+                ["pane", "process-info", "--pane", entry["pane_id"]],
+                process_info(pane_id=entry["pane_id"]),
+            )
+
+    def test_it_reads_every_captured_pane(self):
+        entries = captured("agent-list")["result"]["agents"]
+        panes = self.panes()
+        self.assertEqual([p["pane_id"] for p in panes], [e["pane_id"] for e in entries])
+
+    def test_it_finds_the_agent_among_several_foreground_processes(self):
+        """The capture has a `node` child beside the agent. argv0 picks it out."""
+        self.assertEqual(self.panes()[0]["pid"], 38080)
+
+    def test_it_does_not_match_on_name_which_is_the_agent_s_version(self):
+        """`name` for the Claude process in the capture is "2.1.260".
+
+        Matching a pane's agent on `name` finds nothing, silently. The capture
+        is the only reason anyone would know that.
+        """
+        processes = captured("pane-process-info")["result"]["process_info"][
+            "foreground_processes"
+        ]
+        self.assertIn("2.1.260", [p["name"] for p in processes])
+        self.assertNotIn("claude", [p["name"] for p in processes])
+        self.assertEqual(self.panes()[0]["pid"], 38080)
+
+    def test_the_agent_s_own_working_directory_comes_through(self):
+        self.assertEqual(self.panes()[0]["cwd"], "/work/frank")
+
+    def test_herdr_reports_no_start_time_and_the_runner_supplies_one(self):
+        blob = json.dumps(captured("pane-process-info"))
+        self.assertNotIn("pid_start_epoch", blob)
+        self.assertNotIn("start_epoch", blob)
+        self.assertNotIn("lstart", blob)
+        self.assertIn("pid_start_epoch", self.panes()[0])
+
+    def test_the_capture_has_no_foreground_flag_to_test(self):
+        """Asserted, because the first implementation tested for one."""
+        processes = captured("pane-process-info")["result"]["process_info"][
+            "foreground_processes"
+        ]
+        for process in processes:
+            self.assertNotIn("foreground", process)
+
+
+class TestPidStartEpoch(unittest.TestCase):
+    """The start time Herdr does not report, read from the operating system."""
+
+    def test_it_reads_this_process_s_own_start_time(self):
+        started = feed.pid_start_epoch(os.getpid())
+        self.assertIsNotNone(started)
+        # This test process started moments ago, and certainly not in the
+        # future nor before this file was written.
+        self.assertLessEqual(started, time.time() + 1)
+        self.assertGreater(started, time.time() - 86400)
+
+    def test_it_is_epoch_seconds_not_a_wall_clock_string(self):
+        self.assertIsInstance(feed.pid_start_epoch(os.getpid()), int)
+
+    def test_a_pid_that_is_not_running_is_none_rather_than_an_error(self):
+        self.assertIsNone(feed.pid_start_epoch(DEAD_PID))
+
+    def test_a_missing_pid_is_none(self):
+        self.assertIsNone(feed.pid_start_epoch(None))
+
+    def test_it_survives_a_localised_environment(self):
+        """`ps` localises month and day names unless the locale is forced.
+
+        A host with LC_TIME set to a locale whose month names are not English
+        would otherwise fail to parse on every pane, silently losing the pid
+        reuse guard. lib/feed.py forces LC_ALL=C for this call.
+        """
+        saved = dict(os.environ)
+        try:
+            os.environ["LC_ALL"] = "de_DE.UTF-8"
+            os.environ["LC_TIME"] = "de_DE.UTF-8"
+            os.environ["LANG"] = "de_DE.UTF-8"
+            self.assertIsNotNone(feed.pid_start_epoch(os.getpid()))
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+
+
 class TestPanesFor(FakeHerdrCase):
     def setUp(self) -> None:
         super().setUp()
         self.fixture(["agent", "list"], AGENT_LIST)
-        self.fixture(
-            ["pane", "process-info", "--pane", "w1:p1"],
-            process_info("w1:p1", "/work/frank", [proc(100, "-zsh", foreground=False),
-                                                  proc(38080, "claude", start=1788500001)]),
-        )
-        self.fixture(
-            ["pane", "process-info", "--pane", "w2:p2"],
-            process_info("w2:p2", "/work/herdr", [proc(38081, "claude", start=1788500002)]),
-        )
+        self.fixture(["pane", "process-info", "--pane", "w1:p1"],
+                     info("w1:p1", "/work/frank", DEAD_PID))
+        self.fixture(["pane", "process-info", "--pane", "w2:p2"],
+                     info("w2:p2", "/work/herdr", DEAD_PID + 1))
 
     def test_returns_one_record_per_matching_pane(self):
-        panes = self.panes()
         self.assertEqual(
-            panes,
+            self.panes(),
             [
                 {
                     "pane_id": "w1:p1",
                     "cwd": "/work/frank",
-                    "pid": 38080,
-                    "pid_start_epoch": 1788500001,
+                    "pid": DEAD_PID,
+                    "pid_start_epoch": None,
                 },
                 {
                     "pane_id": "w2:p2",
                     "cwd": "/work/herdr",
-                    "pid": 38081,
-                    "pid_start_epoch": 1788500002,
+                    "pid": DEAD_PID + 1,
+                    "pid_start_epoch": None,
                 },
             ],
         )
+
+    def test_a_pane_whose_process_is_alive_carries_a_start_time(self):
+        self.fixture(["pane", "process-info", "--pane", "w1:p1"],
+                     info("w1:p1", "/work/frank", os.getpid()))
+        self.assertIsInstance(self.panes()[0]["pid_start_epoch"], int)
 
     def test_panes_of_another_agent_are_not_asked_about(self):
         # w3:p3 is a codex pane and has no process-info fixture at all; if it
@@ -136,39 +256,43 @@ class TestPanesFor(FakeHerdrCase):
         self.assertEqual([p["pane_id"] for p in self.panes()], ["w1:p1", "w2:p2"])
 
     def test_an_absolute_argv0_still_matches_the_command(self):
-        self.fixture(
-            ["pane", "process-info", "--pane", "w2:p2"],
-            process_info("w2:p2", "/work/herdr", [proc(38081, "/usr/local/bin/claude")]),
-        )
+        self.fixture(["pane", "process-info", "--pane", "w2:p2"],
+                     info("w2:p2", "/work/herdr", DEAD_PID, argv0="/usr/local/bin/claude"))
         self.assertEqual([p["pane_id"] for p in self.panes()], ["w1:p1", "w2:p2"])
 
     def test_an_adapter_may_name_a_command_that_is_not_the_agent(self):
-        self.fixture(
-            ["pane", "process-info", "--pane", "w1:p1"],
-            process_info("w1:p1", "/work/frank", [proc(1, "claude-code")]),
-        )
+        self.fixture(["pane", "process-info", "--pane", "w1:p1"],
+                     info("w1:p1", "/work/frank", DEAD_PID, argv0="claude-code"))
         panes = self.panes(command="claude-code")
         self.assertEqual([p["pane_id"] for p in panes], ["w1:p1"])
 
-    def test_a_pane_with_no_matching_foreground_process_is_dropped_with_a_note(self):
-        self.fixture(
-            ["pane", "process-info", "--pane", "w2:p2"],
-            process_info("w2:p2", "/work/herdr", [proc(500, "vim")]),
-        )
-        panes = self.panes()
-        self.assertEqual([p["pane_id"] for p in panes], ["w1:p1"])
-        self.assertTrue(any("w2:p2" in w for w in self.warnings), self.warnings)
-
-    def test_a_background_agent_process_does_not_count(self):
-        self.fixture(
-            ["pane", "process-info", "--pane", "w2:p2"],
-            process_info("w2:p2", "/work/herdr", [proc(38081, "claude", foreground=False)]),
-        )
+    def test_a_pane_with_no_matching_process_is_dropped_with_a_note(self):
+        self.fixture(["pane", "process-info", "--pane", "w2:p2"],
+                     info("w2:p2", "/work/herdr", DEAD_PID, argv0="vim"))
         self.assertEqual([p["pane_id"] for p in self.panes()], ["w1:p1"])
         self.assertTrue(any("w2:p2" in w for w in self.warnings), self.warnings)
 
+    def test_the_process_group_leader_wins_when_two_processes_match(self):
+        """A pane can hold the agent and a child of it that shares its argv0.
+
+        `foreground_process_group_id` names the job the pane is actually
+        running, so it is the tie-break rather than list order.
+        """
+        self.fixture(
+            ["pane", "process-info", "--pane", "w1:p1"],
+            process_info(
+                pane_id="w1:p1",
+                processes=[
+                    process_entry(-1, pid=DEAD_PID + 5, argv0="claude", cwd="/work/frank"),
+                    process_entry(-1, pid=DEAD_PID + 6, argv0="claude", cwd="/work/frank"),
+                ],
+                group_id=DEAD_PID + 6,
+            ),
+        )
+        self.assertEqual(self.panes()[0]["pid"], DEAD_PID + 6)
+
     def test_an_empty_agent_list_is_genuinely_no_panes(self):
-        self.fixture(["agent", "list"], {"result": {"agents": []}})
+        self.fixture(["agent", "list"], agent_list([]))
         self.assertEqual(self.panes(), [])
 
 
@@ -178,14 +302,10 @@ class TestPanesForFailsClosed(FakeHerdrCase):
     def setUp(self) -> None:
         super().setUp()
         self.fixture(["agent", "list"], AGENT_LIST)
-        self.fixture(
-            ["pane", "process-info", "--pane", "w1:p1"],
-            process_info("w1:p1", "/work/frank", [proc(38080, "claude")]),
-        )
-        self.fixture(
-            ["pane", "process-info", "--pane", "w2:p2"],
-            process_info("w2:p2", "/work/herdr", [proc(38081, "claude")]),
-        )
+        self.fixture(["pane", "process-info", "--pane", "w1:p1"],
+                     info("w1:p1", "/work/frank", DEAD_PID))
+        self.fixture(["pane", "process-info", "--pane", "w2:p2"],
+                     info("w2:p2", "/work/herdr", DEAD_PID + 1))
 
     def test_protocol_mismatch_raises(self):
         os.environ["FAKE_HERDR_PROTOCOL_MISMATCH"] = "1"
@@ -223,12 +343,23 @@ class TestPanesForFailsClosed(FakeHerdrCase):
 
     def test_a_shape_with_no_agent_list_raises(self):
         """Valid JSON, successful exit, and no way to read an agent list."""
-        self.fixture(["agent", "list"], {"result": {"panes": []}})
+        answer = captured("agent-list")
+        del answer["result"]["agents"]
+        self.fixture(["agent", "list"], answer)
         with self.assertRaises(feed.HerdrError):
             self.panes()
 
-    def test_process_info_with_no_process_list_raises(self):
-        self.fixture(["pane", "process-info", "--pane", "w2:p2"], {"result": {"cwd": "/x"}})
+    def test_a_shape_with_no_process_info_raises(self):
+        answer = captured("pane-process-info")
+        del answer["result"]["process_info"]
+        self.fixture(["pane", "process-info", "--pane", "w2:p2"], answer)
+        with self.assertRaises(feed.HerdrError):
+            self.panes()
+
+    def test_a_shape_with_no_foreground_process_list_raises(self):
+        answer = captured("pane-process-info")
+        del answer["result"]["process_info"]["foreground_processes"]
+        self.fixture(["pane", "process-info", "--pane", "w2:p2"], answer)
         with self.assertRaises(feed.HerdrError):
             self.panes()
 

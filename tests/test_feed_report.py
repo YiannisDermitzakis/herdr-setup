@@ -37,8 +37,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "helpers"))
 from feedlib import (  # noqa: E402
     REPO_ROOT,
     RecordingServer,
+    agent_entry,
+    agent_list,
     isolate_environment,
     load_feed,
+    process_entry,
+    process_info,
     write_adapter,
 )
 
@@ -53,26 +57,31 @@ PROBE = {
     "confidence": "exact",
 }
 
-AGENT_LIST = {
-    "result": {
-        "agents": [
-            {"pane_id": "w1:p1", "agent": "claude"},
-            {"pane_id": "w2:p2", "agent": "claude"},
-        ]
-    }
-}
+# A pid that cannot be running, so nothing here depends on the host.
+DEAD_PID = 0x7FFFFFF
+
+# Both Herdr answers are built from the captures in tests/fixtures/herdr/ by
+# replacing VALUES. Nothing in this file writes a response shape by hand --
+# that is exactly how the first cut of the runner came to read three fields
+# Herdr does not return. See that directory's README.
+AGENT_LIST = agent_list(
+    [
+        agent_entry(0, pane_id="w1:p1", agent="claude", cwd="/work/frank"),
+        agent_entry(1, pane_id="w2:p2", agent="claude", cwd="/work/herdr"),
+    ]
+)
 
 
-def process_info(pane_id, cwd, pid):
-    return {
-        "result": {
-            "pane_id": pane_id,
-            "cwd": cwd,
-            "processes": [
-                {"pid": pid, "argv0": "claude", "foreground": True, "pid_start_epoch": 111}
-            ],
-        }
-    }
+def info(pane_id, cwd, pid, argv0="claude"):
+    """A captured process-info answer, repointed at one pane."""
+    return process_info(
+        pane_id=pane_id,
+        processes=[
+            process_entry(0, cwd=cwd),
+            process_entry(-1, pid=pid, argv0=argv0, cwd=cwd),
+        ],
+        group_id=pid,
+    )
 
 
 def exact(session_id, **extra):
@@ -108,9 +117,9 @@ class RunCase(unittest.TestCase):
 
         self.fixture(["agent", "list"], AGENT_LIST)
         self.fixture(["pane", "process-info", "--pane", "w1:p1"],
-                     process_info("w1:p1", "/work/frank", 1001))
+                     info("w1:p1", "/work/frank", DEAD_PID))
         self.fixture(["pane", "process-info", "--pane", "w2:p2"],
-                     process_info("w2:p2", "/work/herdr", 1002))
+                     info("w2:p2", "/work/herdr", DEAD_PID + 1))
 
         self.warnings: list[str] = []
         self.out: list[str] = []
@@ -309,7 +318,7 @@ class TestDryRunAndSummary(RunCase):
         self.assertRegex(summary, r"skipped 1\b")
 
     def test_a_run_with_no_panes_still_prints_a_summary(self):
-        self.fixture(["agent", "list"], {"result": {"agents": []}})
+        self.fixture(["agent", "list"], agent_list([]))
         self.adapter([])
         with RecordingServer(self.socket_path):
             rc = self.run_feed()
@@ -350,17 +359,12 @@ class TestFailuresAreNotSilent(RunCase):
             "  resolve) exit 1 ;;\n"
             "esac\n",
         )
-        self.fixture(["agent", "list"], {
-            "result": {"agents": [
-                {"pane_id": "w1:p1", "agent": "claude"},
-                {"pane_id": "w2:p2", "agent": "codex"},
-            ]}
-        })
-        self.fixture(["pane", "process-info", "--pane", "w2:p2"], {
-            "result": {"pane_id": "w2:p2", "cwd": "/x", "processes": [
-                {"pid": 9, "argv0": "codex", "foreground": True, "pid_start_epoch": 1}
-            ]}
-        })
+        self.fixture(["agent", "list"], agent_list([
+            agent_entry(0, pane_id="w1:p1", agent="claude", cwd="/work/frank"),
+            agent_entry(1, pane_id="w2:p2", agent="codex", cwd="/work/other"),
+        ]))
+        self.fixture(["pane", "process-info", "--pane", "w2:p2"],
+                     info("w2:p2", "/work/other", DEAD_PID + 2, argv0="codex"))
         self.adapter([{"pane_id": "w1:p1", "candidates": [exact("aaa")]}])
         with RecordingServer(self.socket_path) as server:
             rc = self.run_feed()

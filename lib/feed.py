@@ -320,27 +320,115 @@ def _agent_entries(data: dict) -> list:
     return agents
 
 
-def _foreground_match(result: dict, command: str, label: str):
-    """The foreground process in a pane whose argv0 is `command`, or None.
+def _process_info(result: dict, label: str) -> dict:
+    """The `process_info` object out of `herdr pane process-info`.
 
-    Matches the argv0 whole and by basename, so a pane running
-    `/usr/local/bin/claude` counts. Returns None when the pane genuinely runs
-    something else -- that is a real answer and the caller drops the pane with
-    a note. A missing process list is NOT that answer, and raises.
+    The shape is a capture, not a guess -- see tests/fixtures/herdr/. The
+    first version of this function read `result.processes`, which does not
+    exist, and its hand-built fixtures agreed with it.
     """
-    processes = result.get("processes")
+    info = result.get("process_info")
+    if not isinstance(info, dict):
+        raise HerdrError(f"{label}: answer carries no 'process_info' object")
+    return info
+
+
+def _foreground_match(info: dict, command: str, label: str):
+    """The pane's foreground process whose argv0 is `command`, or None.
+
+    Everything in `foreground_processes` IS foreground -- that is what the
+    list means, and no entry carries a flag saying so. A pane commonly holds
+    several: the capture has the agent and a `node` child of it side by side.
+
+    Matching is on `argv0`, whole and by basename, so `/usr/local/bin/claude`
+    counts. It is emphatically NOT on `name`: for the Claude process in the
+    capture `name` is "2.1.260", its version, and matching there fails
+    silently on every pane.
+
+    When more than one process matches, `foreground_process_group_id` breaks
+    the tie -- it names the job the pane is actually running, which is a
+    better answer than list order.
+
+    Returns None when the pane genuinely runs something else. That is a real
+    answer, and the caller drops the pane with a note. A missing list is not
+    that answer, and raises.
+    """
+    processes = info.get("foreground_processes")
     if not isinstance(processes, list):
-        raise HerdrError(f"{label}: answer carries no 'processes' list")
+        raise HerdrError(f"{label}: answer carries no 'foreground_processes' list")
+
+    group_id = info.get("foreground_process_group_id")
+    matches = []
     for entry in processes:
         if not isinstance(entry, dict):
-            continue
-        if not entry.get("foreground"):
             continue
         argv0 = entry.get("argv0") or ""
         if argv0 != command and os.path.basename(str(argv0)) != command:
             continue
-        return entry
-    return None
+        matches.append(entry)
+
+    if not matches:
+        return None
+    for entry in matches:
+        if group_id is not None and entry.get("pid") == group_id:
+            return entry
+    return matches[0]
+
+
+def pid_start_epoch(pid) -> int | None:
+    """When `pid` started, in epoch seconds, or None if that cannot be read.
+
+    Herdr reports no start time anywhere -- the captures in
+    tests/fixtures/herdr/ carry pid, argv0, cmdline and cwd and nothing else
+    -- so the runner reads it from the operating system. It matters because
+    it is the only thing standing between an `exact` adapter and a RECYCLED
+    pid: Claude Code names its session file after a process id, and an id
+    that has been handed to a new process points at somebody else's session.
+
+    `ps -o lstart=` is used rather than /proc, which macOS does not have.
+    Two details are load-bearing:
+
+    - **LC_ALL=C.** `ps` localises month and day names, so a host with a
+      German LC_TIME prints "Fr Sep  4 ..." and every parse fails -- silently
+      losing the guard on every pane.
+    - **`lstart` is LOCAL wall-clock time**, so it is parsed with
+      `time.mktime`, which reads a struct_time as local and returns an
+      absolute epoch. Reading it as UTC would be wrong by the offset, which
+      on the host this was written on is two hours. See docs/adapters.md,
+      which states the frame adapters must compare in -- Claude Code's own
+      `procStart` records the same instant in UTC.
+
+    Returns None rather than raising when the process is gone or `ps` cannot
+    be read. That is NOT a hole in the fail-closed rule: that rule is about
+    never reading a failed HERDR call as an empty answer. This is an
+    enrichment the runner adds on its own, and a pane is still perfectly
+    feedable without it -- an adapter that needs it to rule out pid reuse
+    reads null as "cannot rule out".
+    """
+    if not isinstance(pid, int):
+        return None
+    env = dict(os.environ)
+    env["LC_ALL"] = "C"
+    env["LANG"] = "C"
+    try:
+        proc = subprocess.run(  # noqa: S603
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    text = " ".join(proc.stdout.split())
+    if not text:
+        return None
+    try:
+        return int(time.mktime(time.strptime(text, "%a %b %d %H:%M:%S %Y")))
+    except (ValueError, OverflowError):
+        return None
 
 
 def panes_for(agent: str, command: str | None = None, warn=warn) -> list[dict]:
@@ -349,9 +437,14 @@ def panes_for(agent: str, command: str | None = None, warn=warn) -> list[dict]:
     Asks `herdr agent list`, keeps the entries whose `agent` field matches,
     and asks `herdr pane process-info --pane <id>` about each one. The record
     is `{pane_id, cwd, pid, pid_start_epoch}`: `pid` is the pane's foreground
-    process, which is what lets an exact adapter tie the pane to a session,
-    and `pid_start_epoch` is what stops a recycled pid from matching a stale
-    session file.
+    agent process, which is what lets an exact adapter tie the pane to a
+    session, and `pid_start_epoch` is what stops a recycled pid from matching
+    a stale session file. Herdr supplies neither a start time nor a
+    `foreground` flag; see pid_start_epoch above and tests/fixtures/herdr/.
+
+    `cwd` is the agent process's own working directory, which is the most
+    precise answer to the question a directory-matching adapter asks, falling
+    back to the agent-list entry's `foreground_cwd` and then its `cwd`.
 
     A pane whose foreground process is not the agent is dropped with a note --
     the operator ran something else in it, and there is nothing to feed. Any
@@ -365,28 +458,27 @@ def panes_for(agent: str, command: str | None = None, warn=warn) -> list[dict]:
     for entry in entries:
         if not isinstance(entry, dict) or entry.get("agent") != agent:
             continue
-        pane_id = entry.get("pane_id") or entry.get("id")
+        pane_id = entry.get("pane_id")
         if not pane_id:
             warn(f"agent list entry for {agent} carries no pane id; skipping it")
             continue
 
         label = f"herdr pane process-info --pane {pane_id}"
         result = _result(herdr_json(["pane", "process-info", "--pane", str(pane_id)]), label)
-        match = _foreground_match(result, command, label)
+        info = _process_info(result, label)
+        match = _foreground_match(info, command, label)
         if match is None:
             warn(f"pane {pane_id}: no foreground '{command}' process; skipping it")
             continue
 
-        cwd = result.get("cwd") or match.get("cwd")
-        start = match.get("pid_start_epoch")
-        if start is None:
-            start = match.get("start_epoch")
+        cwd = match.get("cwd") or entry.get("foreground_cwd") or entry.get("cwd")
+        pid = match.get("pid")
         panes.append(
             {
                 "pane_id": str(pane_id),
                 "cwd": cwd,
-                "pid": match.get("pid"),
-                "pid_start_epoch": start,
+                "pid": pid,
+                "pid_start_epoch": pid_start_epoch(pid),
             }
         )
     return panes

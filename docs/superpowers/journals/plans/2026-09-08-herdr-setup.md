@@ -933,3 +933,116 @@ agent, seq, agent_session_id[, agent_session_path]}}, one JSON line, id shaped
 guarantee the hook does not need -- strictly increasing within a run -- since
 feed reports several panes in a row and two inside one nanosecond tick would
 otherwise tie.
+
+<!-- fr:journal kind=finding scope=plan id=d2af1a991c1f created=2026-09-08T13:50:07 phase=6 state=fixed -->
+### d2af1a991c1f · finding [fixed] · panes_for read three fields Herdr does not return, and the fixtures agreed with it (phase 6)
+
+Raised by the orchestrator against phase 6 as first delivered, verified, and
+fixed. The most important entry in this journal, because the code bug is
+downstream of the process bug.
+
+**What was wrong.** panes_for/_foreground_match read `result.processes`, a
+`foreground` boolean on each entry, and a `pid_start_epoch` field. Herdr
+returns none of the three. Against a real host every pane raised
+`answer carries no 'processes' list` -- fail-closed, so loud rather than
+silent, but completely non-functional. 91 tests were green.
+
+**Why the tests did not catch it.** I wrote the fixtures and the parser in the
+same hour from the same guess. They agreed with each other and neither agreed
+with Herdr. This is the milestone review's own pattern (journal 9bf94ba2cc4f,
+"a guard is only as good as the fake that can make it fail") arriving one
+level up: it is not enough for the fake to be able to express failure if the
+fake's idea of SUCCESS is fiction. I even recorded the guess honestly in
+journal entry "The feed runner's herdr shapes" -- "NOT observed from a live
+herdr ... they are the shapes the plan's own step text names" -- and then
+tested against the guess anyway. Writing down that you are guessing is not a
+substitute for checking.
+
+**The captures.** The CLI on this host is protocol 22 against a protocol 20
+server and refuses every call, which is what made the guess feel unavoidable.
+It was not: the SERVER answers fine, and a JSON-RPC line written straight to
+$HERDR_SOCKET_PATH returns real `agent.list` and `pane.process_info` payloads.
+Both are now in tests/fixtures/herdr/ with provenance and masking recorded in
+its README, and that directory carries the standing rule: **a fixture for a
+Herdr call is a capture, not a construction.** Trimming a captured list or
+editing a value is fine; adding, renaming or removing a KEY is not, and
+feedlib's agent_entry()/process_entry() raise KeyError on an unknown key so
+the rule is enforced rather than merely stated. Every hand-built Herdr payload
+in test_feed_resolve.py, test_feed_report.py and test_feed_entrypoint.sh is
+gone; TestAgainstTheCapturedShape replays a capture byte for byte.
+
+**The three corrections.**
+1. The list is `result.process_info.foreground_processes`.
+2. There is NO `foreground` flag. Everything in that list IS foreground; the
+   flag test matched nothing, which is why every pane dropped out even before
+   the missing-key error. A test now asserts the capture has no such key, so
+   nobody re-adds the check.
+3. Herdr reports no start time anywhere.
+
+Two more the captures gave for free, both traps:
+- `name` for the Claude process is `"2.1.260"` -- its VERSION. Matching a
+  pane's agent on `name` fails silently. `argv0` is correct, and there is a
+  test asserting the capture's `name` values to say so.
+- A pane commonly has SEVERAL foreground processes (the agent plus a `node`
+  child). `foreground_process_group_id` names the job the pane is really
+  running, so it is now the tie-break when two entries match argv0, rather
+  than list order.
+
+`cwd` now comes from the matched agent process's own `cwd`, falling back to
+the agent-list entry's `foreground_cwd` then `cwd` -- all three are in the
+captures.
+
+Also noticed, not acted on: `agent.list` carries `agent_session`
+{source, agent, kind, value} for a pane Herdr already has a record for. feed
+does not read it -- its job is to top up, and re-reporting an id a pane
+already has is harmless. A later phase that wants to skip known panes, or
+warn before overwriting a DIFFERENT id, has the field. Recorded in the
+fixtures README.
+
+<!-- fr:journal kind=decision scope=plan id=e5a59fdee2c5 created=2026-09-08T13:50:29 phase=6 -->
+### e5a59fdee2c5 · decision · pid_start_epoch is kept, read from ps, and its time frame is now specified (phase 6)
+
+Herdr reports no process start time, so the choice was to supply it or drop it
+from the contract. **Kept, and supplied from the OS**, because it is the only
+thing standing between an `exact` adapter and a recycled pid: Claude Code
+names its session file after a process id, and an id handed out again points
+at somebody else's session. Phase 7's whole `exact` claim leans on it. A field
+adapters cannot rely on would be worse than none, so it is now real.
+
+`feed.pid_start_epoch(pid)` runs `ps -o lstart= -p <pid>` -- not /proc, which
+macOS does not have. Two details are load-bearing and both are commented at
+the call site:
+
+- **LC_ALL=C is forced.** `ps` localises month and day names. A host with a
+  German LC_TIME prints "Fr Sep  4 ..." and every parse fails, silently losing
+  the guard on every pane. (The same C-locale trap this operator has hit
+  before in other tools.) Tested by running the call with a de_DE locale in
+  the environment.
+- **`lstart` is LOCAL wall-clock**, parsed with time.mktime, which reads a
+  struct_time as local and returns an absolute epoch. The day is space-padded
+  ("Sep  4"), so the output is whitespace-normalised first.
+
+Failure is None, not an exception. That is NOT a hole in the fail-closed rule:
+that rule is about never reading a failed HERDR call as an empty answer. This
+is an enrichment the runner adds itself, and a pane is perfectly feedable
+without it.
+
+**The time frame is now specified in docs/adapters.md, at length, because it
+is the trap phases 7 and 8 would otherwise walk into.** `pid_start_epoch` is
+integer epoch seconds -- an absolute instant. But an agent that records its
+own process start does so as a wall-clock string with no zone marker, and the
+zone is not necessarily local. Verified on this host, same process, same
+instant:
+
+    ps -o lstart=            Fri Sep  4 10:59:46 2026     (local, CEST)
+    Claude Code procStart    Fri Sep  4 08:59:46 2026     (UTC)
+
+An adapter that parses `procStart` with time.mktime rejects EVERY session
+here, and accepts everything on a host that happens to run in UTC -- which is
+the worst combination, because it works on the machine you test on. Use
+calendar.timegm for a UTC string, and compare with a second or two of slack.
+tests/test_contract.py now asserts the document states the frame, names
+procStart, and says "epoch seconds", so this cannot be quietly dropped.
+
+Null means "cannot rule out pid reuse" -- not a match and not a mismatch.
+Documented, because either wrong reading loses sessions.

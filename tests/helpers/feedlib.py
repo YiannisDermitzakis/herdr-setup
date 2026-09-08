@@ -172,3 +172,73 @@ class RecordingServer:
                         self.received.append(json.loads(line))
                 with contextlib.suppress(OSError):
                     conn.sendall(b'{"result":{"ok":true}}\n')
+
+
+# --------------------------------------------------------------------------
+# Captured Herdr responses
+# --------------------------------------------------------------------------
+#
+# Everything below builds a Herdr answer by loading a CAPTURE from
+# tests/fixtures/herdr/ and editing values inside it. Nothing here writes a
+# response shape by hand, and nothing may. See that directory's README for
+# why: phase 6's first cut invented three fields that Herdr does not return
+# and its hand-built fixtures invented the same three, so the tests agreed
+# with the code and neither agreed with reality.
+#
+# Editing a VALUE is fine. Adding, renaming or removing a KEY is not -- at
+# that point the fixture stops being evidence, which is the whole failure
+# this indirection exists to prevent.
+
+CAPTURES = TESTS_DIR / "fixtures" / "herdr"
+
+
+def captured(name: str) -> dict:
+    """Load a captured Herdr response by file stem."""
+    return json.loads((CAPTURES / f"{name}.json").read_text(encoding="utf-8"))
+
+
+def agent_entry(index: int = 0, **values) -> dict:
+    """One captured `agent.list` entry, with the named values replaced."""
+    entries = captured("agent-list")["result"]["agents"]
+    entry = dict(entries[index % len(entries)])
+    for key, value in values.items():
+        if key not in entry:
+            raise KeyError(f"{key!r} is not a key the capture has; do not invent one")
+        entry[key] = value
+    return entry
+
+
+def agent_list(entries) -> dict:
+    """A captured `agent.list` answer carrying exactly `entries`."""
+    answer = captured("agent-list")
+    answer["result"]["agents"] = list(entries)
+    return answer
+
+
+def process_entry(index: int = -1, **values) -> dict:
+    """One captured foreground process, with the named values replaced.
+
+    Index -1 is the agent itself; 0 is the `node` child that sits beside it
+    in the capture, which is what makes "several foreground processes, one of
+    them the agent" the default case rather than a special one.
+    """
+    processes = captured("pane-process-info")["result"]["process_info"]["foreground_processes"]
+    entry = dict(processes[index])
+    for key, value in values.items():
+        if key not in entry:
+            raise KeyError(f"{key!r} is not a key the capture has; do not invent one")
+        entry[key] = value
+    return entry
+
+
+def process_info(pane_id=None, processes=None, group_id=None) -> dict:
+    """A captured `pane.process_info` answer, with values replaced."""
+    answer = captured("pane-process-info")
+    info = answer["result"]["process_info"]
+    if pane_id is not None:
+        info["pane_id"] = pane_id
+    if processes is not None:
+        info["foreground_processes"] = list(processes)
+    if group_id is not None:
+        info["foreground_process_group_id"] = group_id
+    return answer

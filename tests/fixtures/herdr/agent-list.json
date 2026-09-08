@@ -1,0 +1,71 @@
+{
+  "id": "cli:agent:list",
+  "result": {
+    "type": "agent_list",
+    "agents": [
+      {
+        "terminal_id": "term_65aa46e80e5fb20",
+        "agent": "claude",
+        "terminal_title": "\u25d1 Herdr plugin safety",
+        "terminal_title_stripped": "Herdr plugin safety",
+        "agent_status": "working",
+        "agent_session": {
+          "source": "herdr:claude",
+          "agent": "claude",
+          "kind": "id",
+          "value": "00000000-0000-4000-8000-000000000001"
+        },
+        "workspace_id": "w2",
+        "tab_id": "w2:t9",
+        "pane_id": "w2:p9",
+        "focused": false,
+        "state_change_seq": 1087,
+        "cwd": "/work/willikins",
+        "foreground_cwd": "/work/willikins",
+        "revision": 8
+      },
+      {
+        "terminal_id": "term_65a27d620bd9e9",
+        "agent": "claude",
+        "terminal_title": "\u2733 image-size-availability-fix",
+        "terminal_title_stripped": "image-size-availability-fix",
+        "agent_status": "idle",
+        "agent_session": {
+          "source": "herdr:claude",
+          "agent": "claude",
+          "kind": "id",
+          "value": "00000000-0000-4000-8000-000000000001"
+        },
+        "workspace_id": "w2",
+        "tab_id": "w2:t2",
+        "pane_id": "w2:p2",
+        "focused": false,
+        "state_change_seq": 848,
+        "cwd": "/work/frank",
+        "foreground_cwd": "/work/frank",
+        "revision": 11
+      },
+      {
+        "terminal_id": "term_65a282e4d224e13",
+        "agent": "claude",
+        "terminal_title": "\u2733 bun-version-engine-check",
+        "terminal_title_stripped": "bun-version-engine-check",
+        "agent_status": "idle",
+        "agent_session": {
+          "source": "herdr:claude",
+          "agent": "claude",
+          "kind": "id",
+          "value": "00000000-0000-4000-8000-000000000001"
+        },
+        "workspace_id": "w2",
+        "tab_id": "w2:t7",
+        "pane_id": "w2:p7",
+        "focused": false,
+        "state_change_seq": 1020,
+        "cwd": "/work/frank",
+        "foreground_cwd": "/work/frank",
+        "revision": 9
+      }
+    ]
+  }
+}
