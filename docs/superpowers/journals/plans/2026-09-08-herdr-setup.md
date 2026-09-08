@@ -398,3 +398,315 @@ Raised as an open finding by phase 5, and the mistake was mine when seeding the 
 ### 1348cd0f37a1 · finding [fixed] · The tool could not start on bash 3.2, and the suite could not see it (phase 5)
 
 Milestone review, verified. Two defects, one masking the other. (1) The entrypoint's final dispatch expanded an empty array under set -u, which bash 3.2 and up to 4.3 treat as an unbound variable, so every command except --help died at line 254. bash 3.2 is the declared floor precisely because it is what macOS ships, so the tool was dead on its primary target. Fixed with the portable form. (2) tests/run.sh invoked each test file with a bare bash, which resolves on PATH to the newest installed bash, 5.3 on this machine. So running the runner under /bin/bash tested the runner on 3.2 and every test on 5.3, and the orchestrator repeatedly claimed bash 3.2 verification that never happened. Fixed by invoking each file under the same bash running the runner, so /bin/bash tests/run.sh now exercises the floor end to end. With (1) fixed the suite passes 13/13 on both 3.2 and 5.3; before the fix it was 6 of 13 files failing on 3.2 while showing green through five phases.
+
+<!-- fr:journal kind=finding scope=plan id=ac30ffbfb635 created=2026-09-08T12:35:56 state=fixed -->
+### ac30ffbfb635 · finding [fixed] · C2 -- apply swallowed Herdr's trust preview and would have hung at a real terminal
+
+Milestone review, verified. The DEFAULT install path -- no --yes, the one an
+operator takes -- ran `herdr plugin install` through hs_herdr_json, which is a
+command substitution capturing both streams while stdin is still the terminal.
+Herdr shows a trust preview and waits for an answer. The preview went into a
+variable, the operator saw a stopped terminal with no output at all, and herdr sat
+blocked on a read behind a prompt nobody had been shown.
+
+Fixed with hs_herdr_interactive, a second wrapper next to hs_herdr_json: it runs
+herdr in the foreground with stdin, stdout and stderr inherited and reads only the
+exit status. hs_apply_plugins uses it for an install without --yes, and keeps
+hs_herdr_json for --yes (no prompt, and the error object is still caught by
+parsing). It is a reusable helper, not a special case: phase 9's onboard offers an
+integration and waits for an answer the same way and must call it too.
+
+Writing the test found a SECOND half of the same bug that the review had not
+reached. hs_apply_plugins iterated the manifest with `done < "$manifest_tmp"`, so
+the manifest file was the stdin of everything inside the loop. Even with the
+capture removed, the interactive install would have answered Herdr's trust prompt
+with the next line of plugins.list and never let the operator speak. The loop now
+reads on fd 3 (`read ... <&3` / `done 3< "$manifest_tmp"`), leaving stdin alone.
+Any later phase that runs an interactive command inside a `while read` loop has the
+same trap waiting; feed and onboard both will.
+
+Harness: the fake herdr never prompted and never read, so this whole path was
+unexpressible. FAKE_HERDR_PROMPT=1 makes it print a trust preview, read one line,
+log the answer, and exit 1 on anything but yes. Three tests at the function level
+(accept, decline, --yes asks nothing) and one through the real entrypoint, all
+feeding answers on stdin. Against the pre-fix implementation the preview never
+reaches stdout and zero answers reach herdr.
+
+<!-- fr:journal kind=finding scope=plan id=e699fae3077a created=2026-09-08T12:36:22 state=fixed -->
+### e699fae3077a · finding [fixed] · C3 -- absorb's dirty-manifest guard failed open and ate a hand edit
+
+Milestone review, verified. hs_require_clean_manifest captured
+`git status --porcelain -- manifest/` with stderr discarded and never looked at
+git's exit status. Every way git can fail -- the checkout is not a git repository,
+.git is unreadable, a bad config -- produced an empty string, and an empty string
+is exactly what a clean tree produces. The guard said clean, absorb overwrote a
+hand-edited manifest, exit 0, not one word of warning. That is precisely the
+outcome the guard exists to prevent, produced by the guard itself.
+
+Fixed by capturing the exit status separately (`|| git_rc=$?`, never `if ! cmd`) and
+treating any non-zero status as a hard refusal, exit 2, naming what git said. The
+dirty-tree refusal keeps its own exit 4, so "dirty" and "cannot tell" stay
+distinguishable.
+
+Harness: the old fake git shifted past `-C <dir>`, ignored every argument, printed
+$FAKE_GIT_STATUS_OUTPUT and always exited 0 -- it could express "clean" and "dirty"
+and nothing else, and the sandbox it ran against was not a git repository at all.
+The passing test proved only that a canned string was parsed. It is gone.
+test_absorb.sh now builds real repositories with `git init` and covers clean,
+dirty (a tracked file edited by hand plus an untracked one), reverted-back-to-clean,
+and not-a-repository, plus two end-to-end runs through the entrypoint: a committed
+manifest that is then hand-edited (refused, edit intact), and a checkout that is not
+a git repository (refused, both hand-written files byte-identical afterwards).
+Against the pre-fix implementation that last one fails with the hand edit already
+replaced by absorbed content, which is the reviewer's finding reproduced as a test.
+
+Two knock-on harness fixes went with it. The sandbox and the leaky-config sandbox
+are now real repositories, so absorb gets past the guard and the home-path check is
+actually the thing under test; and the "touches nothing outside manifest/" listing
+excludes .git.
+
+<!-- fr:journal kind=finding scope=plan id=163fccbfef8f created=2026-09-08T12:36:23 state=fixed -->
+### 163fccbfef8f · finding [fixed] · C4 -- the preflight gate concluded 'matched' from a call it watched fail, and could not see stderr
+
+Milestone review, verified, both halves.
+
+(a) hs_preflight only reported `mismatched` when the probe exited non-zero AND the
+output carried "protocol_mismatch". Any other failure fell through to `matched`, so
+a server that had just refused the probe -- socket_closed, a permission error, an
+answer that could not be read -- let `apply` write to it. The gate is the whole
+fail-closed rule, and it was reading a failure as health.
+
+(b) The probe ran `herdr plugin list 2>/dev/null`. A herdr that reports its error
+object on stderr left the gate with an empty string to reason about, so even the
+mismatch it was looking for was invisible. hs_herdr_json had always merged the two
+streams for exactly this reason; the probe was the inconsistent one.
+
+Fixed by adding a fourth state rather than folding into mismatched, because the two
+call for different words to the operator: `unreachable` means the probe failed and
+herdr did not say it was a protocol problem. hs_preflight now reports `matched`
+only for a probe that SUCCEEDED. The probe moved into its own function,
+hs_preflight_probe, with 2>&1, so hs_preflight and hs_require_socket agree on what
+is asked and how the answer is read; hs_require_socket re-probes on the unreachable
+path to quote what herdr actually said (hs_preflight runs in a command substitution,
+so a global set there is lost, and this is an error path on a tool run by hand).
+The message is folded to one line by hs_flatten, matching the one-line contract the
+other three states are tested for.
+
+Spec updated: the Preflight section names four states, says matched means the probe
+succeeded and nothing else, and says the probe reads stderr.
+
+Harness: tests/helpers/fake-herdr hard-coded the protocol_mismatch object on stdout.
+It now takes FAKE_HERDR_ERROR_CODE=<code> for an arbitrary error and
+FAKE_HERDR_ERROR_STREAM=stderr to emit on the other stream;
+FAKE_HERDR_PROTOCOL_MISMATCH=1 is kept as shorthand. Against the pre-fix
+implementation both new preflight states come back `matched`.
+
+<!-- fr:journal kind=finding scope=plan id=2ca963cb90a4 created=2026-09-08T12:36:45 state=fixed -->
+### 2ca963cb90a4 · finding [fixed] · I1 -- an annotated tag resolved to the tag object, so a plugin pinned to one never converged
+
+Milestone review, verified against a real annotated tag. An annotated tag is an
+object of its own pointing at a commit, so `git ls-remote <url> <tag>` answers with
+two lines -- the tag object, then the commit under a `^{}` suffix. hs_resolve_ref
+took the first with `head -n1`. Herdr records the COMMIT, so the two could never
+match: a plugin pinned to an annotated tag reported `moved` on every diff and was
+reinstalled on every apply, for ever, without converging, and diff never returned 0.
+The design doc's own example manifest pins v0.3.3.
+
+Fixed by asking for both patterns, `"$ref"` and `"${ref}^{}"`, and preferring the
+peeled line (`awk '$2 ~ /\^\{\}$/'`), falling back to the first line when there is
+none -- a branch or a lightweight tag has only the one, and it is the commit.
+Confirmed against github.com/git/git that the peeled line is returned only when the
+`^{}` pattern is asked for; the bare pattern alone does not produce it.
+
+Harness: the fake git read `$3` and printed one line, so no fixture could be an
+annotated tag. It now loops over every pattern given and honours a `.tagobj`
+fixture beside the `.sha` one -- with both present it answers the bare pattern with
+the tag object and the `^{}` pattern with the commit, exactly as real git does.
+Tested at both levels: hs_resolve_ref returns the commit, and hs_diff_plugins
+reports a plugin sitting at that commit as `ok`. Pre-fix it returns the tag object
+and reports `moved`.
+
+<!-- fr:journal kind=finding scope=plan id=45b9e48217d2 created=2026-09-08T12:36:46 state=fixed -->
+### 45b9e48217d2 · finding [fixed] · I2 -- hs_herdr_json merged stderr into the JSON it returned
+
+Milestone review, verified. `output="$(herdr "$@" 2>&1)"` glued anything herdr said
+on stderr to the front of the answer it returned as a parseable result. One
+deprecation notice and the caller's parse fails on a response that was fine.
+Harmless to date only because both current callers discard stdout -- phase 6's feed
+parses `agent list` and `pane process-info` through this wrapper, so it would have
+broken the first time it mattered.
+
+Fixed by capturing the two separately (stderr to a temp file). On success stdout is
+returned clean and herdr's stderr is passed through to ours, so a warning stays
+visible; on failure stderr is folded into the error message, which is usually where
+it says why. C4's requirement is unaffected: the preflight probe is its own
+function, hs_preflight_probe, and it still merges deliberately.
+
+Harness: FAKE_HERDR_STDERR_NOTE makes the fake write to stderr and still succeed.
+The test asserts the returned stdout is byte-identical to the fixture and that the
+note appears on our stderr; pre-fix the returned value carries the note glued on.
+
+<!-- fr:journal kind=finding scope=plan id=df9771277b58 created=2026-09-08T12:37:11 state=fixed -->
+### df9771277b58 · finding [fixed] · I3 -- apply could gut a host config without showing or asking anything
+
+Milestone review, verified. Operator lines plus one plugin block, an empty manifest
+config, apply -- and the host was left with only the block, exit 0, nothing
+printed. "Last write wins" is the documented design and stays the design; what was
+wrong is that the most destructive write the tool makes was the one it said least
+about, and --dry-run printed `+ write <path>` with no diff at all.
+
+Fixed on two axes:
+
+1. Every real write and every dry run prints the unified diff of the change first,
+   labelled current/new. A host with no config yet is diffed against empty, so the
+   creation case shows its content too.
+2. A write that leaves the file with FEWER lines than it had is gated: it needs
+   --yes, or a yes answer at the terminal (hs_confirm). Refused, it writes nothing
+   and returns 4, which cmd_apply passes through unchanged -- the same "refused,
+   nothing happened" status absorb's dirty-manifest guard already uses. With no
+   terminal there is nobody to ask, so it refuses; silence is not consent.
+
+Note on the reviewer's "reusing hs_diff_config": hs_diff_config compares the host's
+STRIPPED content against the manifest, which is a different question from "what is
+about to change on disk". The shared piece is hs_unified_diff, a four-argument
+helper both now call, so the two render a change the same way; the operands stay
+different on purpose.
+
+The line-count rule is deliberately blunt and does fire on ordinary drift -- an
+operator who deleted two blank lines from the manifest gets asked. That is the
+trade: nothing can distinguish "tidied the manifest" from "manifest is empty" by
+inspection, but the diff plus one question lets the operator distinguish it in a
+second, and --yes silences it for good. The existing "successful write" test was
+exactly such a case and now runs with HS_YES=1; a matching refusal test and a
+growing-write test (which is NOT gated) sit beside it.
+
+<!-- fr:journal kind=finding scope=plan id=fbc18f8218f0 created=2026-09-08T12:37:12 state=fixed -->
+### fbc18f8218f0 · finding [fixed] · I4 -- the single .bak slot was destroyed by the next apply
+
+Milestone review, verified. hs_apply_config copied the host config to
+`<host>.bak`, so the safety net survived exactly one mistake: the second apply
+overwrote the backup taken by the first, and an operator who noticed on the second
+run had already lost what they wanted back.
+
+Fixed with hs_backup_path -- `<host>.bak.<UTC timestamp>`, plus a counter if a file
+is already there (two applies inside one second) -- and it never overwrites an
+existing file. `cp -p` rather than `cp`, so the backup carries the original's mode
+too. Tested: two successive writes leave two distinct backups and the first still
+holds the original content untouched.
+
+<!-- fr:journal kind=finding scope=plan id=3c7e55789110 created=2026-09-08T12:37:14 state=fixed -->
+### 3c7e55789110 · finding [fixed] · I5 -- apply changed the host config's file mode
+
+Milestone review, verified 0644 to 0600. hs_apply_config wrote through
+`mktemp`, which creates 0600, and the rename carried that mode onto the target --
+dropping group access and any ACL on a file the operator, not this tool, owns.
+
+Fixed by `cp -p "$host_file" "$write_tmp"` before writing the content: cp -p sets
+the temp file's mode (and ownership where permitted) from the original, and the
+content write then truncates it without touching the mode. Portable, unlike
+`chmod --reference`, which is GNU-only and this tool targets macOS as well. A
+config that did not exist before gets 0644. Tested with a 0640 host config, and the
+0644 default for a freshly created one.
+
+<!-- fr:journal kind=finding scope=plan id=2ce1f7105469 created=2026-09-08T12:37:43 state=fixed -->
+### 2ce1f7105469 · finding [fixed] · The nine cheap minors, and what each was actually hiding
+
+1. hs_py failing inside hs_herdr_json degraded silently. `if message="$(... | hs_py
+   herdr-error)"` conflated "not an error object" (exit 1) with "could not run the
+   parser at all" (exit 2, no uv), so an error response with a zero exit status
+   passed as a success. The three cases are now distinguished; a parse that could
+   not be made is reported and treated as a failure. Tested by running with uv off
+   PATH.
+2. The failed-install path was untested because the fake always exited 0 for
+   `plugin install`. FAKE_HERDR_FAIL=<prefix> exits 1 with a plain non-JSON message
+   for a matching call. hs_apply_plugins' "returns 1 if any install failed" clause
+   is checked for the first time, including that it attempts every drifted plugin
+   rather than stopping at the first.
+3. hs.py used str.splitlines(), which splits on vertical tab, form feed, \x85,
+   U+2028 and U+2029, while lib/common.sh's `while read` splits on \n alone.
+   Rejoined with "\n", each of those became a REAL newline in the operator's config,
+   and the two sides then disagreed on the line count every block anchor is measured
+   in. Replaced with a split_lines() helper that splits on "\n" and drops a single
+   trailing empty field, matching both splitlines' trailing-newline behaviour and
+   the shell's. Tested with a form feed inside a config value.
+4. A CRLF host config gave a misleading `unterminated plugin block` error: an end
+   marker reads as `--- end <id> ---\r` and matched nothing. _hs_plugin_block_walk
+   now strips a trailing CR before MATCHING and still prints the line exactly as
+   read, so a CRLF file survives a strip/extract round trip byte for byte -- the
+   test counts the carriage returns on both sides.
+5. Duplicate manifest lines were processed twice, producing two installs. Rejected
+   rather than deduped: two lines for one source are either redundant or
+   contradictory (two pinned refs, and nothing says which the host converges on),
+   and AGENTS.md says never guess and continue. Membership is a space-delimited
+   string test, since bash 3.2 has no associative arrays and a source is by
+   construction whitespace-free.
+6. .python-version said 3.14 while PEP 723 and pyproject say >=3.13 and ruff targets
+   py313. Set to 3.13.
+7. Stale header comments in herdr-setup and lib/common.sh still claimed a Python 3.9
+   floor and "no tomllib", contradicting AGENTS.md -- Python comes from uv here, not
+   from the host. Rewritten to say so.
+8. hs_manifest_plugins ran `set +f` unconditionally, handing a caller that had
+   deliberately turned globbing OFF a shell with it back on. `$-` is inspected first
+   and the option restored only if we changed it. Tested from both directions.
+9. HS_DRY_RUN and HS_YES were read unguarded, so sourcing lib/common.sh under
+   `set -u` without them died. Every read is `${VAR:-0}` now.
+
+<!-- fr:journal kind=finding scope=plan id=85aeab2b149b created=2026-09-08T12:37:44 state=open -->
+### 85aeab2b149b · finding [open] · Minor 10 -- a host config with no trailing newline still causes one extra write; deliberately not fixed
+
+Reviewer's minor 10, left open with reasoning rather than fixed.
+
+hs_py splice-config always ends its output with a newline, so a host config whose
+last line has none differs from the spliced content on the first apply, gets one
+write and one reload-config, and converges after that.
+
+Not fixed because I do not think it is a defect. The content apply writes is
+derived from the manifest, and the manifest is the source of truth; a host file
+missing its final newline is a difference the manifest legitimately corrects, in
+the same way any other drift is. Fixing it would mean carrying "did the HOST end
+without a newline" through the splice as a separate signal and letting the host's
+shape override the manifest's on that one byte -- a special case with no principle
+behind it, in the function that has to stay byte-exact for the steady-state anchor
+guarantee (journal 8f3a0c6f882c).
+
+If a later phase disagrees, the place to change it is splice_config in lib/hs.py,
+where the trailing newline is added, and the test to write first is one that
+asserts a second apply against an unchanged host makes no call -- which
+tests/test_roundtrip.sh already asserts for the normal case.
+
+<!-- fr:journal kind=decision scope=plan id=9bf94ba2cc4f created=2026-09-08T12:38:04 -->
+### 9bf94ba2cc4f · decision · A guard is only as good as the fake that can make it fail
+
+The four critical findings were four instances of one pattern, and the pattern
+matters more than any of them.
+
+Each guard failed OPEN -- read a failure as health -- and each had a test that
+passed while proving something weaker than its name claimed, because the fake it
+exercised could not produce the failure. The fake herdr never prompted, so the
+interactive install path did not exist as far as the suite was concerned. It only
+ever emitted one error code, on one stream, so the preflight gate's two fail-open
+branches were unreachable. It always exited 0 for an install, so the failed-install
+branch was unreachable. The fake git ignored its arguments and always exited 0
+against a sandbox that was not a git repository, so a guard whose entire job is
+reading git's exit status was tested by parsing a canned string. The suite was
+thirteen green files over four load-bearing mechanisms that did not work.
+
+So the rule for the phases still to come: when a guard's job is to REFUSE, the fake
+must be able to make it refuse, and the test must be one that fails before the fix.
+Every fix here was verified that way -- the new tests were run against HEAD's
+implementation with the new harness, and every one of them failed, each naming its
+own defect (six of thirteen files passed; the two that did pass, diff_config and
+roundtrip, target no fail-open).
+
+Two practical rules fell out of it:
+
+- Prefer a REAL dependency to a fake when the thing under test is that dependency's
+  failure mode. `git init` in a temp directory costs nothing and cannot lie about
+  its own exit status. Fakes are for things that are expensive or absent (herdr,
+  the network).
+- A switch on a fake is cheap and permanent. FAKE_HERDR_PROMPT, FAKE_HERDR_FAIL,
+  FAKE_HERDR_ERROR_CODE, FAKE_HERDR_ERROR_STREAM and FAKE_HERDR_STDERR_NOTE each
+  exist because a real failure got past a test that looked like it covered it.
+  Phases 6 and 9 should add to that list rather than working around it, and
+  tests/run.sh now clears all of them per file so one left set in a developer's
+  shell cannot reconfigure the fake under every test.

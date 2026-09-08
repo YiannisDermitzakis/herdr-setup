@@ -159,4 +159,39 @@ status=$?
 assert_status "extract on a stray end marker exits 2" 2 "$status"
 assert_contains "extract names the stray end marker's plugin id" "$(cat "$err")" "ez-corp.space-usage"
 
+# --- a config written on Windows. Every line ends CR LF, so an end marker
+# reads as `--- end <id> ---\r` and matched nothing: the block never closed
+# and the whole file was rejected as an unterminated block. Fail-closed, so
+# safe, but the message named a defect that was not there. The carriage
+# return is stripped before matching, and the line is still printed exactly
+# as it was read. ---
+
+crlf="$work/crlf.toml"
+printf '[ui]\r\nagent_panel_sort = "priority"\r\n# --- added by ez-corp.space-usage ---\r\n[ui.sidebar.spaces]\r\nrows = []\r\n# --- end ez-corp.space-usage ---\r\n[misc]\r\nfoo = "bar"\r\n' > "$crlf"
+
+err="$work/crlf_strip.err"
+out="$(hs_strip_plugin_blocks "$crlf" 2>"$err")"
+status=$?
+assert_status "strip accepts a CRLF config" 0 "$status"
+[ ! -s "$err" ] && pass || fail "strip complained about a CRLF config: $(cat "$err")"
+assert_contains "strip keeps the operator's CRLF lines" "$out" 'agent_panel_sort = "priority"'
+case "$out" in
+  *'[ui.sidebar.spaces]'*) fail "strip kept a CRLF plugin block's body" ;;
+  *) pass ;;
+esac
+
+err="$work/crlf_extract.err"
+out="$(hs_extract_plugin_blocks "$crlf" 2>"$err")"
+status=$?
+assert_status "extract accepts a CRLF config" 0 "$status"
+assert_contains "extract returns the CRLF block's body" "$out" '[ui.sidebar.spaces]'
+
+# the carriage returns survive: strip and extract together still partition
+# the file's own bytes
+rebuilt="$work/crlf_rebuilt"
+{ hs_strip_plugin_blocks "$crlf"; hs_extract_plugin_blocks "$crlf"; } > "$rebuilt"
+assert_eq "the CR is preserved on every line strip and extract emit" \
+  "$(tr -cd '\r' < "$crlf" | wc -c | tr -d ' ')" \
+  "$(tr -cd '\r' < "$rebuilt" | wc -c | tr -d ' ')"
+
 hs_test_report

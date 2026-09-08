@@ -6,10 +6,34 @@
 #
 # absorb never calls herdr -- it reads plugins.json and config.toml
 # straight from disk, exactly like the config/plugin sections of `diff`
-# do, and needs no fake-git-on-PATH for ref resolution (it never calls
-# hs_resolve_ref). It DOES need a fake `git` on PATH for the dirty-manifest
-# guard (`git status --porcelain -- manifest/`), local to this file only.
+# do, and needs no fake git for ref resolution (it never calls
+# hs_resolve_ref).
+#
+# The dirty-manifest guard is exercised against REAL git repositories, not a
+# fake git. The fake used here before ignored its arguments, always exited 0,
+# and printed whatever a variable said -- so it could express "clean" and
+# "dirty" and nothing else, and the sandbox it ran against was not a git
+# repository at all. The guard's actual failure, git EXITING NON-ZERO, could
+# not be written down: real git in a non-repository exits 128, which the
+# guard read as an empty status listing, which reads as clean, so absorb
+# overwrote a hand-edited manifest and exited 0. A fake that cannot fail
+# cannot catch a guard that fails open. Three states are covered here:
+# clean, dirty, and not-a-repository.
 set -u
+
+# hs_test_git <repo> [args...]: git with an identity and no dependence on the
+# operator's own config. tests/run.sh gives every file a throwaway $HOME, so
+# there is no user.name/user.email to inherit.
+hs_test_git() {
+  local repo="$1"
+  shift
+  git -C "$repo" \
+    -c user.name="herdr-setup tests" \
+    -c user.email="tests@example.invalid" \
+    -c init.defaultBranch=main \
+    -c commit.gpgsign=false \
+    "$@"
+}
 
 test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$test_dir/.." && pwd)"
@@ -23,29 +47,6 @@ fi
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-
-# =====================================================================
-# fake git: only understands `-C <dir> status --porcelain -- manifest/`.
-# Prints $FAKE_GIT_STATUS_OUTPUT verbatim (empty = clean tree).
-# =====================================================================
-
-fake_git_bin="$work/gitbin"
-mkdir -p "$fake_git_bin"
-cat > "$fake_git_bin/git" <<'GITEOF'
-#!/usr/bin/env bash
-set -u
-if [ "${1:-}" = "-C" ]; then
-  shift 2
-fi
-if [ "${1:-}" = "status" ]; then
-  printf '%s' "${FAKE_GIT_STATUS_OUTPUT:-}"
-  exit 0
-fi
-echo "fake-git: unsupported invocation: $*" >&2
-exit 2
-GITEOF
-chmod +x "$fake_git_bin/git"
-export PATH="$fake_git_bin:$PATH"
 
 # =====================================================================
 # hs_absorb_header
@@ -200,21 +201,51 @@ if ! command -v hs_require_clean_manifest >/dev/null 2>&1; then
 fi
 
 repo_dir="$work/somerepo"
-mkdir -p "$repo_dir"
+mkdir -p "$repo_dir/manifest"
+hs_test_git "$repo_dir" init -q
+printf 'owner/repo v1\n' > "$repo_dir/manifest/plugins.list"
+printf '[ui]\n' > "$repo_dir/manifest/config.toml"
+hs_test_git "$repo_dir" add -A
+hs_test_git "$repo_dir" commit -q -m "committed manifest"
 
-export FAKE_GIT_STATUS_OUTPUT=$' M manifest/config.toml\n?? manifest/plugins.list\n'
+# --- clean: everything under manifest/ is committed ---
+err="$work/clean.err"
+hs_require_clean_manifest "$repo_dir" 2>"$err"
+status=$?
+assert_status "hs_require_clean_manifest exits 0 on a clean manifest/" 0 "$status"
+[ ! -s "$err" ] && pass || fail "a clean manifest/ still printed something: $(cat "$err")"
+
+# --- dirty: a tracked file edited by hand, plus an untracked one ---
+printf '[ui]\nhand_edit = true\n' > "$repo_dir/manifest/config.toml"
+printf 'scratch\n' > "$repo_dir/manifest/notes.txt"
 err="$work/dirty.err"
 hs_require_clean_manifest "$repo_dir" 2>"$err"
 status=$?
 assert_status "hs_require_clean_manifest exits 4 on a dirty manifest/" 4 "$status"
 assert_contains "names the modified file" "$(cat "$err")" "manifest/config.toml"
-assert_contains "names the untracked file" "$(cat "$err")" "manifest/plugins.list"
+assert_contains "names the untracked file" "$(cat "$err")" "manifest/notes.txt"
 
-export FAKE_GIT_STATUS_OUTPUT=""
+# --- back to clean once the edits are gone ---
+hs_test_git "$repo_dir" checkout -q -- manifest/config.toml
+rm -f "$repo_dir/manifest/notes.txt"
 hs_require_clean_manifest "$repo_dir" 2>/dev/null
 status=$?
-assert_status "hs_require_clean_manifest exits 0 on a clean manifest/" 0 "$status"
-unset FAKE_GIT_STATUS_OUTPUT
+assert_status "hs_require_clean_manifest exits 0 again once the edits are reverted" 0 "$status"
+
+# --- NOT a git repository: git exits non-zero and prints nothing useful on
+# stdout. Read as text alone, that is indistinguishable from a clean tree,
+# and the guard used to say clean and let absorb overwrite. It is a hard
+# refusal, exit 2, and it must never be 0. ---
+not_a_repo="$work/not_a_repo"
+mkdir -p "$not_a_repo/manifest"
+printf 'hand edited, never committed\n' > "$not_a_repo/manifest/config.toml"
+err="$work/notrepo.err"
+( cd "$not_a_repo" && GIT_CEILING_DIRECTORIES="$work" hs_require_clean_manifest "$not_a_repo" ) 2>"$err"
+status=$?
+[ "$status" -ne 0 ] && pass || fail "hs_require_clean_manifest reported a non-repository as clean"
+assert_status "hs_require_clean_manifest exits 2 when git itself fails" 2 "$status"
+[ -s "$err" ] && pass || fail "a git failure was refused silently"
+assert_contains "the refusal names the reason" "$(cat "$err")" "refusing to overwrite"
 
 # =====================================================================
 # cmd_absorb wiring: the real entrypoint, from a sandbox copy (never this
@@ -227,6 +258,9 @@ cp "$repo_root/herdr-setup" "$sandbox/herdr-setup"
 cp "$repo_root/lib/common.sh" "$sandbox/lib/common.sh"
 cp "$repo_root/lib/hs.py" "$sandbox/lib/hs.py"
 chmod +x "$sandbox/herdr-setup"
+hs_test_git "$sandbox" init -q
+hs_test_git "$sandbox" add -A
+hs_test_git "$sandbox" commit -q -m "sandbox checkout"
 
 host_dir="$work/host"
 mkdir -p "$host_dir"
@@ -235,7 +269,6 @@ cp "$host_config" "$host_dir/config.toml"
 
 # --- --dry-run: prints both files to stdout, writes neither ---
 
-export FAKE_GIT_STATUS_OUTPUT=""
 out="$work/dryrun.out"; err="$work/dryrun.err"
 HERDR_CONFIG_DIR="$host_dir" "$sandbox/herdr-setup" --dry-run absorb >"$out" 2>"$err"
 status=$?
@@ -249,7 +282,7 @@ assert_contains "dry-run prints the config content" "$(cat "$out")" 'agent_panel
 # touches nothing outside manifest/, and the plugins.list it wrote parses
 # back cleanly with hs_manifest_plugins ---
 
-before_listing="$(find "$sandbox" -type f -not -path "$sandbox/manifest/*" | sort)"
+before_listing="$(find "$sandbox" -type f -not -path "$sandbox/manifest/*" -not -path "$sandbox/.git/*" | sort)"
 
 out="$work/real.out"; err="$work/real.err"
 HERDR_CONFIG_DIR="$host_dir" "$sandbox/herdr-setup" absorb >"$out" 2>"$err"
@@ -258,7 +291,7 @@ assert_status "herdr-setup absorb exits 0 on a clean tree" 0 "$status"
 [ -f "$sandbox/manifest/plugins.list" ] && pass || fail "absorb did not write manifest/plugins.list"
 [ -f "$sandbox/manifest/config.toml" ] && pass || fail "absorb did not write manifest/config.toml"
 
-after_listing="$(find "$sandbox" -type f -not -path "$sandbox/manifest/*" | sort)"
+after_listing="$(find "$sandbox" -type f -not -path "$sandbox/manifest/*" -not -path "$sandbox/.git/*" | sort)"
 assert_eq "absorb touches nothing outside manifest/" "$before_listing" "$after_listing"
 
 assert_contains "written plugins.list carries the ezcorp-org plugin" \
@@ -283,10 +316,26 @@ assert_status "the written plugins.list parses back with hs_manifest_plugins" 0 
 assert_contains "the parsed manifest carries the ezcorp-org plugin" "$manifest_parsed" \
   "$(printf 'ezcorp-org/herdr-pc-ram-and-cpu-usage-overlay\tmain')"
 
-# --- the dirty-manifest guard, wired end to end: exits 4, writes nothing,
-# names the dirty files ---
+# --- the manifest absorb just wrote is untracked, so the tree is dirty and
+# a second absorb refuses, end to end, without any test having to arrange it ---
 
-export FAKE_GIT_STATUS_OUTPUT=$' M manifest/config.toml\n'
+before_plugins="$(cat "$sandbox/manifest/plugins.list")"
+before_config="$(cat "$sandbox/manifest/config.toml")"
+
+out="$work/untracked_run.out"; err="$work/untracked_run.err"
+HERDR_CONFIG_DIR="$host_dir" "$sandbox/herdr-setup" absorb >"$out" 2>"$err"
+status=$?
+assert_status "a second absorb exits 4 while the first one's output is uncommitted" 4 "$status"
+assert_contains "names the untracked manifest on stderr" "$(cat "$err")" "manifest/"
+
+# --- the dirty-manifest guard on a HAND EDIT, wired end to end: the
+# manifest is committed, then edited, and absorb must refuse rather than
+# overwrite the edit. This is the case the guard exists for. ---
+
+hs_test_git "$sandbox" add -A
+hs_test_git "$sandbox" commit -q -m "absorbed manifest"
+
+printf '\n# a hand edit that must survive\n' >> "$sandbox/manifest/config.toml"
 before_plugins="$(cat "$sandbox/manifest/plugins.list")"
 before_config="$(cat "$sandbox/manifest/config.toml")"
 
@@ -299,7 +348,36 @@ assert_eq "a refused absorb leaves plugins.list untouched" "$before_plugins" \
   "$(cat "$sandbox/manifest/plugins.list")"
 assert_eq "a refused absorb leaves config.toml untouched" "$before_config" \
   "$(cat "$sandbox/manifest/config.toml")"
-unset FAKE_GIT_STATUS_OUTPUT
+assert_contains "the hand edit is still there" "$(cat "$sandbox/manifest/config.toml")" \
+  "a hand edit that must survive"
+
+hs_test_git "$sandbox" checkout -q -- manifest/config.toml
+
+# --- a checkout that is NOT a git repository at all. The guard cannot tell
+# whether the manifest is clean, so it must refuse. It used to read git's
+# failure as an empty status listing, call that clean, and overwrite the
+# hand edit below with exit 0 and not one word of warning. ---
+
+bare_sandbox="$work/bare_sandbox"
+mkdir -p "$bare_sandbox/lib" "$bare_sandbox/manifest"
+cp "$repo_root/herdr-setup" "$bare_sandbox/herdr-setup"
+cp "$repo_root/lib/common.sh" "$bare_sandbox/lib/common.sh"
+cp "$repo_root/lib/hs.py" "$bare_sandbox/lib/hs.py"
+chmod +x "$bare_sandbox/herdr-setup"
+hand_edit='# hand-written, never committed, must not be eaten'
+printf '%s\n' "$hand_edit" > "$bare_sandbox/manifest/config.toml"
+printf '%s\n' "$hand_edit" > "$bare_sandbox/manifest/plugins.list"
+
+out="$work/norepo_run.out"; err="$work/norepo_run.err"
+GIT_CEILING_DIRECTORIES="$work" HERDR_CONFIG_DIR="$host_dir" \
+  "$bare_sandbox/herdr-setup" absorb >"$out" 2>"$err"
+status=$?
+[ "$status" -ne 0 ] && pass || fail "absorb exited 0 in a directory that is not a git repository"
+assert_eq "the hand-edited config.toml survived" "$hand_edit" \
+  "$(cat "$bare_sandbox/manifest/config.toml")"
+assert_eq "the hand-edited plugins.list survived" "$hand_edit" \
+  "$(cat "$bare_sandbox/manifest/plugins.list")"
+[ -s "$err" ] && pass || fail "absorb refused silently outside a git repository"
 
 # --- a host config value that itself carries a home directory path:
 # absorb must refuse rather than write it into the public checkout ---
@@ -318,6 +396,11 @@ cp "$repo_root/herdr-setup" "$leaky_sandbox/herdr-setup"
 cp "$repo_root/lib/common.sh" "$leaky_sandbox/lib/common.sh"
 cp "$repo_root/lib/hs.py" "$leaky_sandbox/lib/hs.py"
 chmod +x "$leaky_sandbox/herdr-setup"
+# A real, clean repository, so absorb gets PAST the dirty-manifest guard and
+# the home-path check is the thing actually under test here.
+hs_test_git "$leaky_sandbox" init -q
+hs_test_git "$leaky_sandbox" add -A
+hs_test_git "$leaky_sandbox" commit -q -m "leaky sandbox checkout"
 
 out="$work/leak.out"; err="$work/leak.err"
 HERDR_CONFIG_DIR="$leaky_host_dir" "$leaky_sandbox/herdr-setup" absorb >"$out" 2>"$err"

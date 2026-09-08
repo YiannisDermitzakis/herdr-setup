@@ -8,16 +8,47 @@
 # directory also carries a `herdr` symlink pointing at this file — that is
 # what PATH resolution actually finds.
 #
+# A fake that can only succeed, only on stdout, and never asks a question can
+# only prove the happy path. Every switch below exists because a real failure
+# it could not express got past a test that looked like it covered it.
+#
 # Behaviour:
 #   - Every call appends its full argv, space-joined, as one line to the file
 #     named by $FAKE_HERDR_LOG (when set).
 #   - If $FAKE_HERDR_FIXTURES/<argv words joined by "->">.json exists, its
 #     contents are printed to stdout.
-#   - If $FAKE_HERDR_PROTOCOL_MISMATCH=1 is set, every call fails with a
-#     protocol_mismatch error object and exits 1, EXCEPT `--version` and
-#     `integration status`, which behave as if there were no mismatch. This
-#     mirrors a real herdr 0.9.0 command line stuck against a 0.8.2 server:
-#     those two still work, everything else is blocked.
+#
+# Failure switches, all exempting `--version` and `integration status` (a real
+# herdr 0.9.0 command line stuck against a 0.8.2 server still answers those
+# two, and only those two, so the fake must too):
+#
+#   FAKE_HERDR_PROTOCOL_MISMATCH=1
+#       Every other call fails with a protocol_mismatch error object, exit 1.
+#       Shorthand for FAKE_HERDR_ERROR_CODE=protocol_mismatch.
+#   FAKE_HERDR_ERROR_CODE=<code>
+#       Same, with an arbitrary error code. The preflight gate used to treat
+#       anything that was not protocol_mismatch as a healthy host; with only
+#       the one hard-coded code to fake, no test could say so.
+#   FAKE_HERDR_ERROR_STREAM=stderr
+#       Emit the error object on stderr instead of stdout. A caller that
+#       discards stderr then sees nothing at all and concludes the call was
+#       fine, which is what the preflight probe did.
+#   FAKE_HERDR_FAIL=<subcommand-prefix>
+#       Exit 1 for a call whose argv starts with that prefix (e.g.
+#       "plugin install"), with a plain, non-JSON message on stderr — how a
+#       command fails when it is not the protocol that is wrong. Nothing
+#       could fake a failed install before, so apply's failure path was
+#       unreachable from a test.
+#   FAKE_HERDR_STDERR_NOTE=<text>
+#       Write <text> to stderr and still succeed, like a deprecation notice
+#       alongside a perfectly good answer on stdout.
+#   FAKE_HERDR_PROMPT=1
+#       For `plugin install` WITHOUT --yes, print a trust preview to stdout
+#       and read one line from stdin, exactly as the real herdr does. Logs
+#       "prompt-answer <answer>" so a test can see it was answered, and exits
+#       1 on anything but y/yes. With --yes, no preview and no read. This is
+#       the mode that catches a caller running the install inside a command
+#       substitution: the preview never reaches the operator's terminal.
 #
 # Bash 3.2 safe: no associative arrays, no mapfile, no `local -n`.
 set -u
@@ -40,9 +71,67 @@ if [ "$*" = "integration status" ] || [ "$*" = "--version" ]; then
   exempt_from_mismatch=1
 fi
 
-if [ "${FAKE_HERDR_PROTOCOL_MISMATCH:-}" = "1" ] && [ "$exempt_from_mismatch" -eq 0 ]; then
-  printf '%s\n' '{"id":"x","error":{"code":"protocol_mismatch","message":"client protocol 22 is newer than server protocol 20; restart the Herdr server before using this command."}}'
+error_code="${FAKE_HERDR_ERROR_CODE:-}"
+if [ -z "$error_code" ] && [ "${FAKE_HERDR_PROTOCOL_MISMATCH:-}" = "1" ]; then
+  error_code="protocol_mismatch"
+fi
+
+if [ -n "$error_code" ] && [ "$exempt_from_mismatch" -eq 0 ]; then
+  if [ "$error_code" = "protocol_mismatch" ]; then
+    error_message="client protocol 22 is newer than server protocol 20; restart the Herdr server before using this command."
+  else
+    error_message="the server refused this call ($error_code)."
+  fi
+  payload="{\"id\":\"x\",\"error\":{\"code\":\"$error_code\",\"message\":\"$error_message\"}}"
+  if [ "${FAKE_HERDR_ERROR_STREAM:-stdout}" = "stderr" ]; then
+    printf '%s\n' "$payload" >&2
+  else
+    printf '%s\n' "$payload"
+  fi
   exit 1
+fi
+
+if [ -n "${FAKE_HERDR_FAIL:-}" ] && [ "$exempt_from_mismatch" -eq 0 ]; then
+  case "$* " in
+    "$FAKE_HERDR_FAIL "*)
+      echo "herdr: $FAKE_HERDR_FAIL failed" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+if [ "${FAKE_HERDR_PROMPT:-}" = "1" ]; then
+  case "${1:-}" in
+    plugin)
+      has_yes=0
+      for arg in "$@"; do
+        if [ "$arg" = "--yes" ]; then
+          has_yes=1
+        fi
+      done
+      if [ "${2:-}" = "install" ] && [ "$has_yes" -eq 0 ]; then
+        echo "TRUST PREVIEW for ${3:-<unknown>}"
+        echo "  this plugin runs code on your machine."
+        printf 'Install it? [y/N] '
+        answer=""
+        read -r answer || answer=""
+        if [ -n "${FAKE_HERDR_LOG:-}" ]; then
+          printf 'prompt-answer %s\n' "$answer" >> "$FAKE_HERDR_LOG"
+        fi
+        case "$answer" in
+          y|Y|yes|Yes|YES) ;;
+          *)
+            echo "herdr: install declined" >&2
+            exit 1
+            ;;
+        esac
+      fi
+      ;;
+  esac
+fi
+
+if [ -n "${FAKE_HERDR_STDERR_NOTE:-}" ]; then
+  printf '%s\n' "$FAKE_HERDR_STDERR_NOTE" >&2
 fi
 
 if [ -n "${FAKE_HERDR_FIXTURES:-}" ] && [ -f "$FAKE_HERDR_FIXTURES/$joined.json" ]; then

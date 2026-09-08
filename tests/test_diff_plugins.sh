@@ -21,9 +21,19 @@ fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# --- fake git: only understands `ls-remote <url> <ref>`. Looks up
-# $FAKE_GIT_FIXTURES/<url-with-/-and-:-turned-to-_>-><ref>.sha; if present,
-# prints "<sha>\trefs/heads/<ref>"; if absent, prints nothing (ref gone). ---
+# --- fake git: understands `ls-remote <url> <ref>...`, one pattern or
+# several. For each pattern it looks up
+# $FAKE_GIT_FIXTURES/<url-with-/-and-:-turned-to-_>-><ref>.sha, which holds
+# the COMMIT the ref resolves to; if there is no such file it prints nothing
+# for that pattern (ref gone).
+#
+# A sibling `.tagobj` file makes the ref an ANNOTATED TAG, and that is the
+# shape that matters: an annotated tag is an object of its own pointing at a
+# commit, so real git answers a bare `v0.3.3` with the TAG OBJECT's sha and
+# answers `v0.3.3^{}` with the commit. Herdr records the commit. The fake
+# could only ever produce one line, so nothing could tell the two apart and
+# the sha this tool handed back for an annotated tag was never the one it
+# was comparing against. ---
 
 fake_git_bin="$work/bin"
 mkdir -p "$fake_git_bin"
@@ -35,12 +45,23 @@ if [ "${1:-}" != "ls-remote" ]; then
   exit 2
 fi
 url="$2"
-ref="$3"
+shift 2
 slug="$(printf '%s' "$url" | tr '/:' '__')"
-fixture="$FAKE_GIT_FIXTURES/${slug}->${ref}.sha"
-if [ -f "$fixture" ]; then
-  printf '%s\trefs/heads/%s\n' "$(cat "$fixture")" "$ref"
-fi
+for pattern in "$@"; do
+  base="${pattern%"^{}"}"
+  sha_file="$FAKE_GIT_FIXTURES/${slug}->${base}.sha"
+  tag_file="$FAKE_GIT_FIXTURES/${slug}->${base}.tagobj"
+  [ -f "$sha_file" ] || continue
+  if [ "$pattern" = "$base" ]; then
+    if [ -f "$tag_file" ]; then
+      printf '%s\trefs/tags/%s\n' "$(cat "$tag_file")" "$base"
+    else
+      printf '%s\trefs/heads/%s\n' "$(cat "$sha_file")" "$base"
+    fi
+  elif [ -f "$tag_file" ]; then
+    printf '%s\trefs/tags/%s^{}\n' "$(cat "$sha_file")" "$base"
+  fi
+done
 exit 0
 GITEOF
 chmod +x "$fake_git_bin/git"
@@ -83,6 +104,31 @@ out="$(FAKE_GIT_FIXTURES="$fixtures" hs_resolve_ref "some-org/gone-repo" "v9.9.9
 status=$?
 assert_status "hs_resolve_ref exits 1 when the ref is gone" 1 "$status"
 assert_eq "hs_resolve_ref prints nothing when the ref is gone" "" "$out"
+
+# --- hs_resolve_ref: an ANNOTATED tag resolves to the COMMIT, not to the
+# tag object. ls-remote answers with two lines for one; taking the first
+# handed back the tag object's sha, which can never equal the commit Herdr
+# recorded, so a plugin pinned to an annotated tag was reported moved on
+# every diff and reinstalled on every apply, for ever, without converging.
+# The design doc's own example manifest pins v0.3.3. ---
+
+sha_tag_commit="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+sha_tag_object="ffffffffffffffffffffffffffffffffffffffff"
+annotated_repo='https://github.com/some-org/annotated-plugin.git'
+echo "$sha_tag_commit" > "$fixtures/$(git_fixture_name "$annotated_repo" 'v1.2.3')"
+echo "$sha_tag_object" > "$fixtures/$(git_fixture_name "$annotated_repo" 'v1.2.3' | sed 's/\.sha$/.tagobj/')"
+
+out="$(FAKE_GIT_FIXTURES="$fixtures" hs_resolve_ref "some-org/annotated-plugin" "v1.2.3")"
+status=$?
+assert_status "hs_resolve_ref exits 0 on an annotated tag" 0 "$status"
+assert_eq "hs_resolve_ref returns the commit an annotated tag points at" "$sha_tag_commit" "$out"
+assert_eq "hs_resolve_ref does not return the tag object's own sha" "" \
+  "$(printf '%s' "$out" | grep -F "$sha_tag_object" || true)"
+
+# --- and a lightweight tag or branch, which has only the one line, is
+# unaffected ---
+out="$(FAKE_GIT_FIXTURES="$fixtures" hs_resolve_ref "ezcorp-org/herdr-pc-ram-and-cpu-usage-overlay" "main")"
+assert_eq "a ref with no peeled line still resolves to its only sha" "$sha_new" "$out"
 
 if ! command -v hs_diff_plugins >/dev/null 2>&1; then
   fail "hs_diff_plugins is not defined yet"
@@ -188,6 +234,37 @@ out_clean="$(FAKE_GIT_FIXTURES="$fixtures" hs_diff_plugins "$clean_manifest" "$c
 status_clean=$?
 assert_status "hs_diff_plugins exits 0 when everything matches" 0 "$status_clean"
 assert_contains "clean run reports ok" "$out_clean" "ok: kryptamine/herdr-auto-title"
+
+# --- a plugin pinned to an annotated tag, sitting at exactly the commit
+# that tag points at, is `ok`. Reported `moved`, it would be reinstalled by
+# every apply and never converge, and diff would never return 0. ---
+
+annotated_manifest="$work/annotated.list"
+printf 'some-org/annotated-plugin v1.2.3\n' > "$annotated_manifest"
+annotated_json="$work/annotated_plugins.json"
+cat > "$annotated_json" <<JSONEOF
+[
+  {
+    "plugin_id": "some-org.annotated",
+    "source": {
+      "kind": "github", "owner": "some-org", "repo": "annotated-plugin",
+      "requested_ref": "v1.2.3",
+      "resolved_commit": "$sha_tag_commit",
+      "managed_path": "/placeholder/plugins/some-org.annotated"
+    }
+  }
+]
+JSONEOF
+
+out="$(FAKE_GIT_FIXTURES="$fixtures" hs_diff_plugins "$annotated_manifest" "$annotated_json")"
+status=$?
+assert_status "a plugin pinned to an annotated tag reports no drift" 0 "$status"
+assert_contains "an annotated-tag plugin at its commit is ok" "$out" \
+  "plugin ok: some-org/annotated-plugin"
+case "$out" in
+  *"moved"*) fail "an annotated-tag plugin at its own commit was reported as moved: $out" ;;
+  *) pass ;;
+esac
 
 # --- cmd_diff wiring: run the REAL entrypoint end to end, from a sandbox
 # copy of herdr-setup + lib/ (never the checkout this test file lives in --

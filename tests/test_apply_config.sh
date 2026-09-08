@@ -126,6 +126,33 @@ assert_status "hs_splice_config exits 0 with no host file" 0 "$status"
 assert_eq "with no host file, splice output is the manifest content unchanged" \
   "$(cat "$manifest_same_shape")" "$out"
 
+# --- a manifest line carrying a character Python calls a line break but
+# the shell does not. hs.py used str.splitlines(), which splits on vertical
+# tab, form feed, \x85, U+2028 and U+2029; lib/common.sh's `while read`
+# splits on \n alone. Rejoined with "\n", each of those turned into a REAL
+# newline in the operator's own config, and the two sides then disagreed on
+# how many lines the file had, which is what every block anchor is counted
+# in. ---
+
+manifest_odd="$work/manifest_odd.toml"
+printf '[ui]\nagent_panel_sort = "a\014b"\n\n[misc]\nfoo = "bar"\n' > "$manifest_odd"
+
+out="$(hs_splice_config "$host_with_blocks" "$manifest_odd")"
+status=$?
+assert_status "hs_splice_config exits 0 on a manifest with a form feed in a value" 0 "$status"
+assert_contains "the form feed stays inside its own line, not turned into a newline" \
+  "$out" "$(printf 'agent_panel_sort = "a\014b"')"
+manifest_odd_lines="$(wc -l < "$manifest_odd" | tr -d ' ')"
+block_lines="$(hs_extract_plugin_blocks "$host_with_blocks" | wc -l | tr -d ' ')"
+assert_eq "the spliced file has the manifest's lines plus the blocks', and no more" \
+  "$((manifest_odd_lines + block_lines))" \
+  "$(printf '%s\n' "$out" | wc -l | tr -d ' ')"
+
+# and the blocks still land where the anchors say, because both sides now
+# count the same lines
+assert_contains "the form-feed manifest still gets its blocks back" "$out" \
+  '# --- added by ez-corp.space-usage (removed by `status-disable`) ---'
+
 # --- a missing/unreadable manifest config is fail-closed: exit 2, one
 # stderr line naming the file ---
 
@@ -147,10 +174,22 @@ fi
 
 log="$work/herdr.log"
 
-# --- a host that drifts from the manifest: writes the new content,
-# backs the old content up first, writes via a temp file in the same
-# directory then renames (no leftover temp file afterwards), and calls
-# reload-config exactly once. ---
+# hs_backup_files <dir>: the timestamped backups hs_apply_config has taken
+# in <dir>, newest last.
+hs_backup_files() {
+  find "$1" -maxdepth 1 -name 'config.toml.bak.*' 2>/dev/null | sort
+}
+
+# =====================================================================
+# The shrinking-write gate. `apply` overwrites the operator's live Herdr
+# config, and it used to do that in total silence: the reviewer's case was
+# operator lines plus one plugin block, an empty manifest config, and an
+# apply that left only the block behind, exit 0, nothing printed at all.
+# "Last write wins" is the design; saying nothing while doing it is not.
+# So every real write and every dry run prints the diff, and a write that
+# ends with FEWER lines than it started with needs --yes or an answer at
+# the terminal. There is no terminal here, so the default path refuses.
+# =====================================================================
 
 host_dir="$work/host_drift"
 mkdir -p "$host_dir"
@@ -159,30 +198,108 @@ cp "$host_with_blocks" "$host_file"
 original_content="$(cat "$host_file")"
 
 rm -f "$log"
+out="$work/shrink_refused.out"; err="$work/shrink_refused.err"
 HS_DRY_RUN=0 HS_YES=0 FAKE_HERDR_LOG="$log" \
-  hs_apply_config "$host_file" "$manifest_same_shape"
+  hs_apply_config "$host_file" "$manifest_same_shape" >"$out" 2>"$err"
+status=$?
+assert_status "a shrinking write with no --yes and no terminal is refused with 4" 4 "$status"
+assert_eq "a refused write leaves the host file exactly as it was" \
+  "$original_content" "$(cat "$host_file")"
+[ -z "$(hs_backup_files "$host_dir")" ] && pass || fail "a refused write still took a backup"
+[ ! -f "$log" ] && pass || fail "a refused write still called herdr: $(cat "$log" 2>/dev/null)"
+assert_contains "the refusal says how many lines would go" "$(cat "$err")" "removes 2 line"
+assert_contains "the refusal names --yes as the way through" "$(cat "$err")" "--yes"
+
+# --- and the diff of that write is shown, not just announced. `+ write
+# <path>` told the operator nothing about what was about to happen to
+# their config. ---
+assert_contains "the change is shown as a diff" "$(cat "$out")" "config change:"
+assert_contains "the diff shows the line being removed" "$(cat "$out")" '-agent_panel_sort = "priority"'
+assert_contains "the diff shows the line being added" "$(cat "$out")" '+agent_panel_sort = "recency"'
+assert_contains "the diff labels the sides" "$(cat "$out")" "current"
+
+# --- accepted with --yes: writes the new content, backs the old content
+# up first, writes via a temp file in the same directory then renames (no
+# leftover temp file afterwards), and calls reload-config exactly once. ---
+
+rm -f "$log"
+out="$work/shrink_yes.out"
+HS_DRY_RUN=0 HS_YES=1 FAKE_HERDR_LOG="$log" \
+  hs_apply_config "$host_file" "$manifest_same_shape" >"$out" 2>/dev/null
 status=$?
 assert_status "hs_apply_config exits 0 after a successful write" 0 "$status"
 assert_contains "hs_apply_config's new content uses the manifest's value" \
   "$(cat "$host_file")" 'agent_panel_sort = "recency"'
+assert_contains "an accepted write still shows its diff" "$(cat "$out")" "config change:"
 assert_eq "hs_apply_config backed up the previous content" \
-  "$original_content" "$(cat "${host_file}.bak" 2>/dev/null)"
+  "$original_content" "$(cat "$(hs_backup_files "$host_dir" | head -n1)" 2>/dev/null)"
 leftover="$(find "$host_dir" -maxdepth 1 -name '.herdr-setup-config.*' 2>/dev/null)"
 [ -z "$leftover" ] && pass || fail "hs_apply_config left a temp file behind: $leftover"
 assert_eq "hs_apply_config calls reload-config exactly once" "1" \
   "$(grep -c '^server reload-config$' "$log")"
 
+# --- a GROWING write needs no confirmation: the gate is about losing
+# content, not about writing at all. ---
+
+manifest_grown="$work/manifest_grown.toml"
+cat > "$manifest_grown" <<'EOF'
+[ui]
+agent_panel_sort = "recency"
+
+[misc]
+foo = "bar"
+added_by_the_manifest = 1
+another_added_line = 2
+yet_another_added_line = 3
+EOF
+
+rm -f "$log"
+HS_DRY_RUN=0 HS_YES=0 FAKE_HERDR_LOG="$log" \
+  hs_apply_config "$host_file" "$manifest_grown" >/dev/null 2>&1
+status=$?
+assert_status "a growing write goes through with no --yes and no terminal" 0 "$status"
+assert_contains "the grown content landed" "$(cat "$host_file")" "yet_another_added_line = 3"
+
+# --- the backup slot survives more than one mistake. A single `.bak` was
+# destroyed by the very next apply, so the safety net was gone by the time
+# an operator noticed they wanted it. ---
+
+backups="$(hs_backup_files "$host_dir")"
+assert_eq "each write took its own backup" "2" "$(printf '%s\n' "$backups" | wc -l | tr -d ' ')"
+assert_eq "the first backup still holds the original content, untouched" \
+  "$original_content" "$(cat "$(printf '%s\n' "$backups" | head -n1)")"
+
+# --- the host file keeps its own mode. mktemp makes 0600, and renaming
+# that over the target silently took a group-readable config private. ---
+
+host_dir_mode="$work/host_mode"
+mkdir -p "$host_dir_mode"
+host_file_mode="$host_dir_mode/config.toml"
+cp "$host_with_blocks" "$host_file_mode"
+chmod 640 "$host_file_mode"
+mode_before="$(ls -l "$host_file_mode" | cut -c1-10)"
+
+rm -f "$log"
+HS_DRY_RUN=0 HS_YES=1 FAKE_HERDR_LOG="$log" \
+  hs_apply_config "$host_file_mode" "$manifest_same_shape" >/dev/null 2>&1
+assert_eq "the written config keeps the original's mode" \
+  "$mode_before" "$(ls -l "$host_file_mode" | cut -c1-10)"
+assert_eq "the backup keeps the original's mode too" \
+  "$mode_before" "$(ls -l "$(hs_backup_files "$host_dir_mode" | head -n1)" | cut -c1-10)"
+
 # --- calling it again with the same manifest is a no-op: content
 # unchanged, no new backup write, no reload-config call ---
 
 cp "$host_file" "$host_file.before_noop"
+before_backups="$(hs_backup_files "$host_dir")"
 rm -f "$log"
 HS_DRY_RUN=0 HS_YES=0 FAKE_HERDR_LOG="$log" \
-  hs_apply_config "$host_file" "$manifest_same_shape"
+  hs_apply_config "$host_file" "$manifest_grown"
 status=$?
 assert_status "a no-op apply still exits 0" 0 "$status"
 assert_eq "a no-op apply leaves the host file untouched" \
   "$(cat "$host_file.before_noop")" "$(cat "$host_file")"
+assert_eq "a no-op apply takes no backup" "$before_backups" "$(hs_backup_files "$host_dir")"
 [ ! -f "$log" ] && pass || fail "a no-op apply still called herdr: $(cat "$log" 2>/dev/null)"
 
 # --- --dry-run: no write, no backup, no herdr call, on a host that
@@ -195,13 +312,24 @@ cp "$host_with_blocks" "$host_file_dry"
 before="$(cat "$host_file_dry")"
 
 rm -f "$log"
-HS_DRY_RUN=1 HS_YES=0 FAKE_HERDR_LOG="$log" \
-  hs_apply_config "$host_file_dry" "$manifest_same_shape" >/dev/null
+out="$work/dryrun.out"
+HS_DRY_RUN=1 HS_YES=1 FAKE_HERDR_LOG="$log" \
+  hs_apply_config "$host_file_dry" "$manifest_same_shape" >"$out" 2>/dev/null
 status=$?
 assert_status "dry-run hs_apply_config exits 0" 0 "$status"
 assert_eq "dry-run makes no change to the host file" "$before" "$(cat "$host_file_dry")"
-[ ! -f "${host_file_dry}.bak" ] && pass || fail "dry-run created a backup file"
+[ -z "$(hs_backup_files "$host_dir_dry")" ] && pass || fail "dry-run created a backup file"
 [ ! -f "$log" ] && pass || fail "dry-run called herdr: $(cat "$log" 2>/dev/null)"
+assert_contains "dry-run shows the diff it would write" "$(cat "$out")" '+agent_panel_sort = "recency"'
+assert_contains "dry-run still names the write it would make" "$(cat "$out")" "+ write"
+
+# --- a dry run of a shrinking write is refused too, so --dry-run answers
+# the same question a real run would ---
+rm -f "$log"
+HS_DRY_RUN=1 HS_YES=0 FAKE_HERDR_LOG="$log" \
+  hs_apply_config "$host_file_dry" "$manifest_same_shape" >/dev/null 2>&1
+status=$?
+assert_status "a dry run of a shrinking write is refused with 4 as well" 4 "$status"
 
 # --- a host config that does not exist yet: apply creates it, no
 # backup (nothing to back up), reload-config still called once ---
@@ -212,15 +340,17 @@ host_file_new="$host_dir_new/config.toml"
 
 rm -f "$log"
 HS_DRY_RUN=0 HS_YES=0 FAKE_HERDR_LOG="$log" \
-  hs_apply_config "$host_file_new" "$manifest_same_shape"
+  hs_apply_config "$host_file_new" "$manifest_same_shape" >/dev/null
 status=$?
 assert_status "hs_apply_config exits 0 creating a fresh host config" 0 "$status"
 [ -f "$host_file_new" ] && pass || fail "hs_apply_config did not create the host config"
 assert_contains "the freshly created config carries the manifest content" \
   "$(cat "$host_file_new")" 'agent_panel_sort = "recency"'
-[ ! -f "${host_file_new}.bak" ] && pass || fail "hs_apply_config backed up a file that never existed"
+[ -z "$(hs_backup_files "$host_dir_new")" ] && pass || fail "hs_apply_config backed up a file that never existed"
 assert_eq "hs_apply_config still reloads once for a freshly created config" "1" \
   "$(grep -c '^server reload-config$' "$log")"
+assert_eq "a config created from nothing gets 0644" "-rw-r--r--" \
+  "$(ls -l "$host_file_new" | cut -c1-10)"
 
 # --- a missing/unreadable manifest config is fail-closed: exit 2, one
 # stderr line naming the file, and no side effects ---

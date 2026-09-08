@@ -63,4 +63,53 @@ err="$(hs_manifest_plugins "$missing" 2>&1 1>/dev/null)"
 assert_contains "missing-manifest error names the file" "$err" "does-not-exist.list"
 assert_eq "missing-manifest error is exactly one line" "1" "$(printf '%s\n' "$err" | wc -l | tr -d ' ')"
 
+# --- the same source named twice: fatal, exit 2. Two lines for one plugin
+# are either redundant (apply ran the same install twice) or contradictory
+# (two pinned refs, and nothing says which the host converges on). Both were
+# silently processed in order. ---
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+dupes="$work/duplicate.list"
+cat > "$dupes" <<'EOF'
+kryptamine/herdr-auto-title   v0.3.3
+ezcorp-org/overlay            main
+kryptamine/herdr-auto-title   v0.4.0
+EOF
+
+status="$(hs_manifest_plugins "$dupes" >/dev/null 2>/dev/null; echo $?)"
+assert_status "a duplicated source exits 2" 2 "$status"
+err="$(hs_manifest_plugins "$dupes" 2>&1 1>/dev/null)"
+assert_contains "the duplicate error names the source" "$err" "kryptamine/herdr-auto-title"
+assert_contains "the duplicate error names the second line" "$err" ":3:"
+assert_contains "the duplicate error says what is wrong" "$err" "duplicate"
+
+# an identical repeat is refused too -- it is still two installs
+same_twice="$work/same_twice.list"
+cat > "$same_twice" <<'EOF'
+kryptamine/herdr-auto-title   v0.3.3
+kryptamine/herdr-auto-title   v0.3.3
+EOF
+status="$(hs_manifest_plugins "$same_twice" >/dev/null 2>/dev/null; echo $?)"
+assert_status "an identical repeated line exits 2 as well" 2 "$status"
+
+# --- hs_manifest_plugins borrows `set -f` to count a line's fields, and it
+# used to hand the shell back with globbing ON regardless of how it found
+# it. A caller that had deliberately turned globbing off got it back. ---
+
+set -f
+hs_manifest_plugins "$fixtures/manifest_valid.list" >/dev/null 2>&1
+case "$-" in
+  *f*) pass ;;
+  *) fail "hs_manifest_plugins turned the caller's noglob back off" ;;
+esac
+set +f
+
+hs_manifest_plugins "$fixtures/manifest_valid.list" >/dev/null 2>&1
+case "$-" in
+  *f*) fail "hs_manifest_plugins left globbing disabled for a caller that had it on" ;;
+  *) pass ;;
+esac
+
 hs_test_report

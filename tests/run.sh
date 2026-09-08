@@ -12,7 +12,9 @@
 # so a suite run from inside a Herdr pane inherits the operator's LIVE
 # socket. A test that means to exercise the "no server" path then finds a
 # real one and quietly proves nothing. Tests that need such a variable set
-# it themselves.
+# it themselves. The FAKE_HERDR_* switches are cleared for the same reason
+# from the other direction: one left set in the developer's own shell would
+# silently reconfigure the fake herdr under every test file.
 #
 # This script is self-contained by design: copying it, tests/helpers/, and
 # a set of test_*.sh files anywhere runs the same way, which is what lets
@@ -42,6 +44,9 @@ for test_file in "$script_dir"/test_*.sh; do
 
   if env -u HERDR_ENV -u HERDR_SOCKET_PATH -u HERDR_BIN_PATH -u HERDR_PANE_ID \
          -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID -u HERDR_CONFIG_DIR \
+         -u FAKE_HERDR_LOG -u FAKE_HERDR_FIXTURES -u FAKE_HERDR_PROTOCOL_MISMATCH \
+         -u FAKE_HERDR_ERROR_CODE -u FAKE_HERDR_ERROR_STREAM -u FAKE_HERDR_FAIL \
+         -u FAKE_HERDR_STDERR_NOTE -u FAKE_HERDR_PROMPT \
          HOME="$tmp_home" PATH="$helpers_dir:$PATH" "${BASH:-bash}" "$test_file"; then
     echo "PASS: $name"
   else

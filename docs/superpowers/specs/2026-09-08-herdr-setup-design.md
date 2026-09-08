@@ -109,9 +109,23 @@ Exit 0 when the host matches, 1 when it drifts, 2 on error.
 
 Installs missing plugins with `herdr plugin install --ref`, reinstalls those whose
 ref moved, splices `manifest/config.toml` into the host file while leaving
-plugin-written blocks in place, and runs `herdr server reload-config`. It backs the
-host config up first. Herdr's own trust preview is shown for each install unless
-`--yes` is passed. It never removes a plugin and never touches integrations.
+plugin-written blocks in place, and runs `herdr server reload-config`. It never
+removes a plugin and never touches integrations.
+
+Herdr's own trust preview is shown for each install unless `--yes` is passed. That
+means the install runs in the foreground with the operator's terminal attached, and
+only its exit status is read: an install whose output the tool captured would show
+the operator nothing and leave Herdr waiting for an answer behind an invisible
+prompt.
+
+The config write is the most destructive thing the tool does, so it is also the
+loudest. Before writing, `apply` prints the unified diff of the change, under
+`--dry-run` as well. Last write wins, but a write that leaves the file with fewer
+lines than it had needs `--yes` or a yes answer at the terminal; refused, it writes
+nothing and exits 4. The previous content is backed up first, to a timestamped
+`config.toml.bak.<UTC timestamp>` — one fixed `.bak` slot was destroyed by the next
+apply, so the safety net survived only a single mistake. The written file keeps the
+mode the host config had.
 
 ### `absorb`
 
@@ -125,7 +139,11 @@ dropping `source.resolved_commit` and `source.managed_path`, and rewrites
 touches only the checkout. Review with `git diff` and commit.
 
 It refuses to run when the manifest has uncommitted changes, so it can never
-silently overwrite an edit made by hand.
+silently overwrite an edit made by hand. It refuses just as firmly when it cannot
+find out: git failing for any reason — the checkout is not a git repository, `.git`
+is unreadable — is a refusal, never a clean tree. Reading git's output and ignoring
+its exit status made every one of those failures look like "nothing is modified",
+which is the one answer that lets absorb overwrite.
 
 ### `onboard`
 
@@ -210,8 +228,13 @@ the CLI and confirms a resume.
 - Fails closed. No Herdr on `PATH`, no socket, or an unparseable manifest stops the
   run with one line saying which.
 - Read-only commands never write. `diff` and `probe` touch nothing.
-- `apply` backs up the host config before writing, and writes by temporary file and
-  rename so the config is never half-written.
+- `apply` backs up the host config before writing, to a timestamped file that no
+  later run overwrites, and writes by temporary file and rename so the config is
+  never half-written. The written file keeps the original's mode.
+- `apply` prints the diff of the config change before making it, and a change that
+  removes lines needs `--yes` or an answer at the terminal.
+- A guard that cannot reach its evidence refuses. A failed check is never read as a
+  passing one, whether the check is a Herdr probe or a `git status`.
 - `--dry-run` on `apply`, `absorb`, `onboard`, and `feed` prints every command and
   every socket call it would make, and makes none.
 - No secrets and no personal paths in the repository. Paths are derived at runtime.
@@ -223,21 +246,30 @@ speaking different protocol versions. The command line then refuses most calls w
 `protocol_mismatch` and exits 1. This is not a rare corner: a package manager
 upgrade produces it, and the machine this was written on sat in that state.
 
-The tool therefore runs a preflight before any command and reports which of three
+The tool therefore runs a preflight before any command and reports which of four
 states the host is in:
 
-- **Matched.** Everything works.
-- **Mismatched.** `diff` still runs in full, because it reads `plugins.json` and
-  `config.toml` from disk and reads integration state through `herdr integration
-  status`, none of which cross the socket. `apply`, `onboard`, and `feed` stop with
-  one line naming the mismatch and the restart needed, rather than proceeding to a
-  confusing partial result.
+- **Matched.** The preflight's probe call succeeded. Everything works.
+- **Mismatched.** The probe failed with a `protocol_mismatch` error. `diff` still
+  runs in full, because it reads `plugins.json` and `config.toml` from disk and
+  reads integration state through `herdr integration status`, none of which cross
+  the socket. `apply`, `onboard`, and `feed` stop with one line naming the mismatch
+  and the restart needed, rather than proceeding to a confusing partial result.
 - **No server.** `diff` still runs. The rest stop.
+- **Unreachable.** The probe failed for some other reason: the socket closed, a
+  permission error, an answer that could not be read. `diff` still runs; the rest
+  stop, quoting what Herdr actually said.
+
+Matched means the probe SUCCEEDED, and nothing else. Reading only the error code
+and calling every other failure healthy is the same fail-open bug one level up: a
+server that had just refused the probe would be written to.
 
 Every Herdr call checks its exit status, and no result is parsed from a failed call.
 Herdr answers a blocked call with a JSON error object rather than an empty result,
 so a parser that ignores the exit status sees zero agents and reports success having
-done nothing. That failure mode is the reason the gate exists.
+done nothing. That failure mode is the reason the gate exists. The probe reads
+Herdr's stderr as well as its stdout, because an error object written to stderr and
+discarded looks exactly like a healthy silent success.
 
 ## Portability
 

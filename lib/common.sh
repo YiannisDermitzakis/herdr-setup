@@ -8,8 +8,10 @@
 # that is expected to fail (the preflight gate, herdr calls). Setting shell
 # options here would apply them to whatever sources this file.
 #
-# Bash 3.2 / Python 3.9 floor: no associative arrays, no mapfile, no
-# `local -n`, no tomllib.
+# Bash 3.2 floor (macOS): no associative arrays, no mapfile, no `local -n`.
+# Python comes from uv, not from the host -- lib/hs.py's PEP 723 header and
+# pyproject.toml name the interpreter (see AGENTS.md), so nothing here has to
+# work around an old system python.
 
 HS_DEFAULT_SOCKET_PATH="$HOME/.config/herdr/herdr.sock"
 HS_DEFAULT_HERDR_CONFIG_DIR="$HOME/.config/herdr"
@@ -32,11 +34,32 @@ hs_plugins_json_path() {
   echo "$(hs_herdr_config_dir)/plugins.json"
 }
 
+# hs_preflight_probe: the one socket call the preflight gate makes, kept as
+# its own function so hs_preflight and hs_require_socket agree on what is
+# probed and on how its output is read. Prints herdr's stdout AND stderr
+# combined, and returns herdr's own exit status.
+#
+# The `2>&1` is load-bearing, not tidiness. The probe used to discard stderr,
+# so a herdr that reports its error object on stderr -- which the real one
+# may -- left the gate with an empty string to reason about, and the gate
+# then concluded the host was fine. hs_herdr_json has always merged the two
+# for exactly this reason; the probe was the inconsistent one.
+hs_preflight_probe() {
+  herdr plugin list 2>&1
+}
+
 # hs_preflight: echoes exactly one of no-herdr | no-server | mismatched |
-# matched. Never writes anything and never fails: every command decides
-# what to do with the state itself (diff keeps going on no-server/
-# mismatched; hs_require_socket below is what the write commands use to
-# stop).
+# unreachable | matched. Never writes anything and never fails: every command
+# decides what to do with the state itself (diff keeps going on no-server/
+# mismatched/unreachable; hs_require_socket below is what the write commands
+# use to stop).
+#
+# `matched` means one thing only: a probe call that actually SUCCEEDED. Any
+# non-zero exit is a host this tool must not write to, whatever herdr said --
+# the gate previously singled out `protocol_mismatch` and reported every
+# other failure as `matched`, so a server that had just refused the probe
+# (socket_closed, a permission error, an unparseable answer) let `apply`
+# proceed. `unreachable` is the fourth state that failure now has a name for.
 hs_preflight() {
   if ! command -v herdr >/dev/null 2>&1; then
     echo "no-herdr"
@@ -50,20 +73,31 @@ hs_preflight() {
     return 0
   fi
 
-  # Detect a version mismatch by running a real socket call and checking
-  # its exit status FIRST: a blocked herdr answers with a JSON error object
-  # and exits non-zero, never with an empty success. Only after confirming
-  # the call failed do we look at what it said.
+  # Check the exit status FIRST: a blocked herdr answers with a JSON error
+  # object and exits non-zero, never with an empty success. Only after
+  # confirming the call failed do we look at what it said, and what it said
+  # decides only WHICH failure this is, never whether it failed.
   local output rc
-  output="$(herdr plugin list 2>/dev/null)"
+  output="$(hs_preflight_probe)"
   rc=$?
-  if [ "$rc" -ne 0 ] && printf '%s' "$output" | grep -q '"code":"protocol_mismatch"'; then
-    echo "mismatched"
+  if [ "$rc" -ne 0 ]; then
+    if printf '%s' "$output" | grep -q '"code":"protocol_mismatch"'; then
+      echo "mismatched"
+    else
+      echo "unreachable"
+    fi
     return 0
   fi
 
   echo "matched"
   return 0
+}
+
+# hs_flatten: folds its stdin onto one line, collapsing runs of whitespace.
+# Every hs_require_socket message is exactly one line by contract, and a
+# herdr error message quoted into one can carry newlines.
+hs_flatten() {
+  tr '\n' ' ' | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//'
 }
 
 # hs_require_socket: returns 0 when hs_preflight reports matched. Otherwise
@@ -90,6 +124,15 @@ hs_require_socket() {
       echo "herdr-setup: the herdr command line is newer than the running server; restart the Herdr server, then retry." >&2
       return 3
       ;;
+    unreachable)
+      # Re-probe rather than have hs_preflight smuggle the message out: it
+      # runs in a command substitution, so a global set there is lost, and
+      # this path is an error path on a tool that runs by hand.
+      local detail
+      detail="$(hs_preflight_probe | hs_flatten)"
+      echo "herdr-setup: the Herdr server refused a probe call (${detail:-no output}); fix the Herdr server, then retry." >&2
+      return 3
+      ;;
     *)
       echo "herdr-setup: unrecognized preflight state '$state'." >&2
       return 3
@@ -97,7 +140,7 @@ hs_require_socket() {
   esac
 }
 
-# hs_herdr_json: the single wrapper every later phase uses to call herdr.
+# hs_herdr_json: the wrapper for herdr calls whose stdout this tool PARSES.
 # Runs `herdr "$@"`, checks the exit status FIRST, and NEVER returns a
 # result from a failed call — a blocked herdr answers with a JSON error
 # object rather than an empty result, and a caller that reads .result.*
@@ -106,10 +149,29 @@ hs_require_socket() {
 # on an "error" key in the output (even if the exit status was 0), and
 # prints the error message to stderr in either case. On success, prints the
 # herdr output on stdout unchanged and returns 0.
+#
+# stdout and stderr are captured SEPARATELY. They used to be merged with
+# `2>&1`, which meant one deprecation notice on stderr was returned glued to
+# the JSON, and the caller's parse failed on output that was in fact fine.
+# No caller parsed the result while that was true, so nothing broke -- but
+# `feed` parses `agent list` and `pane process-info` through here, so this
+# would have broken the first time it mattered. herdr's own stderr is passed
+# through to ours on success (a warning is worth seeing) and is folded into
+# the error message on failure (that is where it usually says why).
+#
+# For a call whose stdout is NOT parsed, use hs_herdr_interactive below: a
+# command substitution captures the terminal away from a herdr that wants to
+# prompt.
 hs_herdr_json() {
-  local output rc message is_error
-  output="$(herdr "$@" 2>&1)"
+  local output rc message is_error err_file err_text py_rc
+  err_file="$(mktemp)" || {
+    echo "herdr-setup: cannot create a temporary file" >&2
+    return 2
+  }
+  output="$(herdr "$@" 2>"$err_file")"
   rc=$?
+  err_text="$(cat "$err_file")"
+  rm -f "$err_file"
 
   # Whether this is an error is decided by parsing the response, not by looking
   # for a substring: a perfectly good response can carry the token "error" in a
@@ -121,25 +183,67 @@ hs_herdr_json() {
   is_error=0
   case "$output" in
     *'"error"'*)
-      if message="$(printf '%s' "$output" | hs_py herdr-error)"; then
-        is_error=1
-        if [ -z "$message" ]; then
+      message="$(printf '%s' "$output" | hs_py herdr-error)"
+      py_rc=$?
+      case "$py_rc" in
+        0)
+          is_error=1
+          if [ -z "$message" ]; then
+            message="$output"
+          fi
+          ;;
+        1)
+          # A well-formed response that has no top-level error key.
+          ;;
+        *)
+          # hs_py itself could not run (no uv, a broken interpreter). That is
+          # a failure to READ the answer, and a response carrying the token
+          # "error" that we cannot read is not evidence of success.
+          echo "herdr-setup: could not parse the herdr response (hs_py exited $py_rc); treating it as a failure" >&2
+          is_error=1
           message="$output"
-        fi
-      fi
+          ;;
+      esac
       ;;
   esac
 
   if [ "$rc" -ne 0 ] || [ "$is_error" -eq 1 ]; then
-    echo "herdr-setup: herdr $*: ${message:-$output}" >&2
+    if [ -z "$message" ]; then
+      message="${output:-$err_text}"
+    fi
+    if [ -n "$err_text" ] && [ "$message" != "$err_text" ]; then
+      message="$message${message:+ }$err_text"
+    fi
+    echo "herdr-setup: herdr $*: $(printf '%s' "$message" | hs_flatten)" >&2
     if [ "$rc" -eq 0 ]; then
       return 1
     fi
     return "$rc"
   fi
 
+  if [ -n "$err_text" ]; then
+    printf '%s\n' "$err_text" >&2
+  fi
   printf '%s\n' "$output"
   return 0
+}
+
+# hs_herdr_interactive: the wrapper for herdr calls this tool does NOT parse.
+# Runs `herdr "$@"` in the foreground with stdin, stdout and stderr all
+# inherited, and returns herdr's exit status and nothing else.
+#
+# This exists because `plugin install` shows Herdr's own trust preview and
+# then waits for an answer unless `--yes` is passed (design doc, Commands >
+# apply). Routed through hs_herdr_json, that preview went into a command
+# substitution: the operator saw a silent, stopped terminal while herdr sat
+# blocked on a read behind a prompt they were never shown. Capturing the
+# output of a command that wants the terminal is the bug; there is no way to
+# both capture stdout and let herdr talk to the operator on it.
+#
+# `onboard` (phase 9) offers an integration and waits for an answer the same
+# way, and must call this rather than hs_herdr_json for the same reason.
+hs_herdr_interactive() {
+  herdr "$@"
 }
 
 # hs_manifest_plugins <file>: prints one <owner>/<repo>[/<subdir>]<TAB><ref>
@@ -153,15 +257,29 @@ hs_herdr_json() {
 # A missing or unreadable file is the same fail-closed shape (AGENTS.md: "an
 # unreadable manifest ... stops the run with one clear line"): exit 2, one
 # line naming the file.
+#
+# Naming the same source twice is fatal too, exit 2. Two lines for one plugin
+# are either redundant (apply runs the same install twice) or contradictory
+# (two different pinned refs, and the manifest cannot say which one the host
+# is meant to converge on). Neither is something to guess at -- AGENTS.md:
+# "Never guess and continue."
 hs_manifest_plugins() {
   local file="$1"
   local line_num=0
   local line trimmed field_count source ref
+  local seen="" had_noglob=0
 
   if [ ! -r "$file" ]; then
     echo "herdr-setup: $file: manifest not found or unreadable" >&2
     return 2
   fi
+
+  # `set -f` below is a borrowed shell option, not ours to leave switched.
+  # Restoring it unconditionally with `set +f` turned globbing back ON for a
+  # caller that had deliberately turned it off.
+  case "$-" in
+    *f*) had_noglob=1 ;;
+  esac
 
   while IFS= read -r line || [ -n "$line" ]; do
     line_num=$((line_num + 1))
@@ -177,7 +295,9 @@ hs_manifest_plugins() {
     set -f
     # shellcheck disable=SC2086
     set -- $trimmed
-    set +f
+    if [ "$had_noglob" -eq 0 ]; then
+      set +f
+    fi
     field_count="$#"
     source="${1:-}"
     ref="${2:-}"
@@ -186,6 +306,18 @@ hs_manifest_plugins() {
       echo "herdr-setup: $file:$line_num: expected '<source> <ref>', got '$trimmed'" >&2
       return 2
     fi
+
+    # Membership test on a space-delimited string: bash 3.2 has no
+    # associative arrays, and a source can never contain a space -- it is
+    # one whitespace-separated field, which is what the field count above
+    # has just established.
+    case " $seen " in
+      *" $source "*)
+        echo "herdr-setup: $file:$line_num: duplicate plugin source '$source'" >&2
+        return 2
+        ;;
+    esac
+    seen="$seen $source"
 
     printf '%s\t%s\n' "$source" "$ref"
   done < "$file"
@@ -212,9 +344,24 @@ hs_host_plugins() {
 # hs_resolve_ref <source> <ref>: resolves <ref> against the GitHub repo
 # named by <source> (owner/repo[/subdir] -- a subdir is ignored, since the
 # git remote is still owner/repo) via `git ls-remote`, and echoes the full
-# commit sha it resolves to. Empty output from ls-remote means the ref no
+# COMMIT sha it resolves to. Empty output from ls-remote means the ref no
 # longer exists upstream; hs_resolve_ref then echoes nothing and returns 1,
 # leaving the caller to report that as drift.
+#
+# An annotated tag is why both `$ref` and `${ref}^{}` are asked for. An
+# annotated tag is an object of its own that POINTS AT a commit, and
+# ls-remote answers with two lines:
+#
+#   d4ca2e3...  refs/tags/v2.40.0        <- the tag object
+#   73876f4...  refs/tags/v2.40.0^{}     <- the commit it points at
+#
+# Herdr records the commit. Taking the first line handed back the tag
+# object's sha, which never equals the recorded commit, so a plugin pinned
+# to an annotated tag reported `moved` on every diff and was reinstalled on
+# every apply, for ever, without converging -- and the design doc's own
+# example manifest pins `v0.3.3`. The peeled `^{}` line is preferred
+# whenever it is present; a lightweight tag or a branch has no peeled line
+# and the single line it does have IS the commit.
 hs_resolve_ref() {
   local source="$1" ref="$2"
   local owner_repo url output sha
@@ -222,8 +369,11 @@ hs_resolve_ref() {
   owner_repo="$(printf '%s' "$source" | cut -d/ -f1-2)"
   url="https://github.com/${owner_repo}.git"
 
-  output="$(git ls-remote "$url" "$ref" 2>/dev/null)"
-  sha="$(printf '%s' "$output" | awk '{print $1}' | head -n1)"
+  output="$(git ls-remote "$url" "$ref" "${ref}^{}" 2>/dev/null)"
+  sha="$(printf '%s\n' "$output" | awk '$2 ~ /\^\{\}$/ { print $1; exit }')"
+  if [ -z "$sha" ]; then
+    sha="$(printf '%s\n' "$output" | awk 'NF { print $1; exit }')"
+  fi
 
   if [ -z "$sha" ]; then
     return 1
@@ -351,15 +501,23 @@ hs_config_toml_path() {
 # open block's id; and, at end of file, a block that was never closed.
 HS_SPLICE_SENTINEL=$'\001HS_ANCHOR\001'
 
+#
+# A config written on Windows ends every line with CR LF. The carriage
+# return is stripped before a line is MATCHED (an end marker otherwise ends
+# in `---\r`, matches nothing, and the file is reported as an unterminated
+# block -- fail-closed, but for a reason nothing in the message explains),
+# and the line is still printed exactly as it was read, so a CRLF file
+# survives a strip/extract/splice round trip byte for byte.
 _hs_plugin_block_walk() {
   local file="$1" mode="$2"
-  local line line_num=0 open_id="" open_line=0 id stripped_count=0
+  local line match line_num=0 open_id="" open_line=0 id stripped_count=0
 
   while IFS= read -r line || [ -n "$line" ]; do
     line_num=$((line_num + 1))
-    case "$line" in
+    match="${line%$'\r'}"
+    case "$match" in
       '# --- added by '*)
-        id="${line#\# --- added by }"
+        id="${match#\# --- added by }"
         id="${id%% *}"
         if [ -n "$open_id" ]; then
           echo "herdr-setup: $file:$line_num: plugin block '$id' opened before '$open_id' (opened at line $open_line) was closed" >&2
@@ -376,7 +534,7 @@ _hs_plugin_block_walk() {
         continue
         ;;
       '# --- end '*' ---')
-        id="${line#\# --- end }"
+        id="${match#\# --- end }"
         id="${id% ---}"
         if [ -z "$open_id" ]; then
           echo "herdr-setup: $file:$line_num: end marker for plugin block '$id' with no matching begin" >&2
@@ -461,12 +619,22 @@ hs_diff_config() {
     rc=0
   else
     echo "config drift:"
-    diff -u -L host -L manifest "$host_tmp" "$manifest_file" || true
+    hs_unified_diff "$host_tmp" "$manifest_file" host manifest
     rc=1
   fi
 
   rm -f "$host_tmp"
   return "$rc"
+}
+
+# hs_unified_diff <a> <b> <label-a> <label-b>: prints a unified diff of two
+# files and always succeeds. `diff` exits 1 when the files differ, which is
+# the normal case at every call site here and would otherwise trip the
+# entrypoint's `set -e`. Shared by hs_diff_config (which reports drift) and
+# hs_apply_config (which shows the change it is about to write), so the two
+# render the same change the same way.
+hs_unified_diff() {
+  diff -u -L "$3" -L "$4" "$1" "$2" || true
 }
 
 # hs_splice_config <host-config> <manifest-config>: builds the config
@@ -541,13 +709,24 @@ hs_splice_config() {
 # alone -- apply never uninstalls (AGENTS.md: "never uninstall or
 # disable").
 #
+# Without `--yes`, the install runs through hs_herdr_interactive, NOT
+# hs_herdr_json. Herdr shows its own trust preview for each install and
+# waits for an answer (design doc, Commands > apply), and that only works
+# with the operator's terminal attached. Run inside a command substitution
+# instead, the preview went into a variable and the operator watched an
+# apparently hung command while herdr sat blocked on a read behind a prompt
+# they never saw -- and that was the DEFAULT path, the one an operator who
+# has not passed `--yes` takes. With `--yes` there is no prompt, so the
+# checked wrapper is used and an error object is still caught by parsing.
+#
 # Reads HS_DRY_RUN and HS_YES from the environment, exactly as the
 # entrypoint exports them: under HS_DRY_RUN=1, prints the command each
-# drifted plugin would run and makes no call at all. Returns 2 if the
-# manifest or the host's plugins.json fails to parse, 1 if any install
-# call itself failed, 0 otherwise. Does not check the preflight state
-# itself -- cmd_apply calls hs_require_socket first, before this or the
-# config half run at all.
+# drifted plugin would run and makes no call at all. Both are read with a
+# `:-0` default so this file can be sourced under `set -u` without them.
+# Returns 2 if the manifest or the host's plugins.json fails to parse, 1 if
+# any install call itself failed, 0 otherwise. Does not check the preflight
+# state itself -- cmd_apply calls hs_require_socket first, before this or
+# the config half run at all.
 hs_apply_plugins() {
   local manifest_file="$1" plugins_json="$2"
   local rc=0
@@ -566,8 +745,13 @@ hs_apply_plugins() {
     return 2
   fi
 
+  # The manifest is read on fd 3, not on stdin. `done < "$manifest_tmp"`
+  # makes the manifest the stdin of everything inside the loop, so the
+  # interactive install below would have been answering Herdr's trust prompt
+  # with the next line of plugins.list -- the operator's terminal never gets
+  # a word in. Reading on a private fd leaves stdin where it belongs.
   local m_source m_ref
-  while IFS=$'\t' read -r m_source m_ref; do
+  while IFS=$'\t' read -r m_source m_ref <&3; do
     [ -z "$m_source" ] && continue
 
     local h_line needs_install=0
@@ -586,45 +770,117 @@ hs_apply_plugins() {
     fi
 
     if [ "$needs_install" -eq 1 ]; then
-      local install_args
+      local install_args install_rc=0
       install_args=(plugin install "$m_source" --ref "$m_ref")
-      if [ "$HS_YES" -eq 1 ]; then
+      if [ "${HS_YES:-0}" -eq 1 ]; then
         install_args+=(--yes)
       fi
-      if [ "$HS_DRY_RUN" -eq 1 ]; then
+      if [ "${HS_DRY_RUN:-0}" -eq 1 ]; then
         echo "+ herdr ${install_args[*]}"
+      elif [ "${HS_YES:-0}" -eq 1 ]; then
+        hs_herdr_json "${install_args[@]}" >/dev/null || install_rc=$?
       else
-        if ! hs_herdr_json "${install_args[@]}" >/dev/null; then
-          rc=1
-        fi
+        # Foreground, stdio inherited: Herdr's trust preview reaches the
+        # operator and their answer reaches Herdr. Only the exit status is
+        # read; nothing here parses an install's output.
+        hs_herdr_interactive "${install_args[@]}" || install_rc=$?
+      fi
+      if [ "$install_rc" -ne 0 ]; then
+        rc=1
       fi
     fi
-  done < "$manifest_tmp"
+  done 3< "$manifest_tmp"
 
   rm -f "$manifest_tmp" "$host_tmp"
   return "$rc"
 }
 
+# hs_confirm <question>: asks the operator on the terminal and returns 0
+# only for an explicit yes. Returns 1 for anything else, including a no
+# answer, an unreadable answer, and -- the case that matters -- a session
+# with no terminal at all, where there is nobody to ask. Fail closed
+# (AGENTS.md): silence is not consent. The prompt goes to stderr, so a
+# caller printing a diff on stdout can still be piped.
+hs_confirm() {
+  local question="$1" answer=""
+
+  if [ ! -t 0 ]; then
+    echo "herdr-setup: $question, and there is no terminal to confirm on." >&2
+    return 1
+  fi
+
+  printf 'herdr-setup: %s. Continue? [y/N] ' "$question" >&2
+  read -r answer || answer=""
+  case "$answer" in
+    y|Y|yes|Yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# hs_backup_path <host-config>: the path the next backup of <host-config>
+# goes to -- `<host-config>.bak.<UTC timestamp>`, with a counter appended if
+# a file is already there (two applies inside one second). Never overwrites
+# an existing file, which is the whole point: a single `.bak` slot meant the
+# second apply destroyed the backup taken by the first, so the safety net
+# survived exactly one mistake and the operator who noticed on the second
+# run had already lost the content they wanted back.
+hs_backup_path() {
+  local host_file="$1"
+  local base n candidate
+  base="${host_file}.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+  candidate="$base"
+  n=1
+  while [ -e "$candidate" ]; do
+    candidate="${base}.${n}"
+    n=$((n + 1))
+  done
+  printf '%s\n' "$candidate"
+}
+
 # hs_apply_config <host-config> <manifest-config>: the config half of
 # `apply`. Builds the new content with hs_splice_config, writes it only
-# when it actually differs from what is on the host, and only then: backs
-# the previous content up to `<host-config>.bak` first (skipped when the
-# host had no config.toml yet -- nothing to back up), writes the new
-# content to a temporary file in the SAME directory and renames it over
-# the target (so the config is never observed half-written), then calls
-# `herdr server reload-config` exactly once.
+# when it actually differs from what is on the host, and only then: prints
+# the unified diff of the change, backs the previous content up to a
+# timestamped `<host-config>.bak.<UTC timestamp>` (skipped when the host had
+# no config.toml yet -- nothing to back up), writes the new content to a
+# temporary file in the SAME directory and renames it over the target (so
+# the config is never observed half-written), then calls `herdr server
+# reload-config` exactly once.
 #
-# Reads HS_DRY_RUN from the environment like hs_apply_plugins: under
-# HS_DRY_RUN=1, prints what it would do and makes no write, no backup, and
-# no herdr call, even when the content would have changed.
+# This is the most destructive write the tool makes, and it used to be the
+# quietest: "last write wins" is the documented design, but an apply that
+# replaced a host's whole config with one plugin block printed nothing at
+# all and exited 0, and `--dry-run` said only `+ write <path>`. So the diff
+# is printed on every real write and every dry run, and a write that leaves
+# the file with FEWER lines than it had is gated: it proceeds only with
+# `--yes`, or with a yes answer at the terminal. Refused, it returns 4 and
+# writes nothing -- the same "refused, nothing happened" status absorb uses
+# for its own dirty-manifest guard. A shrink is normal drift when the
+# operator tidied the manifest, and catastrophic when the manifest is empty;
+# neither the tool nor the exit status can tell those apart, but the diff
+# and one question can.
+#
+# The new file keeps the ORIGINAL's mode. `mktemp` creates 0600, and
+# renaming that over the target silently took a 0644 config down to 0600,
+# dropping group access and any ACL on it. `cp -p` copies the mode across
+# portably (no `chmod --reference`, which is GNU-only) and the content is
+# then written into that already-correctly-moded file. A config that did not
+# exist before gets 0644.
+#
+# Reads HS_DRY_RUN and HS_YES from the environment like hs_apply_plugins,
+# both with a `:-0` default so this file can be sourced under `set -u`
+# without them: under HS_DRY_RUN=1, prints the diff and what it would do,
+# and makes no write, no backup, and no herdr call.
 #
 # Returns 2 if hs_splice_config hit a hard error (propagated as-is -- a
 # missing/unreadable manifest config, or a malformed plugin block on the
-# host), 1 if the reload-config call itself failed, 0 otherwise (including
-# the no-op case where nothing had changed).
+# host), 4 if a shrinking write was refused, 1 if the reload-config call
+# itself failed, 0 otherwise (including the no-op case where nothing had
+# changed).
 hs_apply_config() {
   local host_file="$1" manifest_file="$2"
   local host_dir new_content_tmp changed rc=0
+  local old_lines=0 new_lines=0 shrinks=0
 
   host_dir="$(dirname "$host_file")"
 
@@ -652,7 +908,31 @@ hs_apply_config() {
     return 0
   fi
 
-  if [ "$HS_DRY_RUN" -eq 1 ]; then
+  local empty_tmp=""
+  if [ -e "$host_file" ]; then
+    old_lines="$(wc -l < "$host_file" | tr -d ' ')"
+    new_lines="$(wc -l < "$new_content_tmp" | tr -d ' ')"
+    if [ "$new_lines" -lt "$old_lines" ]; then
+      shrinks=1
+    fi
+    echo "config change:"
+    hs_unified_diff "$host_file" "$new_content_tmp" current new
+  else
+    empty_tmp="$(mktemp)" || { rm -f "$new_content_tmp"; return 2; }
+    echo "config change:"
+    hs_unified_diff "$empty_tmp" "$new_content_tmp" current new
+    rm -f "$empty_tmp"
+  fi
+
+  if [ "$shrinks" -eq 1 ] && [ "${HS_YES:-0}" -ne 1 ]; then
+    if ! hs_confirm "apply: this removes $((old_lines - new_lines)) line(s) from $host_file"; then
+      echo "herdr-setup: apply: refused the config write; re-run with --yes to accept it." >&2
+      rm -f "$new_content_tmp"
+      return 4
+    fi
+  fi
+
+  if [ "${HS_DRY_RUN:-0}" -eq 1 ]; then
     echo "+ write $host_file"
     echo "+ herdr server reload-config"
     rm -f "$new_content_tmp"
@@ -662,7 +942,7 @@ hs_apply_config() {
   mkdir -p "$host_dir"
 
   if [ -e "$host_file" ]; then
-    cp "$host_file" "${host_file}.bak"
+    cp -p "$host_file" "$(hs_backup_path "$host_file")"
   fi
 
   local write_tmp
@@ -670,6 +950,17 @@ hs_apply_config() {
     rm -f "$new_content_tmp"
     return 2
   }
+  if [ -e "$host_file" ]; then
+    # Mode (and ownership, where permitted) first; the content is written
+    # into the temp file afterwards, which truncates it without touching
+    # the mode cp -p just set.
+    cp -p "$host_file" "$write_tmp" || {
+      rm -f "$new_content_tmp" "$write_tmp"
+      return 2
+    }
+  else
+    chmod 644 "$write_tmp"
+  fi
   cat "$new_content_tmp" > "$write_tmp"
   rm -f "$new_content_tmp"
   mv -f "$write_tmp" "$host_file"
@@ -744,6 +1035,16 @@ hs_absorb_config() {
 # fail-closed failure mode (AGENTS.md: git is a prerequisite of this
 # tool) -- one stderr line, exit 2 -- kept distinguishable from the
 # dirty-manifest exit 4 by its own exit status.
+#
+# git's EXIT STATUS is what decides, not its output. The check used to read
+# `git status --porcelain 2>/dev/null` and look at the text alone, so every
+# way git can fail -- the checkout is not a git repository, .git is
+# unreadable, git dies on a bad config -- produced an empty string, which
+# reads exactly like a clean tree. The guard then reported "clean" and
+# absorb overwrote a hand-edited manifest with no warning and exit 0: the
+# precise outcome the guard exists to prevent, produced by the guard itself.
+# Any non-zero status is now a refusal naming what git said (exit 2, the
+# same hard-failure status as a missing git). Never "clean".
 hs_require_clean_manifest() {
   local repo_root="$1"
 
@@ -752,8 +1053,13 @@ hs_require_clean_manifest() {
     return 2
   fi
 
-  local dirty
-  dirty="$(git -C "$repo_root" status --porcelain -- manifest/ 2>/dev/null | cut -c4-)"
+  local raw git_rc=0 dirty
+  raw="$(git -C "$repo_root" status --porcelain -- manifest/ 2>&1)" || git_rc=$?
+  if [ "$git_rc" -ne 0 ]; then
+    echo "herdr-setup: absorb: cannot tell whether manifest/ has uncommitted changes: git status failed in $repo_root ($(printf '%s' "$raw" | hs_flatten)); refusing to overwrite." >&2
+    return 2
+  fi
+  dirty="$(printf '%s' "$raw" | cut -c4-)"
 
   if [ -n "$dirty" ]; then
     echo "herdr-setup: absorb: manifest/ has uncommitted changes, refusing to overwrite:" >&2

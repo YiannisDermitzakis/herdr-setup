@@ -2,8 +2,8 @@
 # herdr-setup: reproduce and sync a Herdr setup across machines.
 #
 # See docs/superpowers/specs/2026-09-08-herdr-setup-design.md for the design.
-# Bash 3.2 / Python 3.9 floor: no associative arrays, no mapfile, no
-# `local -n`.
+# Bash 3.2 floor (macOS): no associative arrays, no mapfile, no `local -n`.
+# Python comes from uv, not from the host -- see AGENTS.md.
 set -euo pipefail
 
 # Resolve the directory this script lives in, following symlinks, so it can
@@ -140,9 +140,13 @@ cmd_diff() {
 #
 # Both halves are invoked as `section || section_rc=$?` (never bare),
 # same as cmd_diff, because of `set -e`. A hard error (2) from either
-# section short-circuits the other and returns 2 immediately; otherwise a
-# non-zero rc from either section (a failed install or a failed
-# reload-config call) makes the whole command exit 1.
+# section short-circuits the other and returns 2 immediately; a refused
+# config write (4, hs_apply_config's shrinking-write gate) is passed
+# through unchanged, so "refused, nothing written" stays distinguishable
+# from "tried and failed" -- the same meaning exit 4 carries for absorb's
+# dirty-manifest guard. Otherwise a non-zero rc from either section (a
+# failed install or a failed reload-config call) makes the whole command
+# exit 1.
 cmd_apply() {
   hs_require_socket || return 3
 
@@ -157,6 +161,9 @@ cmd_apply() {
   hs_apply_config "$(hs_config_toml_path)" "$HS_ROOT/manifest/config.toml" || config_rc=$?
   if [ "$config_rc" -eq 2 ]; then
     return 2
+  fi
+  if [ "$config_rc" -eq 4 ]; then
+    return 4
   fi
 
   if [ "$plugins_rc" -ne 0 ] || [ "$config_rc" -ne 0 ]; then

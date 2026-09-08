@@ -139,6 +139,77 @@ assert_contains "dry-run prints the moved-plugin install it would run" "$out" \
   "plugin install ezcorp-org/herdr-pc-ram-and-cpu-usage-overlay --ref main"
 
 # =====================================================================
+# Herdr's own trust preview, on the DEFAULT path (no --yes).
+#
+# Herdr shows a preview of what a plugin will be allowed to do and waits
+# for an answer. Run through hs_herdr_json, that whole exchange went into a
+# command substitution: the operator got a silent, apparently hung command
+# while herdr sat blocked on a read behind a prompt they never saw. The fake
+# herdr could not express this at all -- it never prompted and never read --
+# so a test suite of thirteen files was green over a default path that
+# stopped dead at a real terminal. FAKE_HERDR_PROMPT=1 is that missing mode.
+# =====================================================================
+
+rm -f "$log"
+out="$work/prompt.out"; err="$work/prompt.err"
+HS_DRY_RUN=0 HS_YES=0 FAKE_HERDR_LOG="$log" FAKE_GIT_FIXTURES="$fixtures" \
+  FAKE_HERDR_PROMPT=1 hs_apply_plugins "$manifest" "$plugins_json" \
+  >"$out" 2>"$err" <<'ANSWERS'
+y
+y
+ANSWERS
+status=$?
+assert_status "an interactive install run exits 0 when the operator accepts" 0 "$status"
+assert_contains "Herdr's trust preview reaches the operator's own stdout" \
+  "$(cat "$out")" "TRUST PREVIEW"
+assert_contains "the preview names the plugin being installed" "$(cat "$out")" \
+  "some-org/missing-plugin"
+assert_eq "the operator's answer reached herdr, once per install" "2" \
+  "$(grep -c '^prompt-answer y$' "$log")"
+
+# --- declining is a failure, not a silent success ---
+
+rm -f "$log"
+HS_DRY_RUN=0 HS_YES=0 FAKE_HERDR_LOG="$log" FAKE_GIT_FIXTURES="$fixtures" \
+  FAKE_HERDR_PROMPT=1 hs_apply_plugins "$manifest" "$plugins_json" \
+  >/dev/null 2>/dev/null <<'ANSWERS'
+n
+n
+ANSWERS
+status=$?
+assert_status "a declined install is reported as a failure" 1 "$status"
+
+# --- --yes means no preview and no question, which is what it is for ---
+
+rm -f "$log"
+HS_DRY_RUN=0 HS_YES=1 FAKE_HERDR_LOG="$log" FAKE_GIT_FIXTURES="$fixtures" \
+  FAKE_HERDR_PROMPT=1 hs_apply_plugins "$manifest" "$plugins_json" \
+  >"$work/yes.out" 2>/dev/null </dev/null
+status=$?
+assert_status "an install with --yes exits 0 with nothing to answer" 0 "$status"
+assert_eq "--yes asks nothing" "0" "$(grep -c '^prompt-answer' "$log")"
+case "$(cat "$work/yes.out")" in
+  *"TRUST PREVIEW"*) fail "--yes still printed a trust preview" ;;
+  *) pass ;;
+esac
+
+# --- a failed install. The fake exited 0 for every `plugin install` no
+# matter what, so hs_apply_plugins' own failure branch was unreachable from
+# a test and the "returns 1 if any install call itself failed" half of its
+# contract was never checked. ---
+
+rm -f "$log"
+err="$work/install_fail.err"
+HS_DRY_RUN=0 HS_YES=1 FAKE_HERDR_LOG="$log" FAKE_GIT_FIXTURES="$fixtures" \
+  FAKE_HERDR_FAIL="plugin install" hs_apply_plugins "$manifest" "$plugins_json" \
+  >/dev/null 2>"$err"
+status=$?
+assert_status "a failed install makes hs_apply_plugins return 1" 1 "$status"
+assert_eq "it still attempts every drifted plugin rather than stopping at the first" \
+  "2" "$(grep -c '^plugin install ' "$log")"
+assert_contains "the failure is reported, not swallowed" "$(cat "$err")" "plugin install"
+
+# =====================================================================
 # cmd_apply wiring: the real entrypoint, from a sandbox copy (never this
 # checkout -- same technique as tests/test_diff_plugins.sh). Proves
 # hs_require_socket gates the whole command: a matched host runs the
@@ -186,5 +257,24 @@ assert_status "herdr-setup apply exits 3 under a protocol mismatch" 3 "$status"
 assert_eq "herdr-setup apply makes no install call under a protocol mismatch" "0" \
   "$(grep -c '^plugin install ' "$log")"
 assert_contains "herdr-setup apply names the mismatch on stderr" "$(cat "$err")" "newer"
+
+# --- the whole entrypoint, on the default path, against a herdr that
+# prompts: this is the exact shape the operator runs, and the one that used
+# to stop dead with an empty terminal. ---
+
+rm -f "$log"
+out="$work/cli_prompt_out"; err="$work/cli_prompt_err"
+FAKE_GIT_FIXTURES="$fixtures" FAKE_HERDR_LOG="$log" HERDR_CONFIG_DIR="$config_ok" \
+  HERDR_SOCKET_PATH="$present_socket" FAKE_HERDR_PROMPT=1 \
+  "$sandbox/herdr-setup" apply >"$out" 2>"$err" <<'ANSWERS'
+y
+y
+ANSWERS
+status=$?
+assert_status "herdr-setup apply exits 0 when the operator accepts each preview" 0 "$status"
+assert_contains "the operator sees the trust preview herdr-setup apply triggered" \
+  "$(cat "$out")" "TRUST PREVIEW"
+assert_eq "each install was answered by the operator" "2" \
+  "$(grep -c '^prompt-answer y$' "$log")"
 
 hs_test_report

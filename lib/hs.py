@@ -96,6 +96,28 @@ def absorb_plugins(path: Path) -> int:
 HS_SPLICE_SENTINEL = "\x01HS_ANCHOR\x01"
 
 
+def split_lines(text: str) -> list[str]:
+    r"""Split on "\n" only, the way the shell side does.
+
+    Not ``str.splitlines()``. That also splits on vertical tab, form feed,
+    ``\x85``, `` `` and `` ``, none of which a ``while read`` loop
+    in lib/common.sh treats as a line ending. A config carrying any of them
+    was therefore counted as more lines here than there, which desynchronises
+    the anchors: an anchor is a count of the shell's lines, and it was being
+    applied to a longer list. Worse, rejoining with "\n" turned each of those
+    characters into a real newline in the operator's own config file.
+
+    A trailing "\n" does not make a final empty line, matching splitlines and
+    the shell's own reading of a well-formed text file.
+    """
+    if not text:
+        return []
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
 def splice_config(manifest_path: Path) -> int:
     """Reinsert plugin-written blocks into the manifest's operator lines.
 
@@ -114,14 +136,14 @@ def splice_config(manifest_path: Path) -> int:
         manifest_text = manifest_path.read_text(encoding="utf-8")
     except OSError as exc:
         die(f"{manifest_path}: {exc}")
-    manifest_lines = manifest_text.splitlines()
+    manifest_lines = split_lines(manifest_text)
 
     raw = sys.stdin.read()
     blocks: list[tuple[int, list[str]]] = []
     if raw:
         current_anchor: int | None = None
         current_lines: list[str] = []
-        for line in raw.splitlines():
+        for line in split_lines(raw):
             if line.startswith(HS_SPLICE_SENTINEL):
                 if current_anchor is not None:
                     blocks.append((current_anchor, current_lines))
