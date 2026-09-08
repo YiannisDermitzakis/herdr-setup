@@ -1153,3 +1153,31 @@ Phase 8's opencode and Copilot adapters need no equivalent fix -- the glob
 already covers the whole adapters/ directory -- but should re-run
 `ruff check adapters/` (the directory form, not just the two new files by
 name) to confirm coverage rather than assuming it from this entry.
+
+<!-- fr:journal kind=finding scope=plan id=6c3471a58159 created=2026-09-08T14:31:46 phase=7 state=fixed -->
+### 6c3471a58159 · finding [fixed] · public-hygiene's email check false-positives on a git@ SSH remote (phase 7)
+
+Not this phase's file (tests/test_public_hygiene.sh landed from a
+concurrent commit, e7b8908, on this same shared branch/worktree while
+phase 7 was in progress -- worth flagging on its own: two phase executors
+were apparently active on the identical worktree at once, which is the
+exact collision fr-isolation's worktree-per-agent convention exists to
+avoid, and it happened to be harmless here only because the two touched
+disjoint files).
+
+The test's "a real email address" check
+(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`) matches
+`git@github.com:owner/repo.git` -- `git` reads as a local part, `github.com`
+as a domain -- because it is not anchored against the git-remote shapes the
+NEXT check in the same file already knows about (`git@...:` or
+`https://.../....git`). tests/fixtures/codex/session-meta.json's masked
+`git.repository_url` used the SSH form and tripped it.
+
+Fixed here by changing the fixture to the https remote form instead, which
+still satisfies the git-remote check's own pattern and its "example"
+allowlist, rather than editing someone else's in-flight test file. Left as
+a note for whoever next touches tests/test_public_hygiene.sh (phase 10,
+most likely): the email check's allowlist could instead exclude anything
+matching the git-remote pattern, which would accept a git@ fixture too.
+Not fixed here because that file was mid-flight from another process while
+this phase ran.
