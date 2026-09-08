@@ -39,10 +39,10 @@ hs_preflight() {
   # its exit status FIRST: a blocked herdr answers with a JSON error object
   # and exits non-zero, never with an empty success. Only after confirming
   # the call failed do we look at what it said.
-  local output status
+  local output rc
   output="$(herdr plugin list 2>/dev/null)"
-  status=$?
-  if [ "$status" -ne 0 ] && printf '%s' "$output" | grep -q '"code":"protocol_mismatch"'; then
+  rc=$?
+  if [ "$rc" -ne 0 ] && printf '%s' "$output" | grep -q '"code":"protocol_mismatch"'; then
     echo "mismatched"
     return 0
   fi
@@ -92,9 +92,9 @@ hs_require_socket() {
 # prints the error message to stderr in either case. On success, prints the
 # herdr output on stdout unchanged and returns 0.
 hs_herdr_json() {
-  local output status message
-  output="$(herdr "$@" 2>/dev/null)"
-  status=$?
+  local output rc message
+  output="$(herdr "$@" 2>&1)"
+  rc=$?
 
   message=""
   if [ -n "$output" ]; then
@@ -111,12 +111,12 @@ if isinstance(data, dict):
 ' 2>/dev/null)"
   fi
 
-  if [ "$status" -ne 0 ] || [ -n "$message" ]; then
+  if [ "$rc" -ne 0 ] || [ -n "$message" ]; then
     echo "herdr-setup: herdr $*: ${message:-$output}" >&2
-    if [ "$status" -eq 0 ]; then
+    if [ "$rc" -eq 0 ]; then
       return 1
     fi
-    return "$status"
+    return "$rc"
   fi
 
   printf '%s\n' "$output"
