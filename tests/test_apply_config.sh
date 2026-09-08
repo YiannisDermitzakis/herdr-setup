@@ -7,6 +7,15 @@
 # hs_apply_config in lib/common.sh, and their wiring into cmd_apply
 # (herdr-setup). Neither exists yet; expect failure until P4.T2.S2
 # writes them.
+# shellcheck disable=SC2218
+# SC2218 fires on every `cat`, `mv` and `cp` above line 460, because this file
+# later defines same-named stubs to inject a failed rename, a truncated write
+# and a failed backup into hs_apply_config. Each stub is `unset -f` on the line
+# after the single call it exists for, so no other command in this file is ever
+# the stub -- but shellcheck reads the file top to bottom and cannot see that.
+# Suppressed here rather than at the definitions, because the diagnostic is
+# reported at the USE sites. Note the local shellcheck (0.11.0) does not raise
+# this and CI's does; that disagreement is why CI runs it at all.
 set -u
 
 test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
