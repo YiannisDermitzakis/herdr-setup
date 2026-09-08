@@ -46,14 +46,14 @@ status="$(run_entry "$out" "$err" --help)"
 assert_status "--help exits 0" 0 "$status"
 assert_contains "--help prints usage" "$(cat "$out")" "usage:"
 
-# --- each of onboard/feed is accepted with a stub that exits 0. diff
-# (phase 2), apply (phase 4) and absorb (phase 5) got real implementations
-# and are checked separately below: this checkout has no manifest/
-# directory yet (that lands only when a real absorb or apply runs, and
-# this file never lets that happen against the real checkout -- see
-# below), so diff fails closed per AGENTS.md ("an unreadable manifest ...
-# stops the run") rather than reporting a stub success. ---
-for sub in onboard feed; do
+# --- onboard is still a stub and exits 0. diff (phase 2), apply (phase 4),
+# absorb (phase 5) and feed (phase 6) got real implementations and are
+# checked separately below: this checkout has no manifest/ directory yet
+# (that lands only when a real absorb or apply runs, and this file never
+# lets that happen against the real checkout -- see below), so diff fails
+# closed per AGENTS.md ("an unreadable manifest ... stops the run") rather
+# than reporting a stub success. ---
+for sub in onboard; do
   out="$work/out_$sub"; err="$work/err_$sub"
   status="$(run_entry "$out" "$err" "$sub")"
   assert_status "$sub is accepted and exits 0" 0 "$status"
@@ -92,6 +92,17 @@ out="$work/out_apply"; err="$work/err_apply"
 status="$(HERDR_SOCKET_PATH="$work/no-such-herdr.sock" run_entry "$out" "$err" apply)"
 assert_status "apply is accepted; fails closed with no Herdr server reachable" 3 "$status"
 assert_contains "apply names the missing server on stderr" "$(cat "$err")" "server"
+
+# --- feed gates on the same hs_require_socket, for the same reason and
+# before anything else, so it refuses here identically. The rest of feed's
+# entrypoint behaviour (the mismatch refusal, the adapters directory, the
+# flag pass-through) is tests/test_feed_entrypoint.sh's, against a sandbox
+# copy that has its own adapters/. ---
+out="$work/out_feed"; err="$work/err_feed"
+status="$(HERDR_SOCKET_PATH="$work/no-such-herdr.sock" run_entry "$out" "$err" feed)"
+assert_status "feed is accepted; fails closed with no Herdr server reachable" 3 "$status"
+assert_contains "feed names the missing server on stderr" "$(cat "$err")" "server"
+assert_eq "a refused feed prints nothing to stdout" "" "$(cat "$out")"
 
 # --- --dry-run / --yes are visible to the subcommand as HS_DRY_RUN / HS_YES,
 # regardless of whether they come before or after the subcommand. Uses

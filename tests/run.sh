@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # tests/run.sh
 #
-# Finds every tests/test_*.sh next to this script, runs each one with a
-# fresh HOME (a new mktemp -d, so no test can touch the operator's real
-# home directory), PATH prefixed with tests/helpers (so `herdr` resolves to
-# the fake one), and every HERDR_* variable cleared. Exits non-zero if any
-# test file fails.
+# Finds every tests/test_*.sh and tests/test_*.py next to this script, runs
+# each one with a fresh HOME (a new mktemp -d, so no test can touch the
+# operator's real home directory), PATH prefixed with tests/helpers (so
+# `herdr` resolves to the fake one), and every HERDR_* variable cleared.
+# Exits non-zero if any test file fails.
+#
+# A .sh file runs under the same bash that is running this script (see below).
+# A .py file is a PEP 723 uv script and runs under `uv run --script`, the same
+# door lib/hs.py and lib/feed.py are reached through: Python comes from uv,
+# not from the host (AGENTS.md), so the suite must not reach for a host
+# interpreter either. Both kinds get the identical environment.
 #
 # Clearing HERDR_* matters more than it looks. Herdr exports HERDR_ENV,
 # HERDR_SOCKET_PATH, HERDR_PANE_ID and friends into every process it starts,
@@ -36,18 +42,23 @@ helpers_dir="$script_dir/helpers"
 total=0
 failed=0
 
-for test_file in "$script_dir"/test_*.sh; do
+for test_file in "$script_dir"/test_*.sh "$script_dir"/test_*.py; do
   [ -e "$test_file" ] || continue
   total=$((total + 1))
   name="$(basename "$test_file")"
   tmp_home="$(mktemp -d)"
 
+  case "$test_file" in
+    *.py) runner=(uv run --quiet --script "$test_file") ;;
+    *)    runner=("${BASH:-bash}" "$test_file") ;;
+  esac
+
   if env -u HERDR_ENV -u HERDR_SOCKET_PATH -u HERDR_BIN_PATH -u HERDR_PANE_ID \
          -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID -u HERDR_CONFIG_DIR \
          -u FAKE_HERDR_LOG -u FAKE_HERDR_FIXTURES -u FAKE_HERDR_PROTOCOL_MISMATCH \
          -u FAKE_HERDR_ERROR_CODE -u FAKE_HERDR_ERROR_STREAM -u FAKE_HERDR_FAIL \
-         -u FAKE_HERDR_STDERR_NOTE -u FAKE_HERDR_PROMPT \
-         HOME="$tmp_home" PATH="$helpers_dir:$PATH" "${BASH:-bash}" "$test_file"; then
+         -u FAKE_HERDR_STDERR_NOTE -u FAKE_HERDR_PROMPT -u FAKE_HERDR_ERROR_EXIT \
+         HOME="$tmp_home" PATH="$helpers_dir:$PATH" "${runner[@]}"; then
     echo "PASS: $name"
   else
     echo "FAIL: $name"

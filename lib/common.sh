@@ -1170,3 +1170,22 @@ hs_py() {
   fi
   uv run --quiet --script "$HS_LIB_DIR/hs.py" "$@"
 }
+
+# hs_feed: run lib/feed.py, the feed runner. Reached through uv exactly the
+# way hs_py reaches lib/hs.py -- Python comes from uv, not from the host
+# (AGENTS.md), and uv runs this tool's own scripts and nothing else.
+#
+# It is its own door rather than a subcommand of hs.py because it is its own
+# program: it spawns adapters, holds a conversation with the operator, and
+# opens the Herdr socket, none of which the batched structured helpers do.
+# stdin, stdout and stderr are all INHERITED -- feed prompts when it is not
+# certain which session a pane is in, and a command substitution around a
+# command that wants the terminal is the bug hs_herdr_interactive exists to
+# undo (journal ac30ffbfb635).
+hs_feed() {
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "herdr-setup: uv is not on PATH; install it from https://docs.astral.sh/uv/ and retry." >&2
+    return 2
+  fi
+  uv run --quiet --script "$HS_LIB_DIR/feed.py" "$@"
+}

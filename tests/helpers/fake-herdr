@@ -33,6 +33,14 @@
 #       Emit the error object on stderr instead of stdout. A caller that
 #       discards stderr then sees nothing at all and concludes the call was
 #       fine, which is what the preflight probe did.
+#   FAKE_HERDR_ERROR_EXIT=<n>
+#       Exit with <n> after emitting the error object, instead of 1. Set it to
+#       0 for the nastiest shape of all: a well-formed error object returned
+#       alongside a successful exit status. A caller that checks only the exit
+#       status parses that object as its answer, finds no `result.agents`, and
+#       reports success having fed nothing. hs_herdr_json has always guarded
+#       this case ("an error key even if the exit status was 0") but no test
+#       could construct it, because the fake could only ever fail loudly.
 #   FAKE_HERDR_FAIL=<subcommand-prefix>
 #       Exit 1 for a call whose argv starts with that prefix (e.g.
 #       "plugin install"), with a plain, non-JSON message on stderr — how a
@@ -88,7 +96,7 @@ if [ -n "$error_code" ] && [ "$exempt_from_mismatch" -eq 0 ]; then
   else
     printf '%s\n' "$payload"
   fi
-  exit 1
+  exit "${FAKE_HERDR_ERROR_EXIT:-1}"
 fi
 
 if [ -n "${FAKE_HERDR_FAIL:-}" ] && [ "$exempt_from_mismatch" -eq 0 ]; then

@@ -82,6 +82,20 @@ rows:
       well as stdout, so an error object reported there is no longer invisible. The
       fake herdr grew FAKE_HERDR_ERROR_CODE and FAKE_HERDR_ERROR_STREAM to express
       those two failures at all.
+      Phase 6 wired cmd_feed (herdr-setup) to hs_require_socket, first and
+      unconditionally, and covered it end to end in
+      herdr-setup:tests/test_feed_entrypoint.sh -- feed exits 3 naming the restart
+      under a mismatch, under a mismatch WITH --dry-run, with no server, and with an
+      unreachable one, printing nothing on stdout in every case; and
+      herdr-setup:tests/test_entrypoint.sh adds the same no-server assertion at
+      dispatch level. lib/feed.py's own herdr_json refuses a result from a failed call
+      the way hs_herdr_json does, including the case the fake could not express before
+      -- an error object returned alongside exit 0 -- for which the fake grew
+      FAKE_HERDR_ERROR_EXIT (herdr-setup:tests/test_feed_resolve.py). The absorb
+      question this row's notes raised at phase 5 was already settled -- the wording
+      now reads apply, onboard and feed, matching the design doc, and absorb is
+      correctly ungated. Still not-implemented on purpose -- onboard is a phase 9 stub,
+      and phase 10 does the level references and the bulk flip once CI runs the suite.
   - id: diff-detects-plugin-drift
     capability: Configuration sync
     acceptance: diff reports each manifest plugin as missing, matching its pinned ref,
@@ -223,4 +237,16 @@ rows:
     levels: {}
     status: not-implemented
     notes: The end-to-end reason the tool exists. Verified live post-merge; Copilot
-      unverified until a host with the CLI runs it.
+      unverified until a host with the CLI runs it. Phase 6 built the runner and the
+      adapter seam -- herdr-setup:lib/feed.py (discovery, probe, pane gathering,
+      resolve, the decision, the report), herdr-setup:docs/adapters.md (the written
+      contract), and cmd_feed in herdr-setup wired after hs_require_socket. Covered by
+      herdr-setup:tests/test_feed_probe.py, herdr-setup:tests/test_feed_resolve.py,
+      herdr-setup:tests/test_feed_report.py (a real AF_UNIX server records the
+      pane.report_agent_session lines, and a pty drives the prompt),
+      herdr-setup:tests/test_contract.py (every example is extracted from the contract
+      document and executed) and herdr-setup:tests/test_feed_entrypoint.sh. The
+      adapters themselves are phases 7 and 8, so no agent can actually be fed yet --
+      the row stays not-implemented until then, and phase 10 does the level references
+      and the flip. The live half of the acceptance (a restart resuming each pane)
+      remains the spec's post-merge test plan and cannot be automated here.

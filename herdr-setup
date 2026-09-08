@@ -256,7 +256,42 @@ cmd_absorb() {
   return 0
 }
 cmd_onboard() { echo "stub: onboard dry-run=$HS_DRY_RUN yes=$HS_YES"; }
-cmd_feed()    { echo "stub: feed dry-run=$HS_DRY_RUN yes=$HS_YES"; }
+
+# cmd_feed: report every live agent pane's session to Herdr, so a server
+# restart brings the pane back running its agent's resume command instead of
+# a bare shell.
+#
+# hs_require_socket runs FIRST and unconditionally, like cmd_apply's. feed is
+# named in the design doc's preflight section and in the acceptance row
+# socket-commands-refuse-under-mismatch, and it is the command the gate was
+# built for: a mismatched Herdr answers `agent list` with a JSON error object,
+# and a run that read that as zero panes would print a clean summary having
+# fed nothing -- the exact failure that left 21 sessions stranded. The gate
+# holds under --dry-run too: a dry run's job is to say what a real run would
+# do, and a host that refuses every call cannot answer that either.
+#
+# The work itself is lib/feed.py's, reached through hs_feed (uv). Its stdio
+# is inherited, because feed asks the operator which session a pane is in
+# whenever it is not certain. Its exit status is this command's: 0 reported
+# what it was sure of, 1 something did not get through, 2 Herdr could not be
+# read.
+cmd_feed() {
+  local args
+  args=(--adapters "$HS_ROOT/adapters" --socket "$(hs_socket_path)")
+
+  hs_require_socket || return 3
+
+  if [ "$HS_DRY_RUN" -eq 1 ]; then
+    args+=(--dry-run)
+  fi
+  if [ "$HS_YES" -eq 1 ]; then
+    args+=(--yes)
+  fi
+
+  local rc=0
+  hs_feed "${args[@]}" || rc=$?
+  return "$rc"
+}
 
 # bash 3.2 (and up to 4.3) treats expansion of an EMPTY array under `set -u`
 # as an unbound variable, and HS_ARGS is empty for every documented

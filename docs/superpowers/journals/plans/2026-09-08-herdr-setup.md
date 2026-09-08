@@ -716,3 +716,220 @@ Two practical rules fell out of it:
   Phases 6 and 9 should add to that list rather than working around it, and
   tests/run.sh now clears all of them per file so one left set in a developer's
   shell cannot reconfigure the fake under every test.
+
+<!-- fr:journal kind=discovery scope=plan id=e6bbea77b29e created=2026-09-08T13:02:04 phase=6 -->
+### e6bbea77b29e · discovery · The feed runner's herdr shapes, and the fake switch that makes the exit-zero error expressible (phase 6)
+
+lib/feed.py speaks to herdr through its own herdr_json(), the Python
+counterpart of lib/common.sh's hs_herdr_json, and it fails in the same
+three-part order: a non-zero exit is a failure whatever was printed; a
+top-level `error` key is a failure EVEN WITH EXIT 0; anything unparseable
+(no output, not JSON, not an object) is a failure. stdout and stderr are
+captured separately and never merged, per finding I2 -- feed is the caller
+that made that fix necessary, and it now parses two commands through it.
+
+Harness extension, one switch: FAKE_HERDR_ERROR_EXIT=<n>. The fake could
+emit an error object on either stream, but only ever with exit 1, so the
+nastiest shape of all -- a well-formed error object returned alongside a
+SUCCESSFUL exit status -- was unexpressible. hs_herdr_json has guarded that
+case since phase 3 and no test could construct it. Now
+FAKE_HERDR_ERROR_CODE=socket_closed + FAKE_HERDR_ERROR_EXIT=0 does.
+Verified by weakening feed.py: dropping the error-key check makes exactly
+that test fail, and nothing else.
+
+Three more fail-open shapes were verified the same way, each weakening
+caught by exactly one test:
+- `{"result":{"panes":[]}}` (valid JSON, exit 0, no `agents` key) must
+  RAISE, not read as zero panes. This is the one that most looks like a
+  healthy idle host.
+- process-info with no `processes` list must raise, not drop the pane.
+- A failure on the SECOND round of calls (agent list fine, `pane
+  process-info` refused -- FAKE_HERDR_FAIL="pane process-info") must raise.
+  Swallowing it per pane leaves a run that reports success over an empty
+  set, which is the original bug with one extra step.
+
+The JSON shapes feed parses are NOT observed from a live herdr: this host
+sits in the protocol_mismatch state the spec's test plan describes, so
+`agent list` cannot answer. They are the shapes the plan's own step text
+names, taken as the contract:
+  agent list          -> result.agents[] each {pane_id|id, agent, ...}
+  pane process-info   -> result.{cwd, processes[]}, each process
+                         {pid, argv0, foreground, pid_start_epoch|start_epoch}
+argv0 is matched whole AND by basename, so /usr/local/bin/claude counts.
+An adapter may declare `command` in its probe when its argv0 is not its
+agent name; it defaults to the agent name. Phase 10's live test plan is
+where these shapes get confirmed against a restarted server -- if one is
+wrong, the failure is loud (HerdrError naming the missing key), never a
+silent empty run, which is the property that matters.
+
+<!-- fr:journal kind=discovery scope=plan id=a7c2486e97d0 created=2026-09-08T13:23:24 phase=6 -->
+### a7c2486e97d0 · discovery · The adapter interface phases 7 and 8 write against (phase 6)
+
+The whole contract is written, with worked examples, in docs/adapters.md, and
+tests/test_contract.py EXTRACTS every example from that document by an HTML
+marker (`<!-- contract: probe -->` and friends) and runs it through the real
+code -- validate_probe for the probe example, and the minimal shell adapter as
+an actual executable through probe(), usable_adapters() and resolve(). So the
+document cannot drift from the runner: tighten a rule without updating the doc
+and test_contract.py fails, add an example that does not work and it fails.
+Phases 7/8 should read the document, not this entry, but the interface in
+short:
+
+    adapters/<name> probe      -> one JSON object on stdout, exit 0
+      required: agent, source, available (bool), confidence (exact|heuristic)
+      optional: unverified (bool, default false), command (string)
+
+    adapters/<name> resolve    -> reads {"panes":[...]} on stdin,
+                                  prints {"results":[{pane_id, candidates}]}
+      pane:      {pane_id, cwd, pid, pid_start_epoch}   (pid/start may be null)
+      candidate: {session_id, confidence} required;
+                 label, updated, session_path optional
+
+Details phases 7/8 will actually trip over:
+
+- `command` is new and is NOT in the plan's step text. It is what the pane's
+  foreground argv0 is matched against, and it DEFAULTS to the agent name. All
+  four adapters in phases 7/8 want the default (claude/codex/opencode/copilot),
+  so none of them declares it. It exists so an agent whose binary is not named
+  after it does not need a change to the runner. argv0 is matched whole AND by
+  basename, so /usr/local/bin/claude counts.
+- `confidence` appears on the probe AND on each candidate and means the same
+  thing in both, but the RUNNER READS THE CANDIDATE'S. A heuristic adapter must
+  not promote a match to `exact` just because it found only one -- that is
+  precisely the case the runner would then report unasked.
+- A candidate with no `session_id`, or with neither documented confidence, is
+  dropped by candidates_by_pane() before the decision. It cannot be reported,
+  so as a prompt option it does nothing and as a lone `exact` candidate it
+  would be a silent wrong report.
+- ORDER IS LOAD-BEARING. `--yes` takes candidates[0]. Newest first.
+- Answering about fewer panes than were given is fine and tested.
+- To fail, exit non-zero or print nothing. Do NOT print an empty results list
+  to paper over an error -- that is indistinguishable from "no sessions here",
+  and the difference is the whole reason the runner is careful. An adapter
+  failure warns, counts, and makes the run exit 1; it never stops the others.
+- probe gets 10s, resolve 30s, then the adapter is skipped.
+- `available: false` is skipped SILENTLY (the adapter working correctly);
+  every other probe failure is skipped WITH A WARNING naming the adapter.
+  `unverified: true` is used, with a warning -- that is copilot's path.
+
+Testing an adapter: tests/helpers/feedlib.py has load_feed(), write_adapter(),
+probe_adapter() and RecordingServer, and isolate_environment(), which each
+test_*.py calls at import. Phase 8's P8.T3.S1 conformance pass extends
+tests/test_contract.py, which already has the shape it needs (probe every
+executable in a directory, assert validate_probe accepts it, assert
+available:false on a host where the agent is absent) applied to the
+documented example adapter.
+
+<!-- fr:journal kind=decision scope=plan id=64897182d4e6 created=2026-09-08T13:23:51 phase=6 -->
+### 64897182d4e6 · decision · The suite now runs Python test files, and how the report stage is proved (phase 6)
+
+Harness changes phases 7-10 inherit.
+
+**tests/run.sh runs test_*.py as well as test_*.sh.** The plan asks for Python
+unittest files, and run.sh only globbed .sh. A .py file is run under
+`uv run --quiet --script`, which is the same door lib/hs.py and lib/feed.py go
+through -- Python comes from uv, not from the host (AGENTS.md), so the suite
+must not reach for a host interpreter either. Both kinds get the identical
+env -u treatment, fresh HOME and tests/helpers-prefixed PATH. FAKE_HERDR_ERROR_EXIT
+was added to the cleared list alongside it. test_harness.sh's nested throwaway
+suite is unaffected -- it writes only .sh files and the .py glob matches
+nothing there, which the `[ -e ]` guard already handled.
+
+**The .py files also isolate themselves.** pyproject collects `tests/test_*.py`
+under pytest, so `uv run --group dev pytest` now picks these up too -- and
+OUTSIDE run.sh nothing prefixes PATH, so `herdr` would resolve to the REAL one
+installed on the machine and a test would make live calls to the operator's own
+server. feedlib.isolate_environment(), called at import by every .py test file,
+prepends tests/helpers to PATH and clears the same variables run.sh does.
+Verified both ways: 18/18 files under run.sh on bash 3.2 AND 5.3, and
+91 passed under pytest.
+
+**tests/helpers/feedlib.py** is the shared plumbing (not a test file, and out of
+the glob's way in helpers/): load_feed() imports lib/feed.py by path --
+registering it in sys.modules BEFORE exec_module, because @dataclass resolves
+its field annotations through sys.modules[cls.__module__] and fails at class
+definition time otherwise; write_adapter()/probe_adapter() build inline shell
+adapters; RecordingServer is a real AF_UNIX server that records the JSON lines
+it receives.
+
+Two deliberate choices about how the report stage is proved, both following the
+remediation rule that a guard is only as good as the fake that can make it fail:
+
+1. **A real socket, not a stub.** "--dry-run opened no socket" is only evidence
+   if a real server was sitting there ready to receive. RecordingServer is
+   listening throughout that test and records nothing.
+2. **A real pty, not an injected flag.** Every other test passes `interactive`
+   into run(). tests/test_feed_report.py's TestAtARealTerminal does not: it
+   spawns lib/feed.py as a program with os.openpty() on stdin and lets it work
+   out for itself that somebody is there, then writes the answer. "There is
+   nobody to ask" is a decision the tool makes from its environment, and a test
+   that hands it the answer proves nothing about it. The paired test runs the
+   same program with stdin on /dev/null and asserts the pane is skipped and the
+   reason names --yes or the terminal.
+
+Phase 9's onboard will want the same pty technique for its own y/n offers.
+
+One TDD note, recorded rather than glossed: validate_probe was written during
+task 1, because probe() needs it, so its task 4 test could not fail for want of
+the function. tests/test_contract.py failed for a different real reason --
+docs/adapters.md did not exist and every one of its 17 assertions raised -- and
+it is a stronger test for it, since it reads the contract out of the document
+rather than restating it.
+
+<!-- fr:journal kind=decision scope=plan id=3c6f2f90bbe0 created=2026-09-08T13:24:16 phase=6 -->
+### 3c6f2f90bbe0 · decision · What --yes means to feed, and the three exit statuses (phase 6)
+
+The plan's step text says an uncertain pane "in a non-interactive run without
+--yes is skipped with a note rather than guessed", which fixes the no-terminal
+case but leaves --yes itself undefined. Settled here, consistent with the rest
+of the tool:
+
+**--yes takes the adapter's best candidate, candidates[0].** It is the operator
+waiving the question in advance, exactly as it waives apply's shrinking-write
+gate and Herdr's own trust preview. It wins over a terminal too: with --yes at
+a tty, feed never prompts. Two consequences worth stating plainly. Candidate
+ORDER becomes load-bearing, so docs/adapters.md says best-first is not a
+stylistic preference. And --yes on a host full of heuristic adapters WILL
+sometimes report a wrong session -- that is what the operator asked for, and the
+default (skip, and say why) is the safe one.
+
+The decision table, in the order it is evaluated:
+
+    no candidates                       -> skip, "no session found"
+    one candidate, confidence `exact`   -> REPORT, no prompt
+    --yes                               -> report candidates[0]
+    a terminal                          -> ask; a blank, out-of-range or
+                                           non-numeric answer is a skip
+    neither                             -> skip, naming --yes or a terminal
+
+Only the second line reports unasked. The prompt goes to STDERR so the report
+lines and the summary stay pipeable.
+
+**Three exit statuses, and skips are not failures.**
+
+    0  everything the run was sure about was reported
+    1  something did not get through -- a send failed, or an adapter could not
+       answer. Its panes are named on stderr.
+    2  Herdr could not be read. The run does not know what is out there.
+
+Deliberately, a pane the run SKIPPED does not make the exit status non-zero: a
+skip is a decision the run made and told the operator about, and the next run
+can still feed that pane. Exit 2 exists so that "Herdr refused" can never be
+confused with "nothing to do" by a caller reading only the status -- cmd_feed
+passes it through unchanged.
+
+**send() does not swallow failures, and that is a deliberate divergence from
+Herdr's own integration hooks.** The claude hook wraps its whole socket block
+in `except Exception: pass`, which is right for a hook that must never disturb
+the agent it is attached to and wrong here: a pane that was not fed is the
+exact thing feed exists to prevent. A failed send warns, counts, and changes
+the exit status.
+
+The wire format is Herdr's own, read off the installed claude integration hook
+(~/.claude/hooks/herdr-agent-state.sh, HERDR_INTEGRATION_VERSION=8) rather than
+invented: {"id","method":"pane.report_agent_session","params":{pane_id, source,
+agent, seq, agent_session_id[, agent_session_path]}}, one JSON line, id shaped
+`<source>:<ms>:<6 random digits>`, seq from time.time_ns(). next_seq() adds one
+guarantee the hook does not need -- strictly increasing within a run -- since
+feed reports several panes in a row and two inside one nanosecond tick would
+otherwise tie.
