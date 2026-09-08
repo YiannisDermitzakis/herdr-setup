@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015
+# this suite's idiom throughout: pass()/fail()
+# (tests/helpers/assert.sh) never return nonzero, so "A && pass || fail C" cannot
+# silently take the wrong branch.
 # Tests for the herdr-setup entrypoint: usage, subcommand dispatch, and
 # global flags. The entrypoint does not exist yet; expect failure until
 # P1.T2.S2 writes it.
@@ -6,6 +10,7 @@ set -u
 
 test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$test_dir/.." && pwd)"
+# shellcheck source=tests/helpers/assert.sh
 . "$test_dir/helpers/assert.sh"
 
 entry="$repo_root/herdr-setup"
@@ -47,16 +52,24 @@ assert_status "--help exits 0" 0 "$status"
 assert_contains "--help prints usage" "$(cat "$out")" "usage:"
 
 # --- diff (phase 2), apply (phase 4), absorb (phase 5), feed (phase 6) and
-# onboard (phase 9) all now have real implementations. diff never had a
-# stub state to check here in the first place: this checkout has no
-# manifest/ directory yet (that lands only when a real absorb or apply
-# runs, and this file never lets that happen against the real checkout --
-# see below), so diff fails closed per AGENTS.md ("an unreadable manifest
-# ... stops the run") rather than reporting a stub success. ---
+# onboard (phase 9) all now have real implementations. Phase 10 seeds this
+# checkout's own manifest/plugins.list and manifest/config.toml, so diff
+# against the real checkout now has a real manifest to read -- run in the
+# fresh, herdr-less $HOME tests/run.sh hands every test file, every seeded
+# plugin reads as missing and the seeded [ui] section as config drift, so
+# diff reports drift (exit 1) rather than the fail-closed "manifest not
+# found" (exit 2) this block asserted back when manifest/ did not exist yet.
+# The missing-manifest fail-closed path itself stays covered directly, by
+# tests/test_diff_plugins.sh and tests/test_diff_config.sh, against a
+# manifest file this suite deletes on purpose. ---
 out="$work/out_diff"; err="$work/err_diff"
 status="$(run_entry "$out" "$err" diff)"
-assert_status "diff is accepted; fails closed on a missing manifest" 2 "$status"
-assert_contains "diff names the missing manifest on stderr" "$(cat "$err")" "manifest"
+assert_status "diff is accepted; reports drift against the seeded manifest" 1 "$status"
+assert_contains "diff reports the seeded plugins as missing on a fresh host" \
+  "$(cat "$out")" "kryptamine/herdr-auto-title"
+assert_contains "diff reports the seeded config as drift on a fresh host" \
+  "$(cat "$out")" "config drift:"
+[ ! -s "$err" ] && pass || fail "a drift report, not an error, prints nothing to stderr: $(cat "$err")"
 
 # --- absorb is real now too (phase 5): it WRITES manifest/plugins.list
 # and manifest/config.toml under $HS_ROOT, which resolves to this actual

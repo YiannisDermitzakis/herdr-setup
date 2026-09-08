@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015
+# this suite's idiom throughout: pass()/fail()
+# (tests/helpers/assert.sh) never return nonzero, so "A && pass || fail C" cannot
+# silently take the wrong branch.
 # Tests for `absorb`: hs_absorb_plugins, hs_absorb_config, hs_absorb_header,
 # hs_require_clean_manifest in lib/common.sh, and cmd_absorb's wiring into
 # the real entrypoint. None of these exist yet (cmd_absorb is a phase-1
@@ -37,12 +41,14 @@ hs_test_git() {
 
 test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$test_dir/.." && pwd)"
+# shellcheck source=tests/helpers/assert.sh
 . "$test_dir/helpers/assert.sh"
 
 if [ ! -f "$repo_root/lib/common.sh" ]; then
   fail "lib/common.sh does not exist yet"
   hs_test_report
 fi
+# shellcheck source=lib/common.sh
 . "$repo_root/lib/common.sh"
 
 work="$(mktemp -d)"

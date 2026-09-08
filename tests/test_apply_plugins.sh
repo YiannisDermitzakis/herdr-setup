@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015
+# this suite's idiom throughout: pass()/fail()
+# (tests/helpers/assert.sh) never return nonzero, so "A && pass || fail C" cannot
+# silently take the wrong branch.
 # Tests for the plugin-installation half of `apply`: hs_apply_plugins in
 # lib/common.sh, and its wiring into cmd_apply (herdr-setup) alongside the
 # hs_require_socket preflight gate. Neither exists yet; expect failure
@@ -11,12 +15,14 @@ set -u
 
 test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$test_dir/.." && pwd)"
+# shellcheck source=tests/helpers/assert.sh
 . "$test_dir/helpers/assert.sh"
 
 if [ ! -f "$repo_root/lib/common.sh" ]; then
   fail "lib/common.sh does not exist yet"
   hs_test_report
 fi
+# shellcheck source=lib/common.sh
 . "$repo_root/lib/common.sh"
 
 work="$(mktemp -d)"

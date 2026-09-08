@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015
+# this suite's idiom throughout: pass()/fail()
+# (tests/helpers/assert.sh) never return nonzero, so "A && pass || fail C" cannot
+# silently take the wrong branch.
 # Tests for hs_preflight, hs_require_socket, and hs_herdr_json in
 # lib/common.sh. None of the three exist yet; expect failure until
 # P1.T3.S2 writes them.
@@ -11,12 +15,14 @@ set -u
 
 test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$test_dir/.." && pwd)"
+# shellcheck source=tests/helpers/assert.sh
 . "$test_dir/helpers/assert.sh"
 
 if [ ! -f "$repo_root/lib/common.sh" ]; then
   fail "lib/common.sh does not exist yet"
   hs_test_report
 fi
+# shellcheck source=lib/common.sh
 . "$repo_root/lib/common.sh"
 
 if ! command -v hs_preflight >/dev/null 2>&1; then
@@ -161,7 +167,7 @@ assert_contains "hs_herdr_json returns the result when 'error' is only a value" 
 [ ! -s "$err" ] && pass || fail "hs_herdr_json is silent when 'error' is only a value"
 
 # And a genuine error object is still caught, with its message on one line.
-echo '{"id":"x","error":{"code":"boom","message":"first line\nsecond line"}}' \
+printf '%s\n' '{"id":"x","error":{"code":"boom","message":"first line\nsecond line"}}' \
   > "$fixtures/plugin->list.json"
 out="$HOME/json_realerr.out"
 err="$HOME/json_realerr.err"

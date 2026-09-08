@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015
+# this suite's idiom throughout: pass()/fail()
+# (tests/helpers/assert.sh) never return nonzero, so "A && pass || fail C" cannot
+# silently take the wrong branch.
 # The end-to-end round trip the whole tool exists for
 # (absorb-apply-roundtrip-is-noop in docs/acceptance/matrix.yaml): absorb a
 # host, then apply the freshly-absorbed manifest back against the SAME,
@@ -16,12 +20,14 @@ set -u
 
 test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$test_dir/.." && pwd)"
+# shellcheck source=tests/helpers/assert.sh
 . "$test_dir/helpers/assert.sh"
 
 if [ ! -f "$repo_root/lib/common.sh" ]; then
   fail "lib/common.sh does not exist yet"
   hs_test_report
 fi
+# shellcheck source=lib/common.sh
 . "$repo_root/lib/common.sh"
 
 work="$(mktemp -d)"

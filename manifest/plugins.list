@@ -1,0 +1,11 @@
+# manifest/plugins.list -- one Herdr plugin per line: <owner>/<repo>[/<subdir>] <ref>
+#
+# The ref is a branch or a tag; Herdr's `--ref` rejects a bare commit and
+# records the commit it actually resolved to in plugins.json, which is what
+# `diff` compares against to detect a moved ref. See docs/adapters.md and
+# the design doc (docs/superpowers/specs/2026-09-08-herdr-setup-design.md)
+# for the full contract. Edit this by hand, or run `herdr-setup absorb`
+# after changing plugins on a host to rewrite it from that host's own
+# plugins.json.
+kryptamine/herdr-auto-title                    v0.3.3
+ezcorp-org/herdr-pc-ram-and-cpu-usage-overlay  main

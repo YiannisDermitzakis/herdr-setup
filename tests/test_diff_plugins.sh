@@ -10,12 +10,14 @@ set -u
 
 test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$test_dir/.." && pwd)"
+# shellcheck source=tests/helpers/assert.sh
 . "$test_dir/helpers/assert.sh"
 
 if [ ! -f "$repo_root/lib/common.sh" ]; then
   fail "lib/common.sh does not exist yet"
   hs_test_report
 fi
+# shellcheck source=lib/common.sh
 . "$repo_root/lib/common.sh"
 
 work="$(mktemp -d)"

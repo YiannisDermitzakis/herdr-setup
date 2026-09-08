@@ -6,6 +6,7 @@ set -u
 
 test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$test_dir/.." && pwd)"
+# shellcheck source=tests/helpers/assert.sh
 . "$test_dir/helpers/assert.sh"
 
 work="$(mktemp -d)"
@@ -75,6 +76,7 @@ else
 #!/usr/bin/env bash
 set -u
 test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tests/helpers/assert.sh
 . "$test_dir/helpers/assert.sh"
 {
   echo "HOME=$HOME"
@@ -112,6 +114,7 @@ INNER
 #!/usr/bin/env bash
 set -u
 test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tests/helpers/assert.sh
 . "$test_dir/helpers/assert.sh"
 assert_eq "deliberately wrong, to prove run.sh propagates failure" "a" "b"
 hs_test_report

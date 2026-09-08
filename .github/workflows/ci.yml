@@ -1,0 +1,69 @@
+name: ci
+
+# tests/run.sh runs every test file under $BASH, not whatever `bash` happens
+# to resolve to on PATH -- so `/bin/bash tests/run.sh` is what actually
+# exercises the declared bash 3.2 floor (AGENTS.md), and a bare `bash
+# tests/run.sh` on macOS silently runs the whole suite on Homebrew's newer
+# bash instead. A tool that could not even start on 3.2 kept a green suite
+# for five phases this way, so macOS runs BOTH: its system /bin/bash
+# (3.2.57) and whatever newer bash setup-uv's runner image also carries.
+#
+# uv is the only prerequisite this workflow installs. Python comes from uv
+# (never the host, AGENTS.md), and the Herdr this tool wraps is never
+# invoked in these tests at all -- every test runs against the fake `herdr`
+# in tests/helpers/, on PATH.
+
+on:
+  pull_request: {}
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: ubuntu-latest
+            os: ubuntu-latest
+            bash: bash
+          - label: macos-latest
+            os: macos-latest
+            bash: bash
+          - label: macos-latest (bash 3.2 floor)
+            os: macos-latest
+            bash: /bin/bash
+    name: suite (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - name: Confirm which bash is actually running this
+        run: ${{ matrix.bash }} --version
+      - name: tests/run.sh
+        run: ${{ matrix.bash }} tests/run.sh
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - name: pytest (uv-pinned dev group)
+        run: uv run --group dev pytest
+      - name: ruff check
+        run: uv run --group dev ruff check .
+      - name: ruff format --check
+        run: uv run --group dev ruff format --check .
+      - name: shellcheck
+        # -x follows the `. "$repo_root/lib/common.sh"`-style sourcing that
+        # every test file does; the `# shellcheck source=` directive next to
+        # each such line (and disable= directives elsewhere, each with a
+        # comment naming the reason) is what makes that actually resolve.
+        # Both ubuntu-latest and macos-latest runner images ship shellcheck.
+        run: shellcheck -s bash -x herdr-setup lib/*.sh tests/*.sh

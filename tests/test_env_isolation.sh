@@ -9,6 +9,7 @@
 set -u
 
 test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tests/helpers/assert.sh
 . "$test_dir/helpers/assert.sh"
 
 for var in HERDR_ENV HERDR_SOCKET_PATH HERDR_BIN_PATH HERDR_PANE_ID \

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015
+# this suite's idiom throughout: pass()/fail()
+# (tests/helpers/assert.sh) never return nonzero, so "A && pass || fail C" cannot
+# silently take the wrong branch.
 # Tests for the config-splice half of `apply`: hs_splice_config and
 # hs_apply_config in lib/common.sh, and their wiring into cmd_apply
 # (herdr-setup). Neither exists yet; expect failure until P4.T2.S2
@@ -7,12 +11,14 @@ set -u
 
 test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$test_dir/.." && pwd)"
+# shellcheck source=tests/helpers/assert.sh
 . "$test_dir/helpers/assert.sh"
 
 if [ ! -f "$repo_root/lib/common.sh" ]; then
   fail "lib/common.sh does not exist yet"
   hs_test_report
 fi
+# shellcheck source=lib/common.sh
 . "$repo_root/lib/common.sh"
 
 work="$(mktemp -d)"
@@ -105,6 +111,9 @@ out="$(hs_splice_config "$host_with_blocks" "$manifest_reshaped")"
 status=$?
 assert_status "hs_splice_config exits 0 on a reshaped manifest" 0 "$status"
 assert_contains "reshaped splice carries the manifest's new line" "$out" 'newkey = "baz"'
+# shellcheck disable=SC2016
+# single-quoted on purpose: the backtick is
+# literal text being asserted against, not a command substitution to expand.
 assert_contains "reshaped splice still carries block 1 verbatim" "$out" \
   '# --- added by ez-corp.space-usage (removed by `status-disable`) ---'
 assert_contains "reshaped splice still carries block 1's end marker" "$out" \
@@ -150,6 +159,9 @@ assert_eq "the spliced file has the manifest's lines plus the blocks', and no mo
 
 # and the blocks still land where the anchors say, because both sides now
 # count the same lines
+# shellcheck disable=SC2016
+# single-quoted on purpose: the backtick is
+# literal text being asserted against, not a command substitution to expand.
 assert_contains "the form-feed manifest still gets its blocks back" "$out" \
   '# --- added by ez-corp.space-usage (removed by `status-disable`) ---'
 
@@ -270,20 +282,29 @@ assert_eq "the first backup still holds the original content, untouched" \
   "$original_content" "$(cat "$(printf '%s\n' "$backups" | head -n1)")"
 
 # --- the host file keeps its own mode. mktemp makes 0600, and renaming
-# that over the target silently took a group-readable config private. ---
-
+# that over the target silently took a group-readable config private.
+#
+# `ls -l | cut -c1-10` reads the mode string portably below. `stat`'s format
+# flags differ between BSD (macOS, `-f`) and GNU (Linux, `-c`) -- the same
+# BSD/GNU split lib/common.sh's own hs_apply_config avoids with `cp -p`
+# instead of the GNU-only `chmod --reference` -- and every filename here is
+# a fixed literal with nothing exotic in it, so shellcheck's find-based
+# suggestion buys nothing this suite needs. ---
 host_dir_mode="$work/host_mode"
 mkdir -p "$host_dir_mode"
 host_file_mode="$host_dir_mode/config.toml"
 cp "$host_with_blocks" "$host_file_mode"
 chmod 640 "$host_file_mode"
+# shellcheck disable=SC2012
 mode_before="$(ls -l "$host_file_mode" | cut -c1-10)"
 
 rm -f "$log"
 HS_DRY_RUN=0 HS_YES=1 FAKE_HERDR_LOG="$log" \
   hs_apply_config "$host_file_mode" "$manifest_same_shape" >/dev/null 2>&1
+# shellcheck disable=SC2012
 assert_eq "the written config keeps the original's mode" \
   "$mode_before" "$(ls -l "$host_file_mode" | cut -c1-10)"
+# shellcheck disable=SC2012
 assert_eq "the backup keeps the original's mode too" \
   "$mode_before" "$(ls -l "$(hs_backup_files "$host_dir_mode" | head -n1)" | cut -c1-10)"
 
@@ -349,6 +370,7 @@ assert_contains "the freshly created config carries the manifest content" \
 [ -z "$(hs_backup_files "$host_dir_new")" ] && pass || fail "hs_apply_config backed up a file that never existed"
 assert_eq "hs_apply_config still reloads once for a freshly created config" "1" \
   "$(grep -c '^server reload-config$' "$log")"
+# shellcheck disable=SC2012
 assert_eq "a config created from nothing gets 0644" "-rw-r--r--" \
   "$(ls -l "$host_file_new" | cut -c1-10)"
 

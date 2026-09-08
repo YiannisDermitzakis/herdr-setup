@@ -323,8 +323,11 @@ cmd_onboard() {
   local rc=0
   local fed_agents=""
 
-  local t_target t_how t_state t_detail
-  while IFS=$'\t' read -r t_target t_how t_state t_detail <&3; do
+  local t_target t_state t_detail
+  # The second column (how the agent was detected) is printed above but not
+  # needed for the install decision here; read into "_", which shellcheck
+  # and the reader both recognise as deliberately discarded.
+  while IFS=$'\t' read -r t_target _ t_state t_detail <&3; do
     [ -z "$t_target" ] && continue
     case "$t_state" in
       absent|outdated) ;;
@@ -368,6 +371,7 @@ cmd_onboard() {
     # Intentional word-splitting on $fed_agents: it is a list of agent
     # names built one space-separated word at a time above, the same
     # pattern hs_manifest_plugins documents for its own field-count check.
+    # shellcheck disable=SC2086
     feed_dir="$(hs_onboard_feed_adapters_dir "$HS_ROOT/adapters" $fed_agents)" || {
       echo "herdr-setup: onboard: could not build a scratch adapters directory for feed" >&2
       return 1

@@ -20,15 +20,22 @@
 set -u
 
 test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tests/helpers/assert.sh
 . "$test_dir/helpers/assert.sh"
 repo_root="$(cd "$test_dir/.." && pwd)"
 cd "$repo_root" || exit 1
 
+# shellcheck disable=SC2329
+# both are invoked indirectly, by name, as the
+# $lister argument absent() calls below; shellcheck's own message already
+# names this exact case ("or ignored if invoked indirectly").
 tracked() {
   git ls-files \
     | grep -vE '^docs/(acceptance/report_|superpowers/)' \
     | grep -vE '^tests/test_public_hygiene\.sh$'
 }
+# shellcheck disable=SC2329
+# invoked indirectly too, as absent()'s $lister.
 fixtures() { tracked | grep -E '^tests/fixtures/'; }
 
 # $1 label, $2 pattern, $3 file list command, $4 optional allow pattern

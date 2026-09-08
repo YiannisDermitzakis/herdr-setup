@@ -24,15 +24,15 @@
 #      (every detected agent already current).
 #
 # The true single-question, real-terminal y/n path (P9.T2.S1's "answering y
-# ... answering n") is not exercised end to end here, on purpose, matching
-# this repository's own established precedent: hs_confirm's `[ ! -t 0 ]`
-# gate means only a REAL pty proves that branch, and
-# tests/test_apply_config.sh's shrinking-write gate -- the one other caller
-# of hs_confirm -- covers only the no-terminal and --yes paths for exactly
-# the same reason. hs_confirm itself is shared, one function, already
-# exercised by that suite; cmd_onboard's own contribution is wiring it in
-# per offered agent, which the no-terminal and --yes paths below both prove
-# it does.
+# ... answering n") is deliberately NOT exercised end to end here: this file
+# and tests/test_apply_config.sh's shrinking-write gate, hs_confirm's only
+# two callers, both drive it with no terminal at all, which is a different
+# code path from the one a real y/n answer takes. That real-pty branch --
+# y/yes/n/no/an empty answer/end-of-input, and a plain pipe fed "yes" still
+# declining -- is covered once, directly against hs_confirm itself, by
+# tests/test_confirm.py (phase 10), rather than duplicated per caller here.
+# cmd_onboard's own contribution is wiring hs_confirm in per offered agent,
+# which the no-terminal and --yes paths below already prove it does.
 #
 # The sandbox trick is the established one (tests/test_feed_entrypoint.sh):
 # HS_ROOT follows $0, so a copy of the entrypoint in $work gets its own
@@ -41,6 +41,7 @@ set -u
 
 test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$test_dir/.." && pwd)"
+# shellcheck source=tests/helpers/assert.sh
 . "$test_dir/helpers/assert.sh"
 
 work="$(mktemp -d)"

@@ -32,8 +32,11 @@ rows:
       the Herdr command line and the running server speak different protocol versions.
     origin:
     - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
-    levels: {}
-    status: not-implemented
+    levels:
+      unit:
+      - herdr-setup:tests/test_diff_plugins.sh
+      - herdr-setup:tests/test_diff_config.sh
+    status: ci
     notes: Reads plugins.json and config.toml from disk; only integration state comes
       from the CLI, which stays unblocked. Phase 2 (herdr-setup:tests/test_diff_plugins.sh)
       proves the plugin section is byte-identical whether or not
@@ -45,9 +48,10 @@ rows:
       `herdr integration status` directly, which the fake herdr harness exempts from its
       protocol-mismatch simulation, matching the real command. An end-to-end
       herdr-setup diff run proves the exit status (0 match / 1 drift) is unchanged
-      under FAKE_HERDR_PROTOCOL_MISMATCH=1. Left not-implemented on purpose, per phase 10
-      (herdr-setup:docs/superpowers/plans/2026-09-08-herdr-setup/10.yaml), which adds the
-      level reference and flips this row once CI runs the suite.
+      under FAKE_HERDR_PROTOCOL_MISMATCH=1.
+      Phase 10 -- flipped to `ci` -- .github/workflows/ci.yml runs tests/run.sh (the two
+      files above, with everything else) on ubuntu-latest and macos-latest, macOS
+      twice (its system bash 3.2.57 and a newer one), on every PR and push.
   - id: socket-commands-refuse-under-mismatch
     capability: Version gate
     acceptance: apply, onboard and feed stop with one line naming the protocol
@@ -55,8 +59,14 @@ rows:
       empty result.
     origin:
     - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
-    levels: {}
-    status: not-implemented
+    levels:
+      unit:
+      - herdr-setup:tests/test_preflight.sh
+      - herdr-setup:tests/test_feed_entrypoint.sh
+      - herdr-setup:tests/test_feed_resolve.py
+      - herdr-setup:tests/test_entrypoint.sh
+      - herdr-setup:tests/test_onboard_offer.sh
+    status: ci
     notes: The failure this guards against reads as success having done nothing.
       Phase 1 (herdr-setup:tests/test_preflight.sh) unit-tests the two primitives
       this row depends on -- hs_require_socket refuses under mismatched/no-server/
@@ -99,17 +109,20 @@ rows:
       herdr-setup:tests/test_onboard_offer.sh (a mismatch and a missing server both
       refuse with exit 3, naming the fix, before the detection table is ever printed)
       and herdr-setup:tests/test_entrypoint.sh (the same no-server assertion at
-      dispatch level, alongside apply and feed's own). Still not-implemented on
-      purpose -- phase 10 does the level references and the bulk flip once CI runs
-      the suite.
+      dispatch level, alongside apply and feed's own).
+      Phase 10 -- flipped to `ci`, level references above.
   - id: diff-detects-plugin-drift
     capability: Configuration sync
     acceptance: diff reports each manifest plugin as missing, matching its pinned ref,
       or moved, and lists host plugins the manifest does not name as unmanaged.
     origin:
     - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
-    levels: {}
-    status: not-implemented
+    levels:
+      unit:
+      - herdr-setup:tests/test_diff_plugins.sh
+      - herdr-setup:tests/test_manifest.sh
+      - herdr-setup:tests/test_hostplugins.sh
+    status: ci
     notes: Moved is decided by resolving the ref with git ls-remote against the commit
       Herdr recorded. Implemented and unit-tested in phase 2
       (herdr-setup:tests/test_diff_plugins.sh, herdr-setup:tests/test_manifest.sh,
@@ -122,17 +135,18 @@ rows:
       and the design doc's own example manifest pins v0.3.3. hs_resolve_ref now asks for
       `<ref>` and `<ref>^{}` and prefers the peeled line, and the test's fake git can
       produce both shapes. hs_manifest_plugins also rejects a source named twice rather
-      than resolving and installing it twice. Left not-implemented on purpose, per phase 10
-      (herdr-setup:docs/superpowers/plans/2026-09-08-herdr-setup/10.yaml), which adds the
-      level reference and flips this row once CI runs the suite.
+      than resolving and installing it twice.
+      Phase 10 -- flipped to `ci`, level references above.
   - id: apply-reproduces-manifest
     capability: Configuration sync
     acceptance: On a host missing every manifest plugin, apply installs them at their
       pinned refs and a following diff reports a match.
     origin:
     - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
-    levels: {}
-    status: not-implemented
+    levels:
+      unit:
+      - herdr-setup:tests/test_apply_plugins.sh
+    status: ci
     notes: The second-machine case the tool exists for. Phase 4
       (herdr-setup:tests/test_apply_plugins.sh) implements and unit-tests hs_apply_plugins
       -- a missing or ref-moved manifest plugin gets exactly one
@@ -152,17 +166,21 @@ rows:
       be tested at all, and FAKE_HERDR_FAIL makes the failed-install branch reachable for
       the first time. hs_resolve_ref also asks for the peeled `^{}` line, so a plugin
       pinned to an annotated tag converges instead of reinstalling on every apply.
-      Left not-implemented on purpose,
-      per phase 10 (herdr-setup:docs/superpowers/plans/2026-09-08-herdr-setup/10.yaml),
-      which adds the level reference and flips this row once CI runs the suite.
+      The "a following diff reports a match" half stays exercised only via the shared
+      helper functions above, not a dedicated apply-then-diff test -- Phase 10 flips this
+      row to `ci` on that basis, not on closing that gap.
   - id: config-splice-preserves-plugin-blocks
     capability: Configuration sync
     acceptance: apply updates the operator's own config lines while leaving plugin-written
       marked blocks exactly where they were.
     origin:
     - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
-    levels: {}
-    status: not-implemented
+    levels:
+      unit:
+      - herdr-setup:tests/test_blocks.sh
+      - herdr-setup:tests/test_apply_config.sh
+      - herdr-setup:tests/test_diff_config.sh
+    status: ci
     notes: A plugin owns its block; the tool must never eat it. Phase 3
       (herdr-setup:tests/test_blocks.sh) builds and unit-tests the two primitives this
       depends on -- hs_strip_plugin_blocks and hs_extract_plugin_blocks, matching the id
@@ -187,17 +205,19 @@ rows:
       mode instead of taking it down to mktemp's 0600. hs.py's splice splits on "\n"
       alone now, so a form feed in a config no longer becomes a real newline in the
       operator's file, and the two sides no longer disagree on the line counts every
-      anchor in this row is measured in. Left not-implemented on purpose, per
-      phase 10 (herdr-setup:docs/superpowers/plans/2026-09-08-herdr-setup/10.yaml), which
-      adds the level reference and flips this row once CI runs the suite.
+      anchor in this row is measured in.
+      Phase 10 -- flipped to `ci`, level references above.
   - id: absorb-apply-roundtrip-is-noop
     capability: Configuration sync
     acceptance: absorb followed by apply against an unchanged host makes no further
       change, and absorb refuses to run when the manifest has uncommitted edits.
     origin:
     - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
-    levels: {}
-    status: not-implemented
+    levels:
+      unit:
+      - herdr-setup:tests/test_absorb.sh
+      - herdr-setup:tests/test_roundtrip.sh
+    status: ci
     notes: Guards the overwrite-not-merge design against eating a hand edit.
       Implemented and unit-tested in phase 5 (herdr-setup:tests/test_absorb.sh,
       herdr-setup:tests/test_roundtrip.sh) -- cmd_absorb rewrites manifest/plugins.list
@@ -221,17 +241,19 @@ rows:
       repository -- is gone. test_absorb.sh now uses real `git init` sandboxes covering
       clean, dirty and not-a-repository, and drives the hand-edit-survives case end to
       end through the entrypoint.
-      Left not-implemented on purpose, per phase 10
-      (herdr-setup:docs/superpowers/plans/2026-09-08-herdr-setup/10.yaml), which adds
-      the level reference and flips this row once CI runs the suite.
+      Phase 10 -- flipped to `ci`, level references above.
   - id: onboard-offers-stale-integration
     capability: Agent onboarding
     acceptance: onboard lists the agents present on the host, reports an integration
       Herdr calls outdated with both versions, and installs a refresh only when accepted.
     origin:
     - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
-    levels: {}
-    status: not-implemented
+    levels:
+      unit:
+      - herdr-setup:tests/test_onboard_detect.sh
+      - herdr-setup:tests/test_onboard_offer.sh
+      - herdr-setup:tests/test_confirm.py
+    status: ci
     notes: Different hosts run different agents, so this is per-host and interactive.
       Implemented and unit-tested in phase 9 (herdr-setup:tests/test_onboard_detect.sh,
       herdr-setup:tests/test_onboard_offer.sh) -- hs_detect_agents (lib/common.sh) reads
@@ -254,13 +276,17 @@ rows:
       precedent, and never triggers the feed hand-off (nothing was actually
       installed to feed). hs_require_socket gates the whole command first and
       unconditionally, matching apply and feed. The one path this phase's own tests
-      do not exercise end to end, on purpose, and documented as such in
-      tests/test_onboard_offer.sh's own header -- hs_confirm's real-terminal y/n
-      branch, which needs an actual pty to prove -- the same gap
-      tests/test_apply_config.sh already carries for hs_confirm's only other
-      caller. Left not-implemented on purpose, per phase 10
-      (herdr-setup:docs/superpowers/plans/2026-09-08-herdr-setup/10.yaml), which
-      adds the level reference and flips this row once CI runs the suite.
+      did not exercise end to end -- hs_confirm's real-terminal y/n branch, which
+      needs an actual pty to prove, the same gap tests/test_apply_config.sh already
+      carried for hs_confirm's only other caller -- is now closed, at phase 10, by
+      tests/test_confirm.py -- y/yes (and case variants) accept; n/no/an empty answer/
+      a nonsense answer decline; end-of-input declines; and a plain pipe fed "yes",
+      with no terminal at all, still declines rather than defaulting to yes. It tests
+      hs_confirm directly, once, rather than duplicating the real-pty drive per
+      caller -- cmd_onboard's and hs_apply_config's own contribution (wiring
+      hs_confirm in at the right point) stays proven by their existing no-terminal
+      and --yes coverage.
+      Phase 10 -- flipped to `ci`, level references above.
   - id: feed-reports-live-sessions
     capability: Agent onboarding
     acceptance: feed reports a session id for every live agent pane and Herdr persists
@@ -268,10 +294,19 @@ rows:
       agent's resume command rather than a bare shell.
     origin:
     - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
-    levels: {}
-    status: not-implemented
-    notes: The end-to-end reason the tool exists. Verified live post-merge; Copilot
-      unverified until a host with the CLI runs it. Phase 6 built the runner and the
+    levels:
+      unit:
+      - herdr-setup:tests/test_feed_probe.py
+      - herdr-setup:tests/test_feed_resolve.py
+      - herdr-setup:tests/test_feed_report.py
+      - herdr-setup:tests/test_contract.py
+      - herdr-setup:tests/test_feed_entrypoint.sh
+      - herdr-setup:tests/test_adapter_claude.py
+      - herdr-setup:tests/test_adapter_codex.py
+      - herdr-setup:tests/test_adapter_opencode.py
+      - herdr-setup:tests/test_adapter_copilot.py
+    status: skipped
+    notes: The end-to-end reason the tool exists. Phase 6 built the runner and the
       adapter seam -- herdr-setup:lib/feed.py (discovery, probe, pane gathering,
       resolve, the decision, the report), herdr-setup:docs/adapters.md (the written
       contract), and cmd_feed in herdr-setup wired after hs_require_socket. Covered by
@@ -279,8 +314,23 @@ rows:
       herdr-setup:tests/test_feed_report.py (a real AF_UNIX server records the
       pane.report_agent_session lines, and a pty drives the prompt),
       herdr-setup:tests/test_contract.py (every example is extracted from the contract
-      document and executed) and herdr-setup:tests/test_feed_entrypoint.sh. The
-      adapters themselves are phases 7 and 8, so no agent can actually be fed yet --
-      the row stays not-implemented until then, and phase 10 does the level references
-      and the flip. The live half of the acceptance (a restart resuming each pane)
-      remains the spec's post-merge test plan and cannot be automated here.
+      document and executed) and herdr-setup:tests/test_feed_entrypoint.sh. Phases 7
+      and 8 then built the four adapters against fixtures -- Claude Code (exact, by
+      pid, herdr-setup:tests/test_adapter_claude.py), Codex, opencode and Copilot CLI
+      (heuristic, by directory, herdr-setup:tests/test_adapter_codex.py,
+      herdr-setup:tests/test_adapter_opencode.py,
+      herdr-setup:tests/test_adapter_copilot.py, the last one a construction rather
+      than a capture, ships `unverified=true`) -- so an agent can now actually be fed
+      in CI, against the fake herdr and fixture session stores, which is what the
+      level references above prove.
+      Phase 10 -- status is `skipped`, not `ci`, and stays that way -- the automated
+      half above runs in CI on every PR (.github/workflows/ci.yml), but this row's
+      OWN acceptance statement is end-to-end against a real Herdr and a real
+      restart -- "Herdr persists a record" and "a following server restart brings
+      each pane back" are not something a fake herdr and fixture session stores can
+      prove, and Copilot stays unverified until a host with the real CLI confirms a
+      resume. That live half is the spec's post-merge test plan
+      (herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md#test-plan),
+      run once by the operator, not automated here -- `skipped` records that the
+      verification exists and does not run in CI, which is the honest status per this
+      file's own schema, not a debt phase 10 left behind.
