@@ -36,6 +36,14 @@ commands:
   absorb    rewrite the checkout from this host's Herdr configuration
   onboard   detect coding agents and offer their Herdr integration
   feed      report live agent sessions to Herdr so a restart can resume them
+
+  --dry-run print what would change, change nothing
+  --yes     answer this command's own prompts with yes
+
+`onboard --yes` accepts the integration installs it offers. It does NOT
+carry into the feed step that follows: a pane whose session is uncertain is
+still a question, and answering it wrongly resumes the wrong conversation.
+Run `herdr-setup feed --yes` deliberately to waive that one.
 EOF
 }
 
@@ -241,16 +249,37 @@ cmd_absorb() {
     rm -f "$plugins_tmp" "$config_tmp"
     return 2
   }
-  cat "$plugins_tmp" > "$write_tmp"
-  mv -f "$write_tmp" "$plugins_out"
+  # Both steps of both writes are CHECKED, the same rule hs_apply_config
+  # follows: neither the content write nor the rename used to have its status
+  # read, so a full disk left the manifest unchanged -- or left plugins.list
+  # rewritten and config.toml not -- with nothing said about it. The operator
+  # then commits a manifest they believe was refreshed.
+  if ! cat "$plugins_tmp" > "$write_tmp"; then
+    echo "herdr-setup: absorb: could not write $plugins_out; nothing was changed." >&2
+    rm -f "$plugins_tmp" "$config_tmp" "$write_tmp"
+    return 2
+  fi
+  if ! mv -f "$write_tmp" "$plugins_out"; then
+    echo "herdr-setup: absorb: could not install $plugins_out; nothing was changed." >&2
+    rm -f "$plugins_tmp" "$config_tmp" "$write_tmp"
+    return 2
+  fi
   rm -f "$plugins_tmp"
 
   write_tmp="$(mktemp "$manifest_dir/.herdr-setup-absorb.XXXXXX")" || {
     rm -f "$config_tmp"
     return 2
   }
-  cat "$config_tmp" > "$write_tmp"
-  mv -f "$write_tmp" "$config_out"
+  if ! cat "$config_tmp" > "$write_tmp"; then
+    echo "herdr-setup: absorb: could not write $config_out; $plugins_out was already updated." >&2
+    rm -f "$config_tmp" "$write_tmp"
+    return 2
+  fi
+  if ! mv -f "$write_tmp" "$config_out"; then
+    echo "herdr-setup: absorb: could not install $config_out; $plugins_out was already updated." >&2
+    rm -f "$config_tmp" "$write_tmp"
+    return 2
+  fi
   rm -f "$config_tmp"
 
   return 0
@@ -377,11 +406,16 @@ cmd_onboard() {
       return 1
     }
 
+    # --yes deliberately does NOT carry into feed. They are different
+    # consents: onboard's --yes accepts the integration installs it just
+    # offered, while feed's --yes waives the "which session is this pane in?"
+    # confirmation the whole design is organised around -- and answering that
+    # one wrongly resumes somebody else's conversation in a live pane.
+    # Passing one flag through as the other let an operator waive a question
+    # they were never shown. An uncertain pane is skipped here and said so;
+    # `herdr-setup feed --yes` is how it gets waived, on purpose.
     local feed_args
     feed_args=(--adapters "$feed_dir" --socket "$(hs_socket_path)")
-    if [ "$HS_YES" -eq 1 ]; then
-      feed_args+=(--yes)
-    fi
 
     hs_feed "${feed_args[@]}" || feed_rc=$?
     rm -rf "$feed_dir"

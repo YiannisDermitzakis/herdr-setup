@@ -600,24 +600,45 @@ def prompt_for_candidate(pane_id: str, candidates: list[dict]):
     return candidates[choice - 1]
 
 
-def decide(pane_id: str, candidates: list[dict], *, assume_yes: bool, interactive: bool, ask):
+def decide(
+    pane_id: str,
+    candidates: list[dict],
+    *,
+    assume_yes: bool,
+    interactive: bool,
+    ask,
+    adapter_confidence: str,
+):
     """Choose the session to report for one pane, or choose not to.
 
     Returns `(candidate, note)`. A note is present exactly when nothing is
     being reported, and it is what the operator is told.
 
     The one case that reports unasked is a single candidate at `exact`
-    confidence -- one session, and an adapter that tied it to the pane's own
-    process rather than to a directory two panes might share. Everything else
-    asks, and `--yes` is the operator waiving the question in advance, taking
-    the adapter's best candidate. With neither an answer nor a terminal there
-    is nobody to ask, so the pane is skipped: silence is not consent
-    (AGENTS.md), and a pane left unfed can be fed by the next run, whereas a
-    pane fed the wrong id resumes the wrong conversation.
+    confidence FROM AN ADAPTER THAT DECLARED `exact` -- one session, and an
+    adapter that can tie a session to the pane's own process rather than to a
+    directory two panes might share. Everything else asks, and `--yes` is the
+    operator waiving the question in advance, taking the adapter's best
+    candidate. With neither an answer nor a terminal there is nobody to ask,
+    so the pane is skipped: silence is not consent (AGENTS.md), and a pane
+    left unfed can be fed by the next run, whereas a pane fed the wrong id
+    resumes the wrong conversation.
+
+    Both confidences are checked because docs/adapters.md says they must be:
+    "a `heuristic` adapter may not promote a match to `exact`". Only the
+    candidate's value was read, so an adapter that had declared it can match
+    on a directory alone could return an `exact` candidate and have it
+    reported unasked. `adapter_confidence` is keyword-REQUIRED rather than
+    defaulted for the same reason the check exists: a caller that forgets it
+    must not silently get the permissive answer.
     """
     if not candidates:
         return None, "no session found"
-    if len(candidates) == 1 and _confidence(candidates[0]) == "exact":
+    if (
+        len(candidates) == 1
+        and _confidence(candidates[0]) == "exact"
+        and adapter_confidence == "exact"
+    ):
         return candidates[0], ""
     if assume_yes:
         return candidates[0], ""
@@ -626,11 +647,12 @@ def decide(pane_id: str, candidates: list[dict], *, assume_yes: bool, interactiv
         if chosen is None:
             return None, "not confirmed at the prompt"
         return chosen, ""
-    reason = (
-        "more than one possible session"
-        if len(candidates) > 1
-        else "the adapter is not certain of this match"
-    )
+    if len(candidates) > 1:
+        reason = "more than one possible session"
+    elif adapter_confidence != "exact":
+        reason = "this adapter can only match on a directory"
+    else:
+        reason = "the adapter is not certain of this match"
     return None, f"{reason}; re-run at a terminal to choose, or with --yes to take the best"
 
 
@@ -782,6 +804,7 @@ def run(
                 assume_yes=assume_yes,
                 interactive=interactive,
                 ask=ask,
+                adapter_confidence=adapter.confidence,
             )
             if candidate is None:
                 warn(f"pane {pane_id}: skipped: {note}")

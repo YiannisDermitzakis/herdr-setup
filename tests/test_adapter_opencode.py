@@ -231,6 +231,37 @@ class TestResolve(TempHomeCase):
         results = feed.resolve(ADAPTER, [pane(cwd=None)])
         self.assertEqual(feed.candidates_by_pane(results).get("w2:p2", []), [])
 
+    def test_a_database_it_cannot_open_is_an_operator_message_not_a_traceback(self):
+        """A hot WAL is the realistic case, and it must read like a sentence.
+
+        opencode runs in WAL mode. A reader that finds a `-wal` file with no
+        `-shm`, in a directory it cannot write, has to recover the log before
+        it can read -- and `mode=ro` forbids exactly that, so SQLite raises.
+        Uncaught, the operator gets a Python traceback out of a tool whose
+        whole manner is one clear line, and the runner quotes the last line of
+        it as the reason the pane went unfed.
+
+        The exit status has to be non-zero: this adapter cannot answer, which
+        is not the same as "nothing to say about these panes" (that is an
+        empty candidate list, and it is a normal, silent outcome).
+        """
+        write_opencode_db(self.db_path, [session_row(id="s1", directory="/work/alpha")])
+        # A stale WAL header with no -shm beside it, then a directory this
+        # process cannot write into: SQLite must recover, and cannot.
+        self.db_path.with_name(self.db_path.name + "-wal").write_bytes(
+            b"\x37\x7f\x06\x82" + b"\x00" * 60
+        )
+        os.chmod(self.db_path.parent, 0o555)
+        self.addCleanup(os.chmod, self.db_path.parent, 0o755)
+
+        with self.assertRaises(feed.AdapterError) as caught:
+            feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        message = str(caught.exception)
+        self.assertNotIn("Traceback", message)
+        self.assertNotIn("sqlite3.", message)
+        self.assertIn("opencode", message)
+        self.assertIn("database", message)
+
 
 class TestNeverTouchesHerdr(unittest.TestCase):
     def test_the_source_never_mentions_the_herdr_socket(self):

@@ -199,6 +199,46 @@ class TestReportsOnlyWhenSure(RunCase):
         self.assertEqual(server.received, [])
         self.assertTrue(any("w1:p1" in w for w in self.warnings), self.warnings)
 
+    def test_a_heuristic_adapter_may_not_promote_a_match_to_exact(self):
+        """docs/adapters.md: a `heuristic` adapter may not promote a match.
+
+        The rule was written down and never enforced. The runner read the
+        candidate's confidence and never cross-checked the adapter's own, so
+        an adapter that declares it can only match on a directory could return
+        `"confidence": "exact"` on a candidate and have it reported unasked,
+        non-interactive, without --yes.
+
+        None of the four shipped adapters does this, which is why nothing was
+        seen to break. It matters because this is the one seam whose purpose
+        is accepting adapters this repository did not write, and its whole
+        contract is that the runner, not the adapter, decides.
+        """
+        self.adapter(
+            [{"pane_id": "w1:p1", "candidates": [exact("aaa")]}],
+            probe=dict(PROBE, confidence="heuristic"),
+        )
+        with RecordingServer(self.socket_path) as server:
+            rc = self.run_feed()
+        self.assertEqual(
+            server.received,
+            [],
+            "an adapter that declared heuristic had an exact candidate reported unasked",
+        )
+        self.assertEqual(rc, 0)
+        self.assertTrue(any("w1:p1" in w for w in self.warnings), self.warnings)
+
+    def test_a_heuristic_adapters_exact_candidate_is_still_taken_with_yes(self):
+        """--yes is the operator waiving the question, which is unchanged."""
+        self.adapter(
+            [{"pane_id": "w1:p1", "candidates": [exact("aaa")]}],
+            probe=dict(PROBE, confidence="heuristic"),
+        )
+        with RecordingServer(self.socket_path) as server:
+            rc = self.run_feed(assume_yes=True)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(server.received), 1)
+        self.assertEqual(server.received[0]["params"]["agent_session_id"], "aaa")
+
     def test_a_candidate_with_no_confidence_is_never_reported_unasked(self):
         self.adapter([{"pane_id": "w1:p1", "candidates": [{"session_id": "aaa"}]}])
         with RecordingServer(self.socket_path) as server:

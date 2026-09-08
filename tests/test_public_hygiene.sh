@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015
+# this suite's idiom throughout: pass()/fail()
+# (tests/helpers/assert.sh) never return nonzero, so "A && pass || fail C"
+# cannot silently take the wrong branch.
 # This repository is public, and tests/fixtures/ holds captures taken from a
 # live machine. Captures are the HIGHEST-risk files here, not the lowest. An
 # earlier one reached the tree still carrying the operator's repository names
@@ -25,18 +29,43 @@ test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$test_dir/.." && pwd)"
 cd "$repo_root" || exit 1
 
+# The file list is taken ONCE, and this test refuses to run on a list it
+# could not get. `tracked()` used to shell out to `git ls-files` per call,
+# and absent() passes when its list is empty -- so anywhere git could not
+# answer (no .git, a broken repository, a CI step that runs the suite from a
+# tarball) every assertion below passed having scanned zero files. Six green
+# checks, a poisoned fixture sitting in the tree, and nothing said. A guard
+# that cannot reach its evidence must fail, not pass.
+all_tracked="$(mktemp)"
+trap 'rm -f "$all_tracked"' EXIT
+if ! git ls-files > "$all_tracked" 2>/dev/null; then
+  fail "git ls-files failed in $repo_root: this test cannot see the tree it is meant to police"
+  hs_test_report
+fi
+if [ ! -s "$all_tracked" ]; then
+  fail "git ls-files listed no files in $repo_root: every check below would pass having scanned nothing"
+  hs_test_report
+fi
+
 # shellcheck disable=SC2329
 # both are invoked indirectly, by name, as the
 # $lister argument absent() calls below; shellcheck's own message already
 # names this exact case ("or ignored if invoked indirectly").
 tracked() {
-  git ls-files \
-    | grep -vE '^docs/(acceptance/report_|superpowers/)' \
+  grep -vE '^docs/(acceptance/report_|superpowers/)' < "$all_tracked" \
     | grep -vE '^tests/test_public_hygiene\.sh$'
 }
 # shellcheck disable=SC2329
 # invoked indirectly too, as absent()'s $lister.
 fixtures() { tracked | grep -E '^tests/fixtures/'; }
+
+# The fixture scope is the stricter one, and it is the one most able to go
+# quietly empty: a capture is the highest-risk file here, so a fixture list
+# of zero is a reason to stop, not a clean bill of health.
+if [ -z "$(fixtures)" ]; then
+  fail "no tracked files under tests/fixtures/: the capture-only checks below would scan nothing"
+  hs_test_report
+fi
 
 # $1 label, $2 pattern, $3 file list command, $4 optional allow pattern
 absent() {
@@ -93,5 +122,25 @@ absent "a commit hash from a captured session's own repository" \
 # kilobytes of bloat, and it is not ours to redistribute.
 absent "an embedded agent system prompt in a capture" \
   'You are a coding agent running in|You are Claude Code' fixtures
+
+# --- and the guard on the guard: run this same file where git cannot list
+# anything, and it must FAIL. Written the way tests/test_harness.sh proves
+# tests/run.sh works -- against a throwaway copy of the real thing, never a
+# description of it. HS_HYGIENE_NESTED stops the copy from doing this again.
+if [ "${HS_HYGIENE_NESTED:-0}" != "1" ]; then
+  nested="$(mktemp -d)"
+  mkdir -p "$nested/tests/helpers"
+  cp "$test_dir/helpers/assert.sh" "$nested/tests/helpers/assert.sh"
+  cp "$test_dir/test_public_hygiene.sh" "$nested/tests/test_public_hygiene.sh"
+  # A poisoned file, so a run that scanned anything at all would have to fail
+  # for the right reason rather than for the missing repository.
+  printf 'watch_dir = "/Users/somebody/Projects"\n' > "$nested/poisoned.toml"
+  ( cd "$nested" && HS_HYGIENE_NESTED=1 GIT_CEILING_DIRECTORIES="$nested" \
+      "${BASH:-bash}" "$nested/tests/test_public_hygiene.sh" ) >/dev/null 2>&1
+  nested_status=$?
+  [ "$nested_status" -ne 0 ] && pass \
+    || fail "the hygiene test passed in a directory where git could list nothing"
+  rm -rf "$nested"
+fi
 
 hs_test_report

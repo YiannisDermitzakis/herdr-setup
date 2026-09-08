@@ -34,6 +34,55 @@ hs_plugins_json_path() {
   echo "$(hs_herdr_config_dir)/plugins.json"
 }
 
+# hs_response_error <text>: reads one herdr response and says whether it is
+# an error object. Prints the error MESSAGE on stdout when it is, nothing
+# otherwise, and returns:
+#
+#   0  <text> is a JSON object with a top-level `error` key
+#   1  <text> was read and has no such key -- the only "this call was fine"
+#   2  <text> carries the `"error"` token but could not be read (not JSON,
+#      not an object, or hs_py itself could not run)
+#
+# The cheap `case` is only a filter for whether there is anything to parse,
+# and it cannot miss a real error: an error key always puts the token in the
+# text. The decision itself is made by PARSING (hs_py herdr-error), because a
+# perfectly good response can carry the token "error" inside a value, and a
+# substring test reports that successful call as a failure.
+#
+# 2 exists because collapsing "cannot read it" into "no error key" is the
+# same fail-open shape as everything else this file guards: a guard that
+# cannot reach its evidence must not report the safe-looking answer. Every
+# caller treats 2 as a failed call.
+#
+# One function rather than two because BOTH the preflight probe and
+# hs_herdr_json have now been caught reading this wrongly, each in its own
+# way, and a rule with two implementations is a rule with two answers.
+hs_response_error() {
+  local text="$1" message py_rc=0
+
+  case "$text" in
+    *'"error"'*) ;;
+    *) return 1 ;;
+  esac
+
+  message="$(printf '%s' "$text" | hs_py herdr-error 2>/dev/null)" || py_rc=$?
+  case "$py_rc" in
+    0)
+      if [ -z "$message" ]; then
+        message="$text"
+      fi
+      printf '%s' "$message"
+      return 0
+      ;;
+    1)
+      return 1
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+}
+
 # hs_preflight_probe: the one socket call the preflight gate makes, kept as
 # its own function so hs_preflight and hs_require_socket agree on what is
 # probed and on how its output is read. Prints herdr's stdout AND stderr
@@ -60,6 +109,11 @@ hs_preflight_probe() {
 # other failure as `matched`, so a server that had just refused the probe
 # (socket_closed, a permission error, an unparseable answer) let `apply`
 # proceed. `unreachable` is the fourth state that failure now has a name for.
+#
+# And a zero exit status is not a success either: a server that answers with
+# an error object and exits 0 is still refusing, so the answer is parsed as
+# well as the status. Both halves classify through hs_preflight_failure, so
+# there is exactly one rule for what a refusal is called.
 hs_preflight() {
   if ! command -v herdr >/dev/null 2>&1; then
     echo "no-herdr"
@@ -73,24 +127,54 @@ hs_preflight() {
     return 0
   fi
 
-  # Check the exit status FIRST: a blocked herdr answers with a JSON error
-  # object and exits non-zero, never with an empty success. Only after
-  # confirming the call failed do we look at what it said, and what it said
-  # decides only WHICH failure this is, never whether it failed.
+  # Check the exit status FIRST: a blocked herdr usually answers with a JSON
+  # error object AND exits non-zero. What it said then decides only WHICH
+  # failure this is, never whether it failed.
   local output rc
   output="$(hs_preflight_probe)"
   rc=$?
   if [ "$rc" -ne 0 ]; then
-    if printf '%s' "$output" | grep -q '"code":"protocol_mismatch"'; then
-      echo "mismatched"
-    else
-      echo "unreachable"
-    fi
+    hs_preflight_failure "$output"
+    return 0
+  fi
+
+  # A zero exit status is NOT proof the call succeeded. A server can answer
+  # with a well-formed error object and still exit 0, and deciding purely on
+  # `rc` meant the gate never looked at the answer at all: it reported
+  # `matched` for a probe it had just watched be refused, hs_require_socket
+  # returned 0, and `apply` rewrote a live config against a server that had
+  # refused every call. So the answer is parsed here too, exactly the way
+  # hs_herdr_json parses one -- an `error` key means this call did not
+  # succeed, whatever the exit status claimed.
+  #
+  # A response carrying the token that cannot be READ (hs_response_error 2)
+  # counts as a refusal as well. The probe merges stderr, so an unreadable
+  # answer is usually a herdr that said something alongside its JSON, and a
+  # gate that cannot reach its evidence must not report the safe answer.
+  # hs_require_socket re-probes and prints what herdr actually said, so the
+  # operator sees the text this refused on.
+  local err_rc=0
+  hs_response_error "$output" >/dev/null || err_rc=$?
+  if [ "$err_rc" -ne 1 ]; then
+    hs_preflight_failure "$output"
     return 0
   fi
 
   echo "matched"
   return 0
+}
+
+# hs_preflight_failure <probe-output>: names WHICH failure a refused probe
+# was. Its own function because the exit-status path and the error-object
+# path must classify identically -- when they did not, `protocol_mismatch`
+# was the only failure with a name and every other one read as a healthy
+# host.
+hs_preflight_failure() {
+  if printf '%s' "$1" | grep -q '"code":"protocol_mismatch"'; then
+    echo "mismatched"
+  else
+    echo "unreachable"
+  fi
 }
 
 # hs_flatten: folds its stdin onto one line, collapsing runs of whitespace.
@@ -145,8 +229,8 @@ hs_require_socket() {
 # result from a failed call — a blocked herdr answers with a JSON error
 # object rather than an empty result, and a caller that reads .result.*
 # without checking the exit status would see zero of everything and report
-# success having done nothing. Returns non-zero on a failed exit status or
-# on an "error" key in the output (even if the exit status was 0), and
+# success having done nothing. Returns non-zero on a failed exit status, or
+# on an "error" key ON EITHER STREAM (even if the exit status was 0), and
 # prints the error message to stderr in either case. On success, prints the
 # herdr output on stdout unchanged and returns 0.
 #
@@ -163,7 +247,7 @@ hs_require_socket() {
 # command substitution captures the terminal away from a herdr that wants to
 # prompt.
 hs_herdr_json() {
-  local output rc message is_error err_file err_text py_rc
+  local output rc message is_error err_is_error err_file err_text py_rc
   err_file="$(mktemp)" || {
     echo "herdr-setup: cannot create a temporary file" >&2
     return 2
@@ -173,45 +257,60 @@ hs_herdr_json() {
   err_text="$(cat "$err_file")"
   rm -f "$err_file"
 
-  # Whether this is an error is decided by parsing the response, not by looking
-  # for a substring: a perfectly good response can carry the token "error" in a
-  # value, and a substring test reports that successful call as a failure. The
-  # cheap test is only a filter for whether there is anything to parse, and it
-  # cannot miss a real error, because an error key always puts the token in the
-  # text.
+  # Whether this is an error is decided by PARSING the response
+  # (hs_response_error), on BOTH streams. Looking only at stdout was the
+  # defect: a herdr that reports its error object on stderr left the filter
+  # with an empty string, so with a zero exit status the call was reported as
+  # a success and the error text was passed through to our own stderr as if it
+  # were a harmless notice. `apply` then wrote the config and "successfully"
+  # called reload-config against a server that had refused it.
+  #
+  # stdout is asked first, because that is where a well-formed answer lives.
+  # Note what is deliberately NOT done here: an empty stdout is not treated as
+  # a failure. `server reload-config` legitimately answers nothing at all, and
+  # apply calls it on every write.
   message=""
   is_error=0
-  case "$output" in
-    *'"error"'*)
-      message="$(printf '%s' "$output" | hs_py herdr-error)"
-      py_rc=$?
-      case "$py_rc" in
-        0)
-          is_error=1
-          if [ -z "$message" ]; then
-            message="$output"
-          fi
-          ;;
-        1)
-          # A well-formed response that has no top-level error key.
-          ;;
-        *)
-          # hs_py itself could not run (no uv, a broken interpreter). That is
-          # a failure to READ the answer, and a response carrying the token
-          # "error" that we cannot read is not evidence of success.
-          echo "herdr-setup: could not parse the herdr response (hs_py exited $py_rc); treating it as a failure" >&2
-          is_error=1
-          message="$output"
-          ;;
-      esac
+  err_is_error=0
+
+  py_rc=0
+  message="$(hs_response_error "$output")" || py_rc=$?
+  case "$py_rc" in
+    0) is_error=1 ;;
+    1) message="" ;;
+    *)
+      # The answer carries the token but could not be read -- hs_py could not
+      # run, or the text is not a JSON object. A response we cannot read is
+      # not evidence of success.
+      echo "herdr-setup: could not parse the herdr response (hs_py exited $py_rc); treating it as a failure" >&2
+      is_error=1
+      message="$output"
       ;;
   esac
+
+  if [ "$is_error" -eq 0 ]; then
+    py_rc=0
+    message="$(hs_response_error "$err_text")" || py_rc=$?
+    case "$py_rc" in
+      0) is_error=1; err_is_error=1 ;;
+      1) message="" ;;
+      *)
+        echo "herdr-setup: could not parse the herdr response on stderr (hs_py exited $py_rc); treating it as a failure" >&2
+        is_error=1
+        err_is_error=1
+        message="$err_text"
+        ;;
+    esac
+  fi
 
   if [ "$rc" -ne 0 ] || [ "$is_error" -eq 1 ]; then
     if [ -z "$message" ]; then
       message="${output:-$err_text}"
     fi
-    if [ -n "$err_text" ] && [ "$message" != "$err_text" ]; then
+    # Fold herdr's stderr into the message -- that is where it usually says
+    # why -- unless the message IS the error read off stderr, which would
+    # print the same failure twice, once parsed and once raw.
+    if [ "$err_is_error" -eq 0 ] && [ -n "$err_text" ] && [ "$message" != "$err_text" ]; then
       message="$message${message:+ }$err_text"
     fi
     echo "herdr-setup: herdr $*: $(printf '%s' "$message" | hs_flatten)" >&2
@@ -874,9 +973,10 @@ hs_backup_path() {
 #
 # Returns 2 if hs_splice_config hit a hard error (propagated as-is -- a
 # missing/unreadable manifest config, or a malformed plugin block on the
-# host), 4 if a shrinking write was refused, 1 if the reload-config call
-# itself failed, 0 otherwise (including the no-op case where nothing had
-# changed).
+# host) OR if any step of the write itself failed (the backup, the content
+# write, the rename -- a full disk reaches all three), 4 if a shrinking write
+# was refused, 1 if the reload-config call itself failed, 0 otherwise
+# (including the no-op case where nothing had changed).
 hs_apply_config() {
   local host_file="$1" manifest_file="$2"
   local host_dir new_content_tmp changed rc=0
@@ -910,8 +1010,15 @@ hs_apply_config() {
 
   local empty_tmp=""
   if [ -e "$host_file" ]; then
-    old_lines="$(wc -l < "$host_file" | tr -d ' ')"
-    new_lines="$(wc -l < "$new_content_tmp" | tr -d ' ')"
+    # awk's NR, not `wc -l`. wc counts NEWLINES: a file whose last line has
+    # no newline is one short, so a five-line host config written without a
+    # trailing newline counted as four against a four-line manifest, the
+    # shrink was invisible, and a line was removed from a live config in
+    # silence with exit 0 -- on exactly the default non-interactive path this
+    # gate exists to hold. The design doc's own "One deliberate normalisation"
+    # section is about hosts whose config arrives this way.
+    old_lines="$(awk 'END{print NR}' < "$host_file")"
+    new_lines="$(awk 'END{print NR}' < "$new_content_tmp")"
     if [ "$new_lines" -lt "$old_lines" ]; then
       shrinks=1
     fi
@@ -941,8 +1048,18 @@ hs_apply_config() {
 
   mkdir -p "$host_dir"
 
+  # Every step below is CHECKED. None of them used to be: they all run under
+  # the caller's `|| rc=$?`, which suppresses `set -e`, so a failure at any
+  # one of them left hs_apply_config returning 0 -- an unchanged (or
+  # half-written) config, a zero exit status, and a `reload-config` call
+  # telling Herdr to re-read a file that had not changed. The realistic
+  # trigger is a full disk, and the operator is told the apply worked.
   if [ -e "$host_file" ]; then
-    cp -p "$host_file" "$(hs_backup_path "$host_file")"
+    if ! cp -p "$host_file" "$(hs_backup_path "$host_file")"; then
+      echo "herdr-setup: apply: could not back up $host_file; nothing was written." >&2
+      rm -f "$new_content_tmp"
+      return 2
+    fi
   fi
 
   local write_tmp
@@ -961,9 +1078,17 @@ hs_apply_config() {
   else
     chmod 644 "$write_tmp"
   fi
-  cat "$new_content_tmp" > "$write_tmp"
+  if ! cat "$new_content_tmp" > "$write_tmp"; then
+    echo "herdr-setup: apply: could not write the new config for $host_file; nothing was changed." >&2
+    rm -f "$new_content_tmp" "$write_tmp"
+    return 2
+  fi
   rm -f "$new_content_tmp"
-  mv -f "$write_tmp" "$host_file"
+  if ! mv -f "$write_tmp" "$host_file"; then
+    echo "herdr-setup: apply: could not install the new $host_file; nothing was changed." >&2
+    rm -f "$write_tmp"
+    return 2
+  fi
 
   if ! hs_herdr_json server reload-config >/dev/null; then
     rc=1
@@ -1030,8 +1155,10 @@ hs_absorb_config() {
 # the manifest has uncommitted changes", since absorb overwrites rather
 # than merges). Prints one stderr line per dirty path under manifest/,
 # from `git status --porcelain -- manifest/`, and returns 4 when there is
-# any; a clean tree, or no manifest/ directory at all yet (a first-ever
-# absorb), returns 0 with no output. A missing `git` is a different,
+# any; it returns 4 as well when a file under manifest/ is not TRACKED (see
+# the ignored-path note below). A clean tree, or no manifest/ directory at
+# all yet (a first-ever absorb), returns 0 with no output. A missing `git`
+# is a different,
 # fail-closed failure mode (AGENTS.md: git is a prerequisite of this
 # tool) -- one stderr line, exit 2 -- kept distinguishable from the
 # dirty-manifest exit 4 by its own exit status.
@@ -1069,6 +1196,30 @@ hs_require_clean_manifest() {
       echo "  $f" >&2
     done <<< "$dirty"
     return 4
+  fi
+
+  # A clean status listing is not the same as a clean manifest. `git status
+  # --porcelain` says NOTHING about a path git is ignoring, which is the same
+  # empty answer a clean tree gives -- so a fork that keeps its manifest
+  # private (manifest/ in .gitignore) got "clean" for a file holding an
+  # uncommitted hand edit, and absorb ate it with exit 0. An UNTRACKED file
+  # was caught, because it shows up as `??`; an IGNORED one was invisible.
+  #
+  # So every file under manifest/ must be tracked. Git cannot vouch for a file
+  # it is ignoring, and "git cannot tell me" is a refusal here, never a clean
+  # tree -- the same rule the git-exit-status check above enforces.
+  if [ -d "$repo_root/manifest" ]; then
+    local file
+    while IFS= read -r file; do
+      [ -z "$file" ] && continue
+      if git -C "$repo_root" ls-files --error-unmatch -- "$file" >/dev/null 2>&1; then
+        continue
+      fi
+      echo "herdr-setup: absorb: $file is not tracked by git (it is ignored), so git cannot tell whether it holds an uncommitted hand edit; refusing to overwrite." >&2
+      return 4
+    done <<EOF
+$(cd "$repo_root" && find manifest -type f | LC_ALL=C sort)
+EOF
   fi
 
   return 0
@@ -1125,11 +1276,22 @@ hs_diff_integrations() {
     return 0
   fi
 
-  local output rc
+  local output rc detail err_rc=0
   output="$(herdr integration status 2>&1)"
   rc=$?
   if [ "$rc" -ne 0 ]; then
-    echo "integrations: herdr integration status failed: $output"
+    echo "integrations: herdr integration status failed: $(printf '%s' "$output" | hs_flatten)"
+    return 0
+  fi
+
+  # A zero exit status is not an answer. A server that refuses with an error
+  # object and exits 0 had that object split on newlines here, and every
+  # fragment reported as an installed integration -- `diff` showed an
+  # "integration" whose name was a piece of JSON. Same rule as the preflight
+  # gate: the answer is parsed, not assumed (hs_response_error).
+  detail="$(hs_response_error "$output")" || err_rc=$?
+  if [ "$err_rc" -ne 1 ]; then
+    echo "integrations: herdr integration status failed: $(printf '%s' "${detail:-$output}" | hs_flatten)"
     return 0
   fi
 
@@ -1219,11 +1381,23 @@ hs_detect_agents() {
     return 2
   fi
 
-  local output rc
+  local output rc err_rc=0 err_detail
   output="$(herdr integration status 2>&1)"
   rc=$?
   if [ "$rc" -ne 0 ]; then
     echo "herdr-setup: herdr integration status: $(printf '%s' "$output" | hs_flatten)" >&2
+    return 2
+  fi
+
+  # And a refusal that exits 0 is still a refusal. Read on the exit status
+  # alone, an error object became agent lines: every fragment failed the shape
+  # check below and was skipped, so this returned 0 having found nothing, and
+  # `onboard` printed an empty table and exited 0 on a host whose Herdr had
+  # refused to answer. The state cannot be read, which is exit 2 -- the same
+  # status a non-zero exit gets, for the same reason.
+  err_detail="$(hs_response_error "$output")" || err_rc=$?
+  if [ "$err_rc" -ne 1 ]; then
+    echo "herdr-setup: herdr integration status: $(printf '%s' "${err_detail:-$output}" | hs_flatten)" >&2
     return 2
   fi
 

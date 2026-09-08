@@ -88,9 +88,10 @@ confident it feels.
 
 `confidence` appears in two places and means the same thing in both: on the
 probe it describes what the adapter can do at all; on each candidate it
-describes that particular match. The runner reads the **candidate's** value
-when deciding, so a `heuristic` adapter may not promote a match to `exact`
-just because it found only one.
+describes that particular match. The runner reads **both** when deciding, and
+reports unasked only when they agree on `exact` — so a `heuristic` adapter
+may not promote a match to `exact` just because it found only one. The probe
+is the ceiling; a candidate can be less certain than the adapter, never more.
 
 A candidate with no `session_id`, or with none of the two documented
 confidences, is dropped. It cannot be reported, so as a prompt option it does

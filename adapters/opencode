@@ -55,7 +55,7 @@ from urllib.parse import quote
 AGENT = "opencode"
 SOURCE = "herdr:opencode"
 
-# adapters/codex reads exactly six columns of the real `session` table; see
+# Three columns of the real `session` table, filtered on three more; see
 # tests/fixtures/opencode/README.md for the rest of the (captured) schema.
 SELECT_SQL = """
     SELECT id, title, time_updated
@@ -132,14 +132,30 @@ def cmd_resolve() -> int:
         print(json.dumps({"results": empty}))
         return 0
 
-    conn = open_readonly(path)
+    # A database that is here but cannot be READ is a failure to answer, not
+    # "nothing to say" -- so it exits non-zero, and it does it in one sentence.
+    # opencode runs in WAL mode: a reader that finds a hot `-wal` has to
+    # recover the log first, `mode=ro` forbids exactly that, and SQLite raises.
+    # Uncaught, the operator got a Python traceback out of a tool whose whole
+    # manner is one clear line, and the runner quoted its last line as the
+    # reason the pane went unfed.
+    conn = None
     try:
+        conn = open_readonly(path)
         results = [
             {"pane_id": pane.get("pane_id"), "candidates": candidates_for(pane.get("cwd"), conn)}
             for pane in panes
         ]
+    except sqlite3.Error as exc:
+        sys.stderr.write(
+            f"adapters/opencode: cannot read the opencode database at {path}: {exc}. "
+            "It may be mid-write (a hot write-ahead log); try again, or check the file's "
+            "permissions.\n"
+        )
+        return 2
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     print(json.dumps({"results": results}))
     return 0
 

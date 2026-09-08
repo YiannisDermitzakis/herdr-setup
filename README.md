@@ -61,6 +61,24 @@ plugin-written blocks are set aside; and each installed agent integration's
 state. Writes nothing. Exit `0` when the host matches the manifest, `1` when
 it drifts, `2` on error.
 
+### First, on your reference host: `absorb`
+
+The manifest describes one particular Herdr setup, and until you have run
+`absorb` it does not describe yours. So the first command on the machine
+whose configuration you want to keep is:
+
+```
+$ herdr-setup absorb          # write manifest/ from THIS host
+$ git diff                    # read what it captured
+$ git commit -am "my Herdr setup"
+```
+
+`apply` is what you then run on the *other* machines. Do not reach for
+`apply --yes` against a manifest somebody else absorbed: `--yes` waives the
+gate that stops a write from silently removing lines from your live config,
+and a manifest that describes a different host is exactly the case that gate
+exists for. Run `apply --dry-run` first and read the diff.
+
 ### `apply` — bring a host up to the manifest
 
 ```
@@ -90,8 +108,9 @@ change Herdr interactively on any host, `absorb`, commit, `apply` elsewhere.
 Rewrites `manifest/plugins.list` and `manifest/config.toml` straight from the
 host's own `plugins.json` and `config.toml`, touching only the checkout.
 Refuses to run — and writes nothing — when the manifest has uncommitted
-changes, or when it cannot tell whether it does (git failing for any reason
-is treated as dirty, never as clean). Review with `git diff` and commit.
+changes, or when it cannot tell whether it does: git failing for any reason
+is treated as dirty, never as clean, and so is a `manifest/` git is ignoring,
+which it cannot vouch for either. Review with `git diff` and commit.
 Exit `0` on success, `2` on error, `4` if the manifest is dirty.
 
 ### `onboard` — detect and offer agent integrations
@@ -110,21 +129,34 @@ integrations it just installed or refreshed to Herdr immediately afterward
 (see `feed` below), and remembers nothing between runs. Exit `0` on success,
 `3` under a protocol mismatch.
 
+`onboard --yes` accepts the installs it offers, and **stops there**. It is not
+carried into the feed step that follows. They are different consents: one
+suppresses an install prompt, the other waives "which session is this pane
+in?", whose wrong answer brings a live pane back running somebody else's
+conversation. An uncertain pane is skipped and said so; run `herdr-setup feed
+--yes` when you mean to waive that question.
+
 ### `feed` — report live sessions to Herdr
 
 ```
 $ herdr-setup feed
-$ herdr-setup feed --yes   # take the best candidate without asking
+$ herdr-setup feed --dry-run   # print the calls it would make, make none
+$ herdr-setup feed --yes       # take the best candidate without asking
 ```
 
 For each agent pane Herdr reports, finds the matching session through the
 adapter seam (below) and sends `pane.report_agent_session` — the same call
 the official integration hooks make — so that a server restart resumes the
 pane instead of replacing it with a bare shell. Reports without asking only
-when exactly one candidate comes back at `exact` confidence; every other case
-is a question, and a question nobody is there to answer is a skip, never a
-guess. Exit `0` on a clean run, `1` if any pane could not be reported, `3`
-under a protocol mismatch.
+when exactly one candidate comes back at `exact` confidence *from an adapter
+that declared `exact`*; every other case is a question, and a question nobody
+is there to answer is a skip, never a guess.
+
+A skip is not a failure. Exit `1` means something did not get through — a
+send that failed, or an adapter that could not answer — and the run says which
+pane. A pane deliberately skipped is a decision the run made, told you about,
+and exited `0` on; the next run can still feed it. Exit `3` under a protocol
+mismatch.
 
 ## The adapter seam
 

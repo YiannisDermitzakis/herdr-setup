@@ -415,4 +415,96 @@ status=$?
 [ ! -e "$leaky_sandbox/manifest/config.toml" ] && pass || fail "absorb wrote a config.toml containing a home directory path"
 [ ! -e "$leaky_sandbox/manifest/plugins.list" ] && pass || fail "absorb wrote plugins.list despite refusing on the leak"
 
+# =====================================================================
+# A manifest/ that git IGNORES. `git status --porcelain -- manifest/` reports
+# nothing for an ignored path -- the same empty answer a clean tree gives --
+# so the guard said clean and absorb overwrote the hand edit, exit 0. An
+# untracked file is caught (it shows as `??`); an ignored one was not, and a
+# fork that keeps its manifest private is exactly the case that produces one.
+#
+# The rule that closes it: every file under manifest/ must be TRACKED. Git
+# cannot vouch for one it is ignoring, and "git cannot tell me" is a refusal
+# here, never a clean tree.
+# =====================================================================
+
+ignored_sandbox="$work/ignored_sandbox"
+mkdir -p "$ignored_sandbox/lib" "$ignored_sandbox/manifest"
+cp "$repo_root/herdr-setup" "$ignored_sandbox/herdr-setup"
+cp "$repo_root/lib/common.sh" "$ignored_sandbox/lib/common.sh"
+cp "$repo_root/lib/hs.py" "$ignored_sandbox/lib/hs.py"
+chmod +x "$ignored_sandbox/herdr-setup"
+printf 'manifest/\n' > "$ignored_sandbox/.gitignore"
+ignored_edit='# a private hand edit in an ignored manifest, must not be eaten'
+printf '%s\n' "$ignored_edit" > "$ignored_sandbox/manifest/config.toml"
+printf '%s\n' "$ignored_edit" > "$ignored_sandbox/manifest/plugins.list"
+hs_test_git "$ignored_sandbox" init -q
+hs_test_git "$ignored_sandbox" add -A
+hs_test_git "$ignored_sandbox" commit -q -m "ignored-manifest sandbox checkout"
+
+# The premise of the test: git really does report this tree as clean.
+assert_eq "git itself reports an ignored manifest/ as clean" "" \
+  "$(hs_test_git "$ignored_sandbox" status --porcelain -- manifest/)"
+
+err="$work/ignored_guard.err"
+hs_require_clean_manifest "$ignored_sandbox" 2>"$err"
+status=$?
+[ "$status" -ne 0 ] && pass || fail "hs_require_clean_manifest reported an ignored manifest/ as clean"
+assert_status "hs_require_clean_manifest exits 4 on an ignored manifest/" 4 "$status"
+assert_contains "the refusal names the file git cannot vouch for" "$(cat "$err")" \
+  "manifest/config.toml"
+
+out="$work/ignored_run.out"; err="$work/ignored_run.err"
+HERDR_CONFIG_DIR="$host_dir" "$ignored_sandbox/herdr-setup" absorb >"$out" 2>"$err"
+status=$?
+assert_status "absorb refuses an ignored manifest/ with 4" 4 "$status"
+assert_eq "the hand edit in the ignored config.toml survived" "$ignored_edit" \
+  "$(cat "$ignored_sandbox/manifest/config.toml")"
+assert_eq "the hand edit in the ignored plugins.list survived" "$ignored_edit" \
+  "$(cat "$ignored_sandbox/manifest/plugins.list")"
+[ -s "$err" ] && pass || fail "absorb refused an ignored manifest/ silently"
+
+# =====================================================================
+# A write that FAILS must fail loudly here too. absorb writes each manifest
+# file through a temp file and a rename, and neither the write nor the rename
+# had its status checked -- the same unchecked shape as hs_apply_config's.
+# A full disk left the manifest unchanged, or left plugins.list rewritten and
+# config.toml not, and absorb exited 0 either way. The operator then commits
+# a manifest they believe was refreshed.
+#
+# The stub goes on PATH rather than being a shell function: the entrypoint is
+# a separate process here, so a function in this shell would not reach it.
+# =====================================================================
+
+stub_bin="$work/stub_bin"
+mkdir -p "$stub_bin"
+cat > "$stub_bin/mv" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+chmod +x "$stub_bin/mv"
+
+write_sandbox="$work/write_sandbox"
+mkdir -p "$write_sandbox/lib"
+cp "$repo_root/herdr-setup" "$write_sandbox/herdr-setup"
+cp "$repo_root/lib/common.sh" "$write_sandbox/lib/common.sh"
+cp "$repo_root/lib/hs.py" "$write_sandbox/lib/hs.py"
+chmod +x "$write_sandbox/herdr-setup"
+hs_test_git "$write_sandbox" init -q
+hs_test_git "$write_sandbox" add -A
+hs_test_git "$write_sandbox" commit -q -m "write sandbox checkout"
+
+out="$work/mvfail.out"; err="$work/mvfail.err"
+PATH="$stub_bin:$PATH" HERDR_CONFIG_DIR="$host_dir" \
+  "$write_sandbox/herdr-setup" absorb >"$out" 2>"$err"
+status=$?
+assert_status "absorb returns 2 when a manifest rename fails" 2 "$status"
+[ ! -e "$write_sandbox/manifest/plugins.list" ] && pass \
+  || fail "a failed rename still left a plugins.list behind"
+[ ! -e "$write_sandbox/manifest/config.toml" ] && pass \
+  || fail "a failed rename still left a config.toml behind"
+[ -s "$err" ] && fail_check=0 || fail_check=1
+[ "$fail_check" -eq 0 ] && pass || fail "a failed absorb write was refused silently"
+leftover="$(find "$write_sandbox/manifest" -maxdepth 1 -name '.herdr-setup-absorb.*' 2>/dev/null)"
+[ -z "$leftover" ] && pass || fail "a failed absorb write left its temp file behind: $leftover"
+
 hs_test_report

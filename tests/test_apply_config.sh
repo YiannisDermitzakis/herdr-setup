@@ -386,4 +386,128 @@ assert_status "hs_apply_config exits 2 when the manifest config is missing" 2 "$
 assert_contains "hs_apply_config names the missing manifest file" "$(cat "$err")" "$manifest_missing"
 [ ! -f "$log" ] && pass || fail "hs_apply_config called herdr despite a hard error"
 
+# =====================================================================
+# The shrinking-write gate on a host config with NO TRAILING NEWLINE.
+#
+# The gate counted with `wc -l`, which counts newlines, not lines: a file
+# whose last line has no newline is one short. A five-line host config
+# written without a trailing newline counted as four, the four-line manifest
+# counted as four, and "fewer lines than before" was false -- so a line was
+# removed from a live config silently, with exit 0, on the default
+# non-interactive path the gate exists to hold.
+#
+# Hosts like this are not exotic. The design doc's own "One deliberate
+# normalisation" section is entirely about configs that arrive without a
+# trailing newline.
+# =====================================================================
+
+host_dir_nonl="$work/host_no_trailing_newline"
+mkdir -p "$host_dir_nonl"
+host_file_nonl="$host_dir_nonl/config.toml"
+printf '[ui]\nagent_panel_sort = "priority"\ntheme = "dark"\nfont_size = 13\nscrollback = 10000' \
+  > "$host_file_nonl"
+assert_eq "the fixture really has no trailing newline" "" \
+  "$(tail -c 1 "$host_file_nonl" | tr -d 'a-zA-Z0-9"={} ' | tr '\n' 'N')"
+nonl_before="$(cat "$host_file_nonl")"
+
+manifest_nonl="$work/manifest_four_lines.toml"
+cat > "$manifest_nonl" <<'EOF'
+[ui]
+agent_panel_sort = "priority"
+theme = "dark"
+font_size = 13
+EOF
+
+rm -f "$log"
+err="$work/nonl.err"
+HS_DRY_RUN=0 HS_YES=0 FAKE_HERDR_LOG="$log" \
+  hs_apply_config "$host_file_nonl" "$manifest_nonl" >/dev/null 2>"$err"
+status=$?
+assert_status "a shrinking write is refused on a host config with no trailing newline" \
+  4 "$status"
+assert_eq "the refused write left the host config exactly as it was" \
+  "$nonl_before" "$(cat "$host_file_nonl")"
+[ -z "$(hs_backup_files "$host_dir_nonl")" ] && pass \
+  || fail "a refused write on a no-trailing-newline config still took a backup"
+[ ! -f "$log" ] && pass \
+  || fail "a refused write on a no-trailing-newline config still called herdr: $(cat "$log" 2>/dev/null)"
+assert_contains "the refusal counts the missing last line too" "$(cat "$err")" "removes 1 line"
+
+# =====================================================================
+# A write that FAILS must fail loudly. Every step of the write ran under
+# `|| rc=$?` with `set -e` suppressed, and none of the three had its status
+# checked: the backup copy, the content write, and the rename. So a full
+# disk -- the realistic trigger -- produced an unchanged config, a zero exit
+# status, and a `reload-config` call telling Herdr to re-read a file that had
+# not changed. The operator is told the apply worked.
+#
+# Each step is stubbed here by defining a shell function that shadows the
+# command, which is enough because lib/common.sh is sourced into this test's
+# own shell. Each stub is unset immediately afterwards.
+# =====================================================================
+
+fail_dir="$work/host_write_fails"
+mkdir -p "$fail_dir"
+fail_file="$fail_dir/config.toml"
+
+# --- the rename fails: nothing was written, so nothing may be reported as
+# written, and Herdr must not be told to reload ---
+cp "$host_with_blocks" "$fail_file"
+fail_before="$(cat "$fail_file")"
+rm -f "$log"
+err="$work/mv_fail.err"
+# shellcheck disable=SC2329
+# invoked by name from inside hs_apply_config, which shellcheck cannot see.
+mv() { return 1; }
+HS_DRY_RUN=0 HS_YES=1 FAKE_HERDR_LOG="$log" \
+  hs_apply_config "$fail_file" "$manifest_same_shape" >/dev/null 2>"$err"
+status=$?
+unset -f mv
+assert_status "hs_apply_config returns 2 when the rename fails" 2 "$status"
+assert_eq "a failed rename leaves the host config exactly as it was" \
+  "$fail_before" "$(cat "$fail_file")"
+[ ! -f "$log" ] && pass \
+  || fail "a failed rename still called reload-config: $(cat "$log" 2>/dev/null)"
+[ -s "$err" ] && pass || fail "a failed rename was refused silently"
+
+# --- the content write fails part-way, the way it does on a full disk: some
+# bytes land in the temp file and cat exits non-zero. A truncated config must
+# never reach the host, and the status must say so. ---
+cp "$host_with_blocks" "$fail_file"
+fail_before="$(cat "$fail_file")"
+rm -f "$log"
+err="$work/cat_fail.err"
+# shellcheck disable=SC2329
+# invoked by name from inside hs_apply_config, as above.
+cat() { command head -n 2 "$1"; return 1; }
+HS_DRY_RUN=0 HS_YES=1 FAKE_HERDR_LOG="$log" \
+  hs_apply_config "$fail_file" "$manifest_same_shape" >/dev/null 2>"$err"
+status=$?
+unset -f cat
+assert_status "hs_apply_config returns 2 when the content write fails" 2 "$status"
+assert_eq "a truncated write never reaches the host config" \
+  "$fail_before" "$(cat "$fail_file")"
+[ ! -f "$log" ] && pass \
+  || fail "a truncated write still called reload-config: $(cat "$log" 2>/dev/null)"
+leftover="$(find "$fail_dir" -maxdepth 1 -name '.herdr-setup-config.*' 2>/dev/null)"
+[ -z "$leftover" ] && pass || fail "a failed write left its temp file behind: $leftover"
+
+# --- the backup copy fails: the previous content cannot be saved, so the
+# write must not happen at all. The backup is the operator's only way back. ---
+cp "$host_with_blocks" "$fail_file"
+fail_before="$(cat "$fail_file")"
+rm -f "$log"
+err="$work/cp_fail.err"
+# shellcheck disable=SC2329
+# invoked by name from inside hs_apply_config, as above.
+cp() { return 1; }
+HS_DRY_RUN=0 HS_YES=1 FAKE_HERDR_LOG="$log" \
+  hs_apply_config "$fail_file" "$manifest_same_shape" >/dev/null 2>"$err"
+status=$?
+unset -f cp
+assert_status "hs_apply_config returns 2 when the backup cannot be taken" 2 "$status"
+assert_eq "no backup means no write" "$fail_before" "$(cat "$fail_file")"
+[ ! -f "$log" ] && pass \
+  || fail "a config that could not be backed up was still reloaded: $(cat "$log" 2>/dev/null)"
+
 hs_test_report

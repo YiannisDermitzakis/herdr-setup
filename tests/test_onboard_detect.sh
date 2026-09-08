@@ -128,4 +128,24 @@ esac
 line_count="$(printf '%s\n' "$out" | grep -c .)"
 assert_eq "exactly five agents are reported" "5" "$line_count"
 
+# --- an error object answered with a zero exit status is a refused call, not
+# a status listing. hs_detect_agents decided purely on the exit status, so a
+# refusal that exited 0 was parsed as agent lines: every fragment failed the
+# shape check and was skipped, and the function returned 0 having found
+# "no agents" -- so `onboard` printed an empty table and exited 0 on a host
+# whose Herdr had refused to answer. The state genuinely cannot be read, which
+# is exit 2. ---
+err_fixtures="$work/err_fixtures"
+mkdir -p "$err_fixtures"
+printf '%s\n' '{"id":"x","error":{"code":"boom","message":"the server refused this call"}}' \
+  > "$err_fixtures/integration->status.json"
+
+err_file="$work/detect_err.err"
+out_err="$(FAKE_HERDR_FIXTURES="$err_fixtures" HOME="$fake_home" \
+  PATH="$fake_bin:$PATH" hs_detect_agents 2>"$err_file")"
+status=$?
+assert_status "hs_detect_agents exits 2 when the status call was refused with exit 0" 2 "$status"
+assert_eq "a refused status call reports no agents at all" "" "$out_err"
+assert_contains "the refusal names what herdr said" "$(cat "$err_file")" "refused this call"
+
 hs_test_report

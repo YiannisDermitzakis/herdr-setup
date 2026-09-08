@@ -62,42 +62,87 @@ assert_contains "--help prints usage" "$(cat "$out")" "usage:"
 # The missing-manifest fail-closed path itself stays covered directly, by
 # tests/test_diff_plugins.sh and tests/test_diff_config.sh, against a
 # manifest file this suite deletes on purpose. ---
+# --- diff and absorb both read (and absorb WRITES) $HS_ROOT/manifest, and
+# HS_ROOT follows $0. Run against "$repo_root/herdr-setup" they read the real
+# checkout this suite lives in, which is somebody's working tree: the
+# assertions then depend on whether the developer happens to be holding an
+# uncommitted manifest edit, or on whether the checkout carries a manifest at
+# all. That is not a property of the entrypoint, and it failed four
+# assertions for a state the program never created -- one of them saying
+# absorb "left the real checkout's manifest/ dirty" when the edit was the
+# developer's own. It also reddens for any CI step that writes into the tree
+# before the suite runs.
+#
+# So both run against a sandbox with a git repository and a manifest this
+# test controls, the pattern tests/test_absorb.sh already uses. Nothing here
+# reads or writes $repo_root. ---
+
+# hs_test_git <repo> [args...]: git with an identity of its own -- tests/run.sh
+# gives every file a throwaway $HOME, so there is no user.name to inherit.
+hs_test_git() {
+  local repo="$1"
+  shift
+  git -C "$repo" \
+    -c user.name="herdr-setup tests" \
+    -c user.email="tests@example.invalid" \
+    -c init.defaultBranch=main \
+    -c commit.gpgsign=false \
+    "$@"
+}
+
+sandbox="$work/sandbox"
+mkdir -p "$sandbox/lib" "$sandbox/manifest"
+cp "$repo_root/herdr-setup" "$sandbox/herdr-setup"
+cp "$repo_root/lib/common.sh" "$sandbox/lib/common.sh"
+cp "$repo_root/lib/hs.py" "$sandbox/lib/hs.py"
+chmod +x "$sandbox/herdr-setup"
+cat > "$sandbox/manifest/plugins.list" <<'EOF'
+kryptamine/herdr-auto-title v0.3.3
+EOF
+cat > "$sandbox/manifest/config.toml" <<'EOF'
+[ui]
+agent_panel_sort = "priority"
+EOF
+hs_test_git "$sandbox" init -q
+hs_test_git "$sandbox" add -A
+hs_test_git "$sandbox" commit -q -m "sandbox checkout with a committed manifest"
+
+# run_sandbox <out-file> <err-file> [args...] -- as run_entry, against the
+# sandbox copy. The host has no plugins.json and no config.toml (tests/run.sh
+# hands every file a fresh empty $HOME), so every manifest plugin is missing
+# and the whole config reads as drift, without any ref ever being resolved.
+run_sandbox() {
+  local out_file="$1" err_file="$2"
+  shift 2
+  "$sandbox/herdr-setup" "$@" >"$out_file" 2>"$err_file"
+  echo $?
+}
+
 out="$work/out_diff"; err="$work/err_diff"
-status="$(run_entry "$out" "$err" diff)"
-assert_status "diff is accepted; reports drift against the seeded manifest" 1 "$status"
-assert_contains "diff reports the seeded plugins as missing on a fresh host" \
+status="$(run_sandbox "$out" "$err" diff)"
+assert_status "diff is accepted; reports drift against the manifest" 1 "$status"
+assert_contains "diff reports the manifest plugins as missing on a fresh host" \
   "$(cat "$out")" "kryptamine/herdr-auto-title"
-assert_contains "diff reports the seeded config as drift on a fresh host" \
+assert_contains "diff reports the manifest config as drift on a fresh host" \
   "$(cat "$out")" "config drift:"
 [ ! -s "$err" ] && pass || fail "a drift report, not an error, prints nothing to stderr: $(cat "$err")"
 
-# --- absorb is real now too (phase 5): it WRITES manifest/plugins.list
-# and manifest/config.toml under $HS_ROOT, which resolves to this actual
-# checkout when invoked as "$repo_root/herdr-setup" -- a real (non-dry-run)
-# absorb here would overwrite the files phase 10 seeded in the real
-# repository this test suite lives in. --dry-run never writes, so it is
-# the only safe way to exercise absorb directly against $repo_root; the
-# full read/write/dirty-guard behaviour is covered end to end, via sandbox
-# copies, by tests/test_absorb.sh and tests/test_roundtrip.sh.
-#
-# manifest/ now exists for real (phase 10 seeded it), so "did this leave
-# the checkout alone" is no longer "the directory doesn't exist" -- it is
-# "the seeded files are still exactly what they were", byte for byte,
-# checked below against a copy taken before the dry run. ---
-plugins_before="$(cat "$repo_root/manifest/plugins.list")"
-config_before="$(cat "$repo_root/manifest/config.toml")"
+# --- absorb --dry-run: names both targets, writes neither, and leaves the
+# manifest byte for byte as it was and the repository clean ---
+plugins_before="$(cat "$sandbox/manifest/plugins.list")"
+config_before="$(cat "$sandbox/manifest/config.toml")"
 
 out="$work/out_absorb"; err="$work/err_absorb"
-status="$(run_entry "$out" "$err" --dry-run absorb)"
-assert_status "absorb --dry-run is accepted and exits 0 against the real checkout" 0 "$status"
+status="$(run_sandbox "$out" "$err" --dry-run absorb)"
+assert_status "absorb --dry-run is accepted and exits 0" 0 "$status"
 assert_contains "absorb --dry-run names the plugins.list target" "$(cat "$out")" "manifest/plugins.list"
 assert_contains "absorb --dry-run names the config.toml target" "$(cat "$out")" "manifest/config.toml"
 assert_eq "absorb --dry-run left manifest/plugins.list untouched" \
-  "$plugins_before" "$(cat "$repo_root/manifest/plugins.list")"
+  "$plugins_before" "$(cat "$sandbox/manifest/plugins.list")"
 assert_eq "absorb --dry-run left manifest/config.toml untouched" \
-  "$config_before" "$(cat "$repo_root/manifest/config.toml")"
-[ -z "$(cd "$repo_root" && git status --porcelain -- manifest/)" ] && pass \
-  || fail "absorb --dry-run left the real checkout's manifest/ dirty"
+  "$config_before" "$(cat "$sandbox/manifest/config.toml")"
+[ -z "$(hs_test_git "$sandbox" status --porcelain -- manifest/)" ] && pass \
+  || fail "absorb --dry-run left the sandbox's manifest/ dirty"
 
 # --- apply calls hs_require_socket first, unconditionally, and fails
 # closed there before it ever gets to a missing manifest -- proving the

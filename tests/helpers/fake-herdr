@@ -51,12 +51,20 @@
 #       Write <text> to stderr and still succeed, like a deprecation notice
 #       alongside a perfectly good answer on stdout.
 #   FAKE_HERDR_PROMPT=1
-#       For `plugin install` WITHOUT --yes, print a trust preview to stdout
-#       and read one line from stdin, exactly as the real herdr does. Logs
-#       "prompt-answer <answer>" so a test can see it was answered, and exits
-#       1 on anything but y/yes. With --yes, no preview and no read. This is
-#       the mode that catches a caller running the install inside a command
-#       substitution: the preview never reaches the operator's terminal.
+#       For `plugin install` and `integration install` WITHOUT --yes, print a
+#       trust preview to stdout and read one line from stdin, exactly as the
+#       real herdr does. Logs "prompt-stdout pipe|direct" and
+#       "prompt-answer <answer>", and exits 1 on anything but y/yes. With
+#       --yes, no preview and no read. This is the mode that catches a caller
+#       running the install inside a command substitution: the preview never
+#       reaches the operator's terminal.
+#
+#       `integration install` was missing here for a whole phase, and the
+#       consequence was exact: onboard's own interactive install could be
+#       reverted to hs_herdr_json and the entire suite still passed. The
+#       "prompt-stdout" line exists for the same reason -- an inherited stdin
+#       answers the question either way, so only where the PREVIEW went tells
+#       the two callers apart.
 #
 # Bash 3.2 safe: no associative arrays, no mapfile, no `local -n`.
 set -u
@@ -109,21 +117,34 @@ if [ -n "${FAKE_HERDR_FAIL:-}" ] && [ "$exempt_from_mismatch" -eq 0 ]; then
 fi
 
 if [ "${FAKE_HERDR_PROMPT:-}" = "1" ]; then
-  case "${1:-}" in
-    plugin)
+  case "${1:-} ${2:-}" in
+    "plugin install"|"integration install")
       has_yes=0
       for arg in "$@"; do
         if [ "$arg" = "--yes" ]; then
           has_yes=1
         fi
       done
-      if [ "${2:-}" = "install" ] && [ "$has_yes" -eq 0 ]; then
+      if [ "$has_yes" -eq 0 ]; then
         echo "TRUST PREVIEW for ${3:-<unknown>}"
-        echo "  this plugin runs code on your machine."
+        echo "  this runs code on your machine."
         printf 'Install it? [y/N] '
         answer=""
         read -r answer || answer=""
         if [ -n "${FAKE_HERDR_LOG:-}" ]; then
+          # WHERE the preview went, not just whether the question was
+          # answered. A caller that wraps this in a command substitution --
+          # the whole defect hs_herdr_interactive exists to undo -- still
+          # gets its answer from an inherited stdin, so "prompt-answer y"
+          # alone cannot tell the two apart. Its stdout is a PIPE, and the
+          # operator's is not: on a real host it is their terminal, and in
+          # this suite it is the test's own output file. So a `pipe` here is
+          # a preview the operator never saw.
+          if [ -p /dev/fd/1 ]; then
+            printf 'prompt-stdout pipe\n' >> "$FAKE_HERDR_LOG"
+          else
+            printf 'prompt-stdout direct\n' >> "$FAKE_HERDR_LOG"
+          fi
           printf 'prompt-answer %s\n' "$answer" >> "$FAKE_HERDR_LOG"
         fi
         case "$answer" in

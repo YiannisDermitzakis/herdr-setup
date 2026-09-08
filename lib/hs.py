@@ -172,18 +172,31 @@ def herdr_error() -> int:
     """Decide whether a Herdr response is an error, and print its message.
 
     Exits 0 having printed the message when the response is a JSON object with
-    an `error` key, and 1 when it is not. Reading the parsed structure is the
-    whole point: a substring test for `"error"` also matches a perfectly good
-    response that happens to carry the token in a value, and reports a
-    successful call as a failure.
+    an `error` key. Reading the parsed structure is the whole point: a
+    substring test for `"error"` also matches a perfectly good response that
+    happens to carry the token in a value, and reports a successful call as a
+    failure.
+
+    The two ways of NOT being an error object are kept apart, because the
+    caller must treat them differently:
+
+    3  the response could not be read at all -- not JSON, or not an object.
+       The caller only asks at all when the text carries the `"error"` token,
+       so a response it cannot read is not evidence that the call succeeded.
+    1  the response WAS read, and has no top-level `error` key. This is the
+       only answer that means "this call was fine".
+
+    Anything else (2) is this helper failing to run, which the caller treats
+    the same way as 3. Collapsing 3 into 1 was the bug: a response nobody
+    could parse read exactly like a clean one.
     """
     raw = sys.stdin.read()
     try:
         data = json.loads(raw)
     except ValueError:
-        return 1
+        return 3
     if not isinstance(data, dict):
-        return 1
+        return 3
     err = data.get("error")
     if err is None:
         return 1

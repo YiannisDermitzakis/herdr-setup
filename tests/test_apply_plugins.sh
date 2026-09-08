@@ -172,6 +172,14 @@ assert_contains "the preview names the plugin being installed" "$(cat "$out")" \
   "some-org/missing-plugin"
 assert_eq "the operator's answer reached herdr, once per install" "2" \
   "$(grep -c '^prompt-answer y$' "$log")"
+# Where the preview went, not only that it was answered: stdin is inherited
+# through a command substitution too, so the answer alone cannot tell a
+# foreground install from a captured one. A pipe here is a preview the
+# operator never saw.
+assert_eq "no install's preview was captured into a pipe" "0" \
+  "$(grep -c '^prompt-stdout pipe$' "$log")"
+assert_eq "every install wrote its preview straight to the operator's stdout" "2" \
+  "$(grep -c '^prompt-stdout direct$' "$log")"
 
 # --- declining is a failure, not a silent success ---
 

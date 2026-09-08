@@ -302,6 +302,62 @@ case "$(cat "$probe_log")" in
 esac
 
 # =====================================================================
+# (4b) the install runs in the FOREGROUND, with the operator's own stdio.
+#
+# `herdr integration install` shows Herdr's own trust preview and waits for
+# an answer, exactly as `plugin install` does. Run through hs_herdr_json it
+# goes into a command substitution: herdr blocks on a read behind a prompt
+# the operator was never shown, and the command looks hung.
+#
+# There was no guard on this at all. The fake herdr implemented
+# FAKE_HERDR_PROMPT for `plugin install` only, so onboard's own call could be
+# reverted to hs_herdr_json and all twenty-six test files still passed. A
+# guard is only as good as the fake that can make it fail.
+#
+# The answer alone does not prove it: stdin is inherited either way, so a
+# command substitution gets its "y" too. What differs is where the PREVIEW
+# went -- the operator's stdout, or a pipe only the tool can read.
+# =====================================================================
+
+rm -f "$log" "$probe_log"
+out="$work/out_prompt"; err="$work/err_prompt"
+HERDR_SOCKET_PATH="$socket" FAKE_HERDR_FIXTURES="$fixtures" FAKE_HERDR_LOG="$log" \
+  FAKE_HERDR_PROMPT=1 \
+  HOME="$fake_home" PATH="$fake_bin:$test_dir/helpers:$PATH" \
+  "$sandbox/herdr-setup" --yes onboard >"$out" 2>"$err" <<'ANSWERS'
+y
+y
+ANSWERS
+status=$?
+assert_status "onboard exits 0 when the operator accepts each install" 0 "$status"
+assert_eq "the operator's answer reached herdr, once per offered agent" "2" \
+  "$(grep -c '^prompt-answer y$' "$log")"
+assert_contains "Herdr's trust preview reaches the operator's own stdout" \
+  "$(cat "$out")" "TRUST PREVIEW"
+assert_eq "the preview was never captured into a pipe the operator cannot see" "0" \
+  "$(grep -c '^prompt-stdout pipe$' "$log")"
+assert_eq "every install wrote its preview straight to the operator's stdout" "2" \
+  "$(grep -c '^prompt-stdout direct$' "$log")"
+
+# --- and declining is a failure, not a silent success ---
+
+rm -f "$log" "$probe_log"
+HERDR_SOCKET_PATH="$socket" FAKE_HERDR_FIXTURES="$fixtures" FAKE_HERDR_LOG="$log" \
+  FAKE_HERDR_PROMPT=1 \
+  HOME="$fake_home" PATH="$fake_bin:$test_dir/helpers:$PATH" \
+  "$sandbox/herdr-setup" --yes onboard >/dev/null 2>/dev/null <<'ANSWERS'
+n
+n
+ANSWERS
+status=$?
+assert_status "a declined install is reported as a failure" 1 "$status"
+if [ -s "$probe_log" ]; then
+  fail "every install was declined, but feed ran an adapter probe anyway: $(cat "$probe_log")"
+else
+  pass
+fi
+
+# =====================================================================
 # (5) nothing offered (every detected agent already current): no install,
 # no feed call at all, exit 0.
 # =====================================================================
@@ -330,5 +386,61 @@ if [ -s "$probe_log" ]; then
 else
   pass
 fi
+
+# =====================================================================
+# (6) onboard's --yes does NOT become feed's --yes.
+#
+# They are different consents. onboard's --yes accepts the integration
+# installs it just offered; feed's --yes waives "which session is this pane
+# in?", and answering that one wrongly brings a live pane back running
+# somebody else's conversation. Passing the flag through let an operator
+# waive a question they were never shown.
+#
+# Written with an adapter that is honestly uncertain: heuristic probe,
+# heuristic candidate. With the flag passed through, feed takes it and
+# reports. Without, the pane is skipped and said so -- and the install half
+# of --yes still works, which is what the install log proves.
+# =====================================================================
+
+cat > "$sandbox/adapters/claude" <<ADAPTER
+#!/bin/sh
+echo "claude" >> "$probe_log"
+case "\$1" in
+  probe)
+    echo '{"agent":"claude","source":"herdr:claude","available":true,"confidence":"heuristic"}'
+    ;;
+  resolve)
+    cat >/dev/null
+    echo '{"results":[{"pane_id":"w1:p1","candidates":[{"session_id":"sess-unsure","confidence":"heuristic"}]}]}'
+    ;;
+esac
+ADAPTER
+chmod +x "$sandbox/adapters/claude"
+rm -f "$sandbox/adapters/codex" "$sandbox/adapters/opencode"
+
+claude_only="$work/claude_only"
+mkdir -p "$claude_only"
+cat > "$claude_only/integration->status.json" <<'EOF'
+claude: not installed (/home/placeholder-user/.claude/hooks/herdr-agent-state.sh)
+EOF
+cp "$fixtures/agent->list.json" "$claude_only/agent->list.json"
+cp "$fixtures/pane->process-info->--pane->w1:p1.json" "$claude_only/"
+cp "$fixtures/pane->process-info->--pane->w2:p2.json" "$claude_only/"
+
+rm -f "$log" "$probe_log"
+out="$work/out_yes_not_feed"; err="$work/err_yes_not_feed"
+HERDR_SOCKET_PATH="$socket" FAKE_HERDR_FIXTURES="$claude_only" FAKE_HERDR_LOG="$log" \
+  HOME="$fake_home" PATH="$fake_bin:$test_dir/helpers:$PATH" \
+  "$sandbox/herdr-setup" --yes onboard >"$out" 2>"$err" </dev/null
+status=$?
+assert_status "onboard --yes still exits 0 when the feed step skips an uncertain pane" 0 "$status"
+assert_eq "onboard's own --yes still installed the offered integration" "1" \
+  "$(grep -c '^integration install claude$' "$log")"
+assert_contains "the feed hand-off still ran" "$(cat "$probe_log")" "claude"
+case "$(cat "$out")" in
+  *sess-unsure*) fail "onboard --yes waived feed's session confirmation: $(cat "$out")" ;;
+  *) pass ;;
+esac
+assert_contains "the uncertain pane is skipped and said so" "$(cat "$err")" "skipped"
 
 hs_test_report

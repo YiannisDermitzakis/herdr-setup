@@ -137,6 +137,26 @@ status_mismatch=$?
 assert_status "hs_diff_integrations still returns 0 under a protocol mismatch" 0 "$status_mismatch"
 assert_eq "hs_diff_integrations output is unchanged under a protocol mismatch" "$out" "$out_mismatch"
 
+# --- an error object answered with a zero exit status is a REFUSAL, not a
+# status listing. This reads herdr's answer directly (it never crosses the
+# socket, so it is not routed through hs_herdr_json), and it decided purely
+# on the exit status: a server that refused and exited 0 had its error object
+# split on newlines and each fragment reported as an installed integration.
+# `diff` then showed an "integration" whose name was a piece of JSON. ---
+err_fixtures="$work/err_fixtures"
+mkdir -p "$err_fixtures"
+printf '%s\n' '{"id":"x","error":{"code":"boom","message":"the server refused this call"}}' \
+  > "$err_fixtures/integration->status.json"
+
+out_err="$(FAKE_HERDR_FIXTURES="$err_fixtures" hs_diff_integrations)"
+status=$?
+assert_status "hs_diff_integrations still returns 0 on a refused status call" 0 "$status"
+assert_contains "a refused status call is reported as a failure" "$out_err" "failed"
+case "$out_err" in
+  *'integration: {'*) fail "hs_diff_integrations reported an error object as an integration: $out_err" ;;
+  *) pass ;;
+esac
+
 # =====================================================================
 # hs_preflight_banner
 # =====================================================================

@@ -1339,7 +1339,161 @@ This phase seeds manifest/plugins.list and manifest/config.toml in the real chec
 
 Caught by a post-commit full-suite run, not before: the diff-block fix (previous entry) was verified pre-commit, but this one only breaks once manifest/ is actually present AND committed (git status --porcelain -- manifest/ empty), which a working tree with the new files merely staged does not yet satisfy -- so it passed right up until the commit that should have made everything green instead made this one line fail for a new reason ('manifest/ exists', which is now correct) after fixing the old one ('manifest/ is dirty', which was the transient pre-commit state). '[ ! -e "$repo_root/manifest" ]' assumed absorb --dry-run's job was proven by manifest/ not existing at all; with a real, permanent manifest/ now in the checkout, the only meaningful proof left is that the seeded files are byte-for-byte unchanged and git sees nothing dirty under manifest/ -- both asserted now, against content captured before the dry run. Full suite green after: 26/26 on both /bin/bash and /usr/local/bin/bash, 199 passed + 11 subtests under pytest, ruff and shellcheck clean, hygiene 6/6, fr acceptance check clean (7 ci, 1 skipped).
 
-<!-- fr:journal kind=finding scope=plan id=80e095043765 created=2026-09-08T19:56:30 phase=10 state=open -->
-### 80e095043765 · finding [open] · Three test_entrypoint.sh assertions depend on the developer's working tree being clean (phase 10)
+<!-- fr:journal kind=finding scope=plan id=80e095043765 created=2026-09-08T19:56:30 phase=10 state=fixed -->
+### 80e095043765 · finding [fixed] · Three test_entrypoint.sh assertions depend on the developer's working tree being clean (phase 10)
 
 Found by the orchestrator while seeding manifest/config.toml. tests/test_entrypoint.sh runs absorb --dry-run against the REAL checkout rather than a sandbox, and absorb refuses with exit 4 when git reports manifest/ dirty. So those three assertions fail for anyone who has an uncommitted manifest edit in progress, and pass again the moment it is committed. Nothing is wrong with the code -- the guard is doing precisely its job, and that it fired is evidence it works. The fragility is in the test: its outcome depends on the developer's uncommitted work rather than on a property of the program. The other absorb behaviour is already covered properly in sandboxes with controlled git state (tests/test_absorb.sh, tests/test_roundtrip.sh), so the fix is to move these three there too, or to stage a scratch checkout for them. Left open deliberately for the final review to weigh, since it is a test-design question rather than a defect, and disclosed in the pull request.
+
+<!-- fr:journal kind=finding scope=plan id=34e6752bb029 created=2026-09-08T21:27:59 phase=10 state=fixed -->
+### 34e6752bb029 · finding [fixed] · C1: hs_preflight reported 'matched' for a probe answered with an error object and exit 0 (phase 10)
+
+Found by the final review, reproduced here before the fix. hs_preflight decided purely on the probe's EXIT STATUS: when rc was 0 it never looked at what herdr had said. A server that answers a well-formed error object and still exits 0 was therefore reported `matched`, hs_require_socket returned 0, and apply proceeded -- rewriting a live four-line config down to two against a server that had refused every call, then exiting 1 rather than 3. All four combinations behaved this way (protocol_mismatch or socket_closed, on stdout or stderr).
+
+Fixed by parsing the answer as well as reading the status. A new shared hs_response_error reads one response and returns 0 (an error object, message on stdout), 1 (read it, no error key -- the only "this call was fine"), or 2 (carries the token but could not be read). hs_preflight now calls it after rc == 0 and treats anything but 1 as a refusal, classified through a new hs_preflight_failure so the exit-status path and the error-object path name the same failure the same way. Unreadable counts as a refusal deliberately: the probe merges stderr, and a gate that cannot reach its evidence must not report the safe answer.
+
+The reader is shared rather than duplicated because both readers of a herdr response had now been caught getting this wrong, each in its own way, and a rule with two implementations is a rule with two answers.
+
+Test first, confirmed failing against pre-fix HEAD: all four combinations plus hs_require_socket's own refusal, in tests/test_preflight.sh -- 10 assertions failed naming the real defect ("expected [mismatched], got [matched]", "a server that refused the probe and exited 0 was reported as healthy").
+
+<!-- fr:journal kind=finding scope=plan id=6edc730c9873 created=2026-09-08T21:28:00 phase=10 state=fixed -->
+### 6edc730c9873 · finding [fixed] · C2: hs_herdr_json could not see an error object on stderr and reported the call a success (phase 10)
+
+The mirror image of C1, in the function whose entire docstring promises the opposite. hs_herdr_json captures stdout and stderr separately, and the `case "$output"` filter that decides whether to parse only ever looked at stdout -- so an error object reported on stderr left it with an empty string, and with rc == 0 the call was reported as a SUCCESS with the error text passed through to our own stderr as if it were a harmless notice. Verified end to end: `herdr-setup apply` exited 0 having written the config and "successfully" called reload-config, which had actually refused.
+
+How it arose is the instructive part, and it is the same shape as C1: an earlier fix taught the PROBE to read stderr, a later one taught this function to stop MERGING stderr (a deprecation notice was coming back glued to the JSON), and nobody re-asked whether it could still SEE an error there. lib/feed.py's own herdr_json is not affected -- its empty-stdout check catches this shape.
+
+Fixed by asking hs_response_error on stdout first and, only if that says the call was fine, on stderr as well. Deliberately NOT a blanket empty-stdout check: `server reload-config` legitimately answers nothing at all, and apply calls it on every write -- there is now a test asserting exactly that. When the error was read off stderr, the raw stderr text is no longer appended to the parsed message, which would have printed the same failure twice.
+
+Test first, confirmed failing: an error object on stderr at both exit statuses. Pre-fix, the exit-0 case returned 0 and printed a bare newline as its "result".
+
+<!-- fr:journal kind=finding scope=plan id=a0d655bb953c created=2026-09-08T21:28:02 phase=10 state=fixed -->
+### a0d655bb953c · finding [fixed] · C3: onboard's interactive install had no regression guard, because the fake herdr could not prompt for it (phase 10)
+
+herdr-setup:358 calls hs_herdr_interactive for `integration install` for exactly the swallowed-trust-preview reason hs_apply_plugins documents. But tests/helpers/fake-herdr implemented FAKE_HERDR_PROMPT for `plugin install` ONLY, so the reviewer could revert line 358 to hs_herdr_json and all 26 test files still passed. A guard is only as good as the fake that can make it fail.
+
+Extending the fake to `integration install` is necessary but not sufficient, and this is worth writing down: asserting only that "an answered prompt reaches FAKE_HERDR_LOG" does NOT catch the mutation. A command substitution captures stdout, not stdin -- herdr's stdin is still inherited, so it reads the operator's "y" and logs it either way. Asserting the preview reaches our stdout does not catch it either: hs_herdr_json prints the captured output back out, so the text still lands in the file the test reads.
+
+What actually differs is WHERE the preview went. Under hs_herdr_interactive herdr's stdout is the operator's own (a terminal on a real host, the test's output file here); under a command substitution it is a pipe. So the fake now logs `prompt-stdout pipe` or `prompt-stdout direct` alongside the answer, and the test asserts no install's preview went into a pipe. Verified both ways: green as shipped, and mutating line 358 back to hs_herdr_json fails exactly those two assertions. The same two assertions were added to tests/test_apply_plugins.sh, which had the identical hole for the plugin path.
+
+Also added there: a declined install is a failure (exit 1) and triggers no feed.
+
+<!-- fr:journal kind=finding scope=plan id=aa9081547e61 created=2026-09-08T21:28:38 phase=10 state=fixed -->
+### aa9081547e61 · finding [fixed] · I1: the shrinking-write gate was off by one on a config with no trailing newline (phase 10)
+
+hs_apply_config counted both sides with `wc -l`, which counts NEWLINES, not lines -- a file whose last line has no newline counts one short. So a five-line host config written without a trailing newline counted as four against a four-line manifest, "fewer lines than before" was false, and a line was removed from a live config in silence, exit 0, on the default non-interactive path the gate exists to hold.
+
+These hosts are not exotic: the design doc's own "One deliberate normalisation" section is entirely about configs that arrive this way. Counted with awk's END{print NR} now, on both sides.
+
+Test first, confirmed failing: a five-line no-trailing-newline host config against a four-line manifest, non-interactive, no --yes. Pre-fix it silently rewrote the file, took a backup and called reload-config; post-fix it refuses with 4, names "removes 1 line", and touches nothing.
+
+<!-- fr:journal kind=finding scope=plan id=8d9195c56ca4 created=2026-09-08T21:28:40 phase=10 state=fixed -->
+### 8d9195c56ca4 · finding [fixed] · I6: every step of the config and manifest writes could fail and still report success (phase 10)
+
+hs_apply_config's backup copy, content write and rename, and cmd_absorb's two write-and-rename pairs, all ran with their exit status unread. They run under the caller's `|| rc=$?`, which suppresses `set -e`, so a failure at any of them left the function returning 0: an unchanged config, a zero exit status, and a `herdr server reload-config` call telling Herdr to re-read a file that had not changed. With the content write failing part-way, a truncated config was installed and the status was still 0. The realistic trigger is a full disk.
+
+Each step is checked now and returns 2, loudly, before the rename -- and a backup that could not be taken stops the write entirely, since the backup is the operator's only way back. Temp files are removed on every failure path.
+
+Tests first, confirmed failing. hs_apply_config is sourced into the test's own shell, so each step is stubbed by shadowing the command with a shell function unset immediately afterwards: `mv` failing, `cat` writing two lines and then failing (how a real cat fails on ENOSPC), `cp` failing. cmd_absorb is a separate process, so its stub goes on PATH instead. Seven assertions failed pre-fix, including a truncated config installed with reload-config called after it.
+
+<!-- fr:journal kind=finding scope=plan id=ee2e9f187cf8 created=2026-09-08T21:28:41 phase=10 state=fixed -->
+### ee2e9f187cf8 · finding [fixed] · I3: absorb still overwrote a hand edit when manifest/ was git-ignored (phase 10)
+
+hs_require_clean_manifest reads `git status --porcelain -- manifest/`, which says NOTHING about a path git is IGNORING -- the same empty answer a clean tree gives. An UNTRACKED file was caught, because it shows as `??`; an IGNORED one was invisible, so a fork that keeps its manifest private had its hand edit overwritten with exit 0. This is the third time this one guard has been found failing open, each time for a different reason (the first two: reading git's output instead of its exit status, and a fake git that could not fail).
+
+The rule that closes it: every file under manifest/ must be TRACKED (`git ls-files --error-unmatch`). Git cannot vouch for a file it is ignoring, and "git cannot tell me" is a refusal here (exit 4, the same status the dirty case uses), never a clean tree. A first-ever absorb, with no manifest/ directory at all, still returns 0 -- there is nothing to overwrite.
+
+Test first, confirmed failing: a sandbox whose .gitignore holds `manifest/`, with a hand edit in both manifest files, asserting first that git itself reports the tree clean (the premise) and then that absorb refuses anyway. Pre-fix the hand edit was replaced by absorbed content.
+
+<!-- fr:journal kind=finding scope=plan id=37a36608504f created=2026-09-08T21:28:43 phase=10 state=fixed -->
+### 37a36608504f · finding [fixed] · I4: the public-hygiene test failed open when it could not list any files (phase 10)
+
+tracked() shelled out to `git ls-files` per call, and absent() passes when its list is empty. So anywhere git could not answer -- no .git, a broken repository, a suite run from a tarball -- all six checks passed having scanned ZERO files. Verified with a poisoned fixture sitting in the tree: six green assertions, exit 0, nothing said. This is the test that stands between a public repository and a capture carrying somebody's session ids, git remotes and home directory paths.
+
+The file list is taken ONCE now, and the test refuses to run on a list it could not get: a non-zero `git ls-files`, an empty listing, or an empty tests/fixtures/ listing each fail immediately. The fixture scope gets its own check because it is the stricter one and the most able to go quietly empty.
+
+Test first, and it is a guard on the guard: the file copies itself into a throwaway directory where git can list nothing, plants a poisoned file, runs itself there, and asserts the run FAILS -- the same technique tests/test_harness.sh uses on tests/run.sh, with HS_HYGIENE_NESTED stopping the recursion. Confirmed against pre-fix HEAD: 6 passed, 0 failed, exit 0.
+
+<!-- fr:journal kind=finding scope=plan id=5415f186e07f created=2026-09-08T21:28:44 phase=10 state=fixed -->
+### 5415f186e07f · finding [fixed] · I2: the runner did not enforce the adapter contract's own confidence rule (phase 10)
+
+docs/adapters.md states that a `heuristic` adapter may not promote a match to `exact`. decide() read the CANDIDATE's confidence and never cross-checked the adapter's declared PROBE confidence -- and reading the candidate alone is precisely what allows the promotion, so the document described a mechanism that could not enforce the rule it stated. A third-party adapter declaring `heuristic` and returning an `exact` candidate had it reported unasked, non-interactive, without --yes.
+
+None of the four shipped adapters does this, so nothing was seen to break. It matters because this is the one seam whose purpose is accepting adapters this repository did not write, and whose whole contract is that the runner, not the adapter, decides.
+
+Both confidences must now agree on `exact`. `adapter_confidence` is keyword-REQUIRED rather than defaulted, for the same reason the check exists: a caller that forgets it must not silently get the permissive answer. --yes still takes the best candidate -- that is the operator waiving the question, and it is unchanged. The non-interactive skip note now names the real reason ("this adapter can only match on a directory"). The doc's own sentence is corrected to say the runner reads both.
+
+Test first, confirmed failing: a heuristic probe with an exact candidate was reported to the recording socket pre-fix.
+
+<!-- fr:journal kind=decision scope=plan id=52aa389a33e1 created=2026-09-08T21:29:16 phase=10 -->
+### 52aa389a33e1 · decision · I5: onboard's --yes does not become feed's --yes, and the code now says so (phase 10)
+
+Decided by the orchestrator, implemented here. cmd_onboard passed --yes straight through to its feed hand-off. They are different consents: onboard's --yes accepts the integration installs it has just OFFERED and shown, while feed's --yes waives "which session is this pane in?", whose wrong answer brings a live pane back running somebody else's conversation. Passing one through as the other let an operator waive a question they were never shown -- against the design's own organising principle that a wrong session id is the expensive failure.
+
+The propagation is removed, with the reasoning in the code, in the entrypoint's --help text and in the README's onboard section. An uncertain pane is skipped and said so; `herdr-setup feed --yes` is how it gets waived, deliberately.
+
+Guarded, not just documented: a new scenario in tests/test_onboard_offer.sh gives claude an honestly uncertain adapter (heuristic probe, heuristic candidate) and asserts that `onboard --yes` still installs the integration, still runs the feed hand-off, and does NOT report the session. Re-adding the propagation fails it.
+
+<!-- fr:journal kind=finding scope=plan id=67304eff1fcc created=2026-09-08T21:29:17 phase=10 state=fixed -->
+### 67304eff1fcc · finding [fixed] · hs_detect_agents and hs_diff_integrations parsed an error object as status lines under exit 0 (phase 10)
+
+Downstream of C1, and fixed with it. Both read `herdr integration status` directly (it does not cross the socket, which is what keeps them working under a protocol mismatch) and both decided on the exit status alone. A server that refuses with an error object and exits 0 therefore had its JSON split on newlines and read as agent lines: hs_diff_integrations reported an "integration" whose name was a fragment of JSON, and hs_detect_agents skipped every fragment as unrecognised and returned 0 having found no agents -- so `onboard` printed an empty table and exited 0 on a host whose Herdr had refused to answer.
+
+Both now run the same hs_response_error the preflight gate uses: hs_diff_integrations reports the refusal (still exit 0 -- it is informational by contract), hs_detect_agents returns 2, the same status it already uses for a non-zero exit, because the state genuinely cannot be read.
+
+Tests first in tests/test_diff_config.sh and tests/test_onboard_detect.sh, using a fixture whose content IS an error object -- no new fake switch needed, since `integration status` is deliberately exempt from the fake's mismatch simulation. Four assertions failed pre-fix.
+
+<!-- fr:journal kind=finding scope=plan id=a55f756233ad created=2026-09-08T21:29:19 phase=10 state=fixed -->
+### a55f756233ad · finding [fixed] · hs_py returning 1 conflated 'no error key' with 'could not read it' (phase 10)
+
+hs.py's herdr-error returned 1 for a response with no top-level error key AND for a response that was not JSON, or not an object. The shell read 1 as the former, so a response carrying the `"error"` token that nobody could parse passed as a clean result -- the same fail-open shape as everything else in this batch, one layer down.
+
+Narrowed: 1 now means only "read it, and there is no error key", 3 means "could not read it at all". Callers reach it through hs_response_error, which maps 3 and every other non-{0,1} status (hs_py itself failing to run) onto the same "treat it as a failure" answer.
+
+Test first in tests/test_preflight.sh: a herdr response carrying the token but not JSON at all. Confirmed by mutation -- putting the 1 back fails all three of its assertions.
+
+<!-- fr:journal kind=finding scope=plan id=7afc0ac24725 created=2026-09-08T21:29:20 phase=10 state=fixed -->
+### 7afc0ac24725 · finding [fixed] · adapters/opencode raised a Python traceback where a clean operator message belongs (phase 10)
+
+opencode runs in WAL mode and this adapter opens the database `file:...?mode=ro`. A reader that finds a hot `-wal` with no `-shm`, in a directory it cannot write, has to recover the log before it can read, and mode=ro forbids exactly that -- SQLite raises OperationalError. Uncaught, the operator got a Python traceback out of a tool whose whole manner is one clear line, and the runner quoted the traceback's last line as the reason the pane went unfed.
+
+Now caught: one sentence naming the database, what SQLite said, and that it may be mid-write, then exit 2. Non-zero is deliberate -- this adapter cannot ANSWER, which is not the same as "nothing to say about these panes" (that is an empty candidate list, a normal and silent outcome), and the runner's own contract turns a non-zero resolve into "its N panes went unfed" plus a failed exit status.
+
+Test first, confirmed failing with the real traceback in the message: a stale WAL header planted beside the database in a directory chmod'd 0555. Also corrected the comment above SELECT_SQL, which named adapters/codex (the wrong adapter) and six columns (it reads three, filtering on three more).
+
+<!-- fr:journal kind=finding scope=plan id=89841b39433d created=2026-09-08T21:29:46 phase=10 state=fixed -->
+### 89841b39433d · finding [fixed] · I7: the spec's post-merge Test Plan step 3 contradicted the shipped behaviour (phase 10)
+
+Step 3 said `onboard` offers the Claude integration refresh under a protocol mismatch and installs it on acceptance, "which needs no socket". cmd_onboard calls hs_require_socket first and unconditionally and exits 3 -- which is what the same document's Preflight section, this repo's fail-closed rule and the socket-commands-refuse-under-mismatch acceptance row all require. A human is meant to execute that step on a real machine, so a step describing behaviour the tool does not have wastes the one live run this plan gets.
+
+Step 3 now reads "onboard refuses, naming the mismatch and the restart, and prints nothing else", with a parenthetical saying why the earlier wording was wrong. The integration refresh moves to step 5, after the restart, where the socket is live and it can also feed the agent it just installed.
+
+<!-- fr:journal kind=decision scope=plan id=1d3a0fc4d12e created=2026-09-08T21:29:48 phase=10 -->
+### 1d3a0fc4d12e · decision · I8 and the acceptance report set: workflow and generated-report housekeeping (phase 10)
+
+The two workflows pinned different major versions of astral-sh/setup-uv (v10 in ci.yml, v5 in acceptance-report.yml). Aligned on v10. The orchestrator confirmed derio-net/super-fr is public, so acceptance-report.yml's `uv tool install` of fr from it works from a fork or a clean runner -- no change needed there.
+
+docs/acceptance/matrix.yaml gained a Final-review-remediation paragraph on each of the five rows these fixes strengthen (the version gate, the config splice, the absorb round trip, the onboard offer, and the feed row), each naming the defect, the rule that closes it and the test file that proves it. `fr acceptance check` then reported report drift, since the generated report set is committed -- regenerated with `fr acceptance report --deterministic`. Check is clean afterwards: 8 rows, 7 ci, 1 skipped (the feed row's live half, unchanged and still honest).
+
+<!-- fr:journal kind=decision scope=plan id=ddca7d162fb8 created=2026-09-08T21:29:50 phase=10 -->
+### ddca7d162fb8 · decision · README: absorb before apply --yes, feed's --dry-run, and what exit 1 does not mean (phase 10)
+
+Three documentation gaps the final review named, all in the same direction -- a new reader being pointed at the destructive command first.
+
+A new "First, on your reference host: absorb" section now precedes `apply`, because the manifest describes one particular Herdr setup and until you have run absorb it does not describe yours. It says plainly not to reach for `apply --yes` against a manifest somebody else absorbed: --yes waives the gate that stops a write from removing lines from a live config, and a manifest describing a different host is exactly the case that gate exists for.
+
+The feed section gains `--dry-run` (it was omitted, though the flag has always worked) and separates exit 1 from a deliberate skip: 1 means something did not get through -- a failed send, an adapter that could not answer -- while a pane skipped because nobody could say which session it was in is a decision the run made, told you about, and exited 0 on. The onboard section carries the --yes-does-not-carry-into-feed rule, and absorb's paragraph now names the ignored-manifest refusal.
+
+<!-- fr:journal kind=finding scope=plan id=48db52c02d22 created=2026-09-08T21:30:19 phase=10 state=open -->
+### 48db52c02d22 · finding [open] · OPEN, for the operator: the repository now ships no manifest, and the local one is untracked (phase 10)
+
+Not a defect and not mine to decide, but the pull request must disclose it. Commit a526ee7 ("untrack manifest", by the operator, after phase 10 seeded it) removed manifest/plugins.list and manifest/config.toml from the index. They still exist on disk in this worktree as UNTRACKED files, and .gitignore does not cover them, so `git status` shows `?? manifest/`.
+
+Three consequences, all of them defensible, none of them decided here:
+
+1. A fresh clone has no manifest at all, so `herdr-setup diff` and `apply` fail closed with exit 2 ("manifest not found or unreadable") until the user runs `absorb`. The README now opens the command reference by telling them to do exactly that, which is the right first step regardless -- the seeded manifest was the author's own host, and `apply --yes` against somebody else's manifest waives the shrinking-write gate.
+
+2. On THIS machine, `herdr-setup absorb` refuses with exit 4 while manifest/ sits untracked -- correctly, since that is the dirty-manifest guard doing its job. Committing the files, deleting them, or adding manifest/ to .gitignore all clear it; the last of those would now ALSO trip the new ignored-manifest refusal (I3), which is the point of that refusal.
+
+3. tests/test_entrypoint.sh no longer cares either way: its diff and absorb assertions moved into a git-init sandbox with a manifest the test writes and commits itself. That was the fix for the open finding of the milestone, and it is what keeps the suite green in both states.
+
+The decision to make: ship with no manifest and an absorb-first README (the current state, and the friendlier one for anyone else cloning this public repository), or re-commit a manifest and say in the README whose host it describes.

@@ -337,13 +337,20 @@ restart sits in the middle rather than at the end.
    names the protocol mismatch.
 2. `herdr-setup feed` refuses, naming the mismatch and the restart. This is the
    check that the preflight gate works.
-3. `herdr-setup onboard` offers the Claude integration refresh from v8 to v9 and
-   installs it on acceptance, which needs no socket. It reports that the feed step
-   is deferred until after the restart.
+3. `herdr-setup onboard` refuses, naming the mismatch and the restart, and prints
+   nothing else — not even the detection table. `onboard` calls the preflight gate
+   first and unconditionally, because both `integration install` and its feed
+   hand-off cross the socket; that is what the Preflight section above and the
+   `socket-commands-refuse-under-mismatch` acceptance row both require. (An earlier
+   draft of this step had onboard offering the refresh under a mismatch. It never
+   did, and it must not: it would install against a server that had refused the
+   call.)
 4. `herdr server stop`, then `herdr`. Every pane that held a session comes back
    running its agent's resume command and no pane comes back as a bare shell. This
    also proves that session records written by the older server survive the upgrade.
-5. `herdr-setup feed` now runs, and is a no-op or tops up any pane that came back
+5. `herdr-setup onboard` now runs: it offers the Claude integration refresh from v8
+   to v9 and installs it on acceptance, then feeds exactly that agent.
+   `herdr-setup feed` afterwards is a no-op or tops up any pane that came back
    without a record.
 6. `herdr-setup diff` on a second machine reports every manifest plugin as missing;
    `apply` installs them; `diff` then reports a match.
