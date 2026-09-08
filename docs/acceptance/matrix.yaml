@@ -50,7 +50,7 @@ rows:
       level reference and flips this row once CI runs the suite.
   - id: socket-commands-refuse-under-mismatch
     capability: Version gate
-    acceptance: apply, absorb, onboard and feed stop with one line naming the protocol
+    acceptance: apply, onboard and feed stop with one line naming the protocol
       mismatch and the restart needed, instead of parsing a JSON error object as an
       empty result.
     origin:

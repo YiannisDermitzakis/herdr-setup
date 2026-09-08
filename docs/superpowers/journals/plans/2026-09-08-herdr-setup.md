@@ -388,3 +388,8 @@ flag the mismatch, but did not edit the acceptance wording itself or add a socke
 "absorb" from this row's acceptance text to match the design doc, or make a deliberate call that absorb
 should gate on the socket too and wire hs_require_socket into cmd_absorb at that point -- whichever it
 picks, phase 5 deliberately left cmd_absorb ungated rather than guess.
+
+<!-- fr:journal kind=finding scope=plan id=24e52049085f created=2026-09-08T11:44:42 phase=5 state=fixed -->
+### 24e52049085f · finding [fixed] · Acceptance row listed absorb among the commands a mismatch blocks; it is not one (phase 5)
+
+Raised as an open finding by phase 5, and the mistake was mine when seeding the matrix. The design doc's Preflight section names apply, onboard and feed as the commands that stop under a protocol mismatch, and absorb is deliberately absent because it reads the host's plugins.json and config.toml from disk and never calls herdr at all -- the same reason diff keeps working in that state. Phase 5 followed the design doc rather than the row, which was the right call, and flagged the discrepancy instead of quietly resolving it. The row now reads apply, onboard and feed. No code change was needed.
