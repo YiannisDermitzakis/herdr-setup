@@ -1484,15 +1484,17 @@ A new "First, on your reference host: absorb" section now precedes `apply`, beca
 The feed section gains `--dry-run` (it was omitted, though the flag has always worked) and separates exit 1 from a deliberate skip: 1 means something did not get through -- a failed send, an adapter that could not answer -- while a pane skipped because nobody could say which session it was in is a decision the run made, told you about, and exited 0 on. The onboard section carries the --yes-does-not-carry-into-feed rule, and absorb's paragraph now names the ignored-manifest refusal.
 
 <!-- fr:journal kind=finding scope=plan id=48db52c02d22 created=2026-09-08T21:30:19 phase=10 state=open -->
-### 48db52c02d22 · finding [open] · OPEN, for the operator: the repository now ships no manifest, and the local one is untracked (phase 10)
+### 48db52c02d22 · finding [open] · OPEN, for the operator: should this repository ship a seeded manifest at all? (phase 10)
 
-Not a defect and not mine to decide, but the pull request must disclose it. Commit a526ee7 ("untrack manifest", by the operator, after phase 10 seeded it) removed manifest/plugins.list and manifest/config.toml from the index. They still exist on disk in this worktree as UNTRACKED files, and .gitignore does not cover them, so `git status` shows `?? manifest/`.
+**Corrected after the fact.** This entry originally described the repository as shipping no manifest, on the basis of commit a526ee7 ("untrack manifest"), which it attributed to the operator. That attribution was wrong: the commit was made by a draft of this very remediation's own test for the ignored-manifest refusal, which ran `git rm --cached` and `git commit` against the real checkout instead of a sandbox. The author name looked foreign because tests/run.sh gives every test file a throwaway HOME, so git could not read the operator's config and invented an identity from the operating system. The commit was never pushed; it has been dropped from the branch, the manifest is tracked again with byte-identical content, and tests/run.sh now fails any test that modifies the repository it is testing.
+
+So the repository DOES ship a seeded manifest, and what remains is the genuine question underneath, which is the operator's to answer.
 
 Three consequences, all of them defensible, none of them decided here:
 
-1. A fresh clone has no manifest at all, so `herdr-setup diff` and `apply` fail closed with exit 2 ("manifest not found or unreadable") until the user runs `absorb`. The README now opens the command reference by telling them to do exactly that, which is the right first step regardless -- the seeded manifest was the author's own host, and `apply --yes` against somebody else's manifest waives the shrinking-write gate.
+1. As it stands, a fresh clone gets the author's own two plugins and UI preference. Someone who follows the README and runs `apply --yes` installs those plugins and replaces their own config, and `--yes` waives the shrinking-write gate that would otherwise ask. Shipping no manifest instead makes `diff` and `apply` fail closed with exit 2 until the user runs `absorb`, which the README already tells them to do first. The README now opens the command reference by telling them to do exactly that, which is the right first step regardless -- the seeded manifest was the author's own host, and `apply --yes` against somebody else's manifest waives the shrinking-write gate.
 
-2. On THIS machine, `herdr-setup absorb` refuses with exit 4 while manifest/ sits untracked -- correctly, since that is the dirty-manifest guard doing its job. Committing the files, deleting them, or adding manifest/ to .gitignore all clear it; the last of those would now ALSO trip the new ignored-manifest refusal (I3), which is the point of that refusal.
+2. Whichever way it goes, do not clear it by adding manifest/ to .gitignore: that now trips the ignored-manifest refusal (I3), which is exactly what that refusal exists for. Track it or omit it.
 
 3. tests/test_entrypoint.sh no longer cares either way: its diff and absorb assertions moved into a git-init sandbox with a manifest the test writes and commits itself. That was the fix for the open finding of the milestone, and it is what keeps the suite green in both states.
 
