@@ -739,8 +739,8 @@ HS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Run the pinned Python helper. uv resolves the interpreter named in the
 # script's own PEP 723 header, so every host runs the same version regardless of
-# what it happens to have installed. Keep this off hot paths: a uv start costs
-# roughly a quarter of a second.
+# what it happens to have installed. uv runs this tool's own scripts and nothing
+# else: the host's Herdr is invoked exactly as installed.
 hs_py() {
   if ! command -v uv >/dev/null 2>&1; then
     echo "herdr-setup: uv is not on PATH; install it from https://docs.astral.sh/uv/ and retry." >&2

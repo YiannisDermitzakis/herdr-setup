@@ -3,8 +3,16 @@
 #
 # Finds every tests/test_*.sh next to this script, runs each one with a
 # fresh HOME (a new mktemp -d, so no test can touch the operator's real
-# home directory) and PATH prefixed with tests/helpers (so `herdr` resolves
-# to the fake one). Exits non-zero if any test file fails.
+# home directory), PATH prefixed with tests/helpers (so `herdr` resolves to
+# the fake one), and every HERDR_* variable cleared. Exits non-zero if any
+# test file fails.
+#
+# Clearing HERDR_* matters more than it looks. Herdr exports HERDR_ENV,
+# HERDR_SOCKET_PATH, HERDR_PANE_ID and friends into every process it starts,
+# so a suite run from inside a Herdr pane inherits the operator's LIVE
+# socket. A test that means to exercise the "no server" path then finds a
+# real one and quietly proves nothing. Tests that need such a variable set
+# it themselves.
 #
 # This script is self-contained by design: copying it, tests/helpers/, and
 # a set of test_*.sh files anywhere runs the same way, which is what lets
@@ -25,7 +33,9 @@ for test_file in "$script_dir"/test_*.sh; do
   name="$(basename "$test_file")"
   tmp_home="$(mktemp -d)"
 
-  if HOME="$tmp_home" PATH="$helpers_dir:$PATH" bash "$test_file"; then
+  if env -u HERDR_ENV -u HERDR_SOCKET_PATH -u HERDR_BIN_PATH -u HERDR_PANE_ID \
+         -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID -u HERDR_CONFIG_DIR \
+         HOME="$tmp_home" PATH="$helpers_dir:$PATH" bash "$test_file"; then
     echo "PASS: $name"
   else
     echo "FAIL: $name"
