@@ -1186,3 +1186,115 @@ this phase ran.
 ### 7c51566a9ddb · finding [fixed] · The orchestrator committed to the shared worktree while a phase was running (phase 7)
 
 Phase 7 reported that a second party appeared to be active on the shared worktree mid-phase. That was the orchestrator, committing tests/test_public_hygiene.sh while phase 7 was capturing fixtures. The intent was to have the guard in place before any capture landed, which it achieved, but it cost phase 7 a debug cycle: the guard's email check matched the git@host:owner/repo form of an SSH remote and reported it as an address, and phase 7 reasonably worked around it rather than questioning a rule that had appeared under it mid-run. Two corrections. The email check now excludes the git@ form, which the git-remote check already owns, so the message names the real problem. And the orchestrator will not commit to the worktree while an executor is running: a cross-cutting change either goes in the executor's brief beforehand or waits for the phase to land. Phase executors run serially on one branch precisely so that only one writer is active at a time, and the orchestrator is not exempt from that.
+
+<!-- fr:journal kind=discovery scope=plan id=64cbfb149a36 created=2026-09-08T16:30:03 phase=8 -->
+### 64cbfb149a36 · discovery · opencode adapter: XDG_DATA_HOME confirmed (not assumed), time_updated is epoch milliseconds, opened via mode=ro URI (phase 8)
+
+adapters/opencode reads the real opencode.db `session` table. Two things
+checked rather than assumed, per the phase brief's warning not to repeat
+adapters/codex's CODEX_HOME-by-analogy leap:
+
+- opencode honours `$XDG_DATA_HOME` (default `~/.local/share`), confirmed
+  two ways: the live database's own path on this machine
+  (`~/.local/share/opencode/opencode.db` with no override set), and the
+  string `f.XDG_DATA_HOME||E0.join($,".local/share")` pulled directly out
+  of the installed `opencode` binary via `strings`. Not `$OPENCODE_HOME` --
+  no such variable exists.
+- `time_updated`/`time_created` are epoch MILLISECONDS (13-digit values),
+  confirmed by querying `typeof(time_updated), time_updated` against the
+  live database -- content-free, no row value ever read or copied.
+  `updated_iso()` divides by 1000. Getting this wrong does not fail loudly:
+  a millisecond value read as seconds still sorts correctly (newest-first
+  survives) but displays a date in the year 58281, so
+  test_updated_is_the_time_updated_column_converted_from_milliseconds pins
+  the conversion rather than trusting the ordering test alone to catch it.
+
+Schema captured verbatim (tests/fixtures/opencode/schema.sql, the full
+`session` CREATE TABLE from `sqlite3 ... ".schema session"`), rows entirely
+synthesised via a new tests/helpers/feedlib.py `write_opencode_db()` helper
+-- no row was ever read out of the real opencode.db, only the schema and,
+separately, two content-free `typeof()`/`length()` probes for the
+timestamp unit and id length. Opened via `file:...?mode=ro` (sqlite3 URI,
+not a plain path), verified in tests/test_adapter_opencode.py by chmod'ing
+the fixture db read-only and asserting resolve still succeeds -- if the
+adapter had opened read-write instead this fails loudly rather than
+silently working on a dev machine where permission bits happen to allow it.
+
+<!-- fr:journal kind=decision scope=plan id=0e4c6126218a created=2026-09-08T16:30:18 phase=8 -->
+### 0e4c6126218a · decision · Copilot adapter's fixture is a construction, not a capture, and one field (data.cwd) is a named guess (phase 8)
+
+GitHub Copilot CLI is not installed on this machine, so there was nothing
+to capture from -- the one adapter in this tool where that discipline
+(tests/fixtures/herdr/README.md onward) cannot apply, and the phase brief
+names this in advance as the permitted exception.
+
+CONFIRMED from two independent sources (recorded in
+tests/fixtures/copilot/README.md): GitHub's own docs
+(cli-config-dir-reference) state `$COPILOT_HOME` / default `~/.copilot`,
+and session data under `session-state/<session-id>/events.jsonl` -- the
+session id IS the directory name, not something read out of file content.
+Independently corroborated by reading the actual `copilot` integration
+hook script template embedded in the installed `herdr` binary (`strings`),
+which resolves the identical `.copilot`/`COPILOT_HOME` pair alongside every
+other agent's own pair it carries.
+
+GUESSED, and said so in three places (adapter docstring,
+tests/fixtures/copilot/README.md, this entry): the first line of
+`events.jsonl` carries `data.cwd` for the session's working directory.
+GitHub's docs describe the ENVELOPE (`type`, `data`, `id`, `timestamp`,
+`parentId`, via a third-party session-viewer README) but never document
+what is inside `data`. `cwd` was chosen because every other adapter in this
+tool that carries a per-session working directory uses exactly that field
+name (Claude Code's session file, Codex's session_meta.payload, Herdr's own
+pane.process_info) -- least-surprise, not confirmed fact. The adapter does
+NOT gate on `type`'s value (deliberately, so a wrong guess there cannot
+cause a false negative on `data.cwd`), and does not invent a label field
+nothing in either source names.
+
+probe carries `unverified: true`; usable_adapters() in lib/feed.py already
+warns the operator by name for any adapter that sets it (phase 6), so no
+extra plumbing was needed here.
+
+Explicitly NOT read: `session-store.db`, the SQLite cross-session index
+GitHub's own docs call "internal implementation detail... can change
+between Copilot releases." Same discipline as adapters/codex never reading
+past a rollout's first line -- the more stable, documented surface wins
+over reverse-engineering an internal one GitHub itself says not to rely on.
+
+<!-- fr:journal kind=discovery scope=plan id=c424e4617bc6 created=2026-09-08T16:30:35 phase=8 -->
+### c424e4617bc6 · discovery · Contract conformance loop over adapters/ (P8.T3) passed on first run for all four adapters (phase 8)
+
+tests/test_contract.py gained TestConformanceAcrossAllAdapters: two tests
+that walk feed.discover(adapters/) generically -- not per-adapter knowledge
+duplicated from each tests/test_adapter_<name>.py -- probing each in a
+fixture $HOME where its agent is absent (expect available: false, valid
+probe, no error) and again where it is present (expect available: true).
+Per-adapter env-var overrides (CLAUDE_CONFIG_DIR, CODEX_HOME,
+XDG_DATA_HOME, COPILOT_HOME) are cleared so every adapter is forced through
+its own $HOME fallback path, and a small ADAPTER_HOME_LAYOUT table supplies
+the one thing that cannot be generic -- what minimal directory/file makes
+each specific agent "present". A new adapter that omits itself from that
+table fails with a message naming exactly what to add, rather than being
+silently skipped out of the loop.
+
+Ran green on the first pass for all four existing adapters -- no fix was
+needed, since each was already built test-first against its own
+tests/test_adapter_<name>.py suite before this generic pass was added.
+Kept anyway, per P8.T3.S1's own text: it is the seam docs/adapters.md calls
+"Discovery," walked the way `herdr-setup feed` itself walks it, so a FIFTH
+adapter that satisfies its own suite in isolation but breaks the shared
+contract is still caught.
+
+Verification for this phase, in full: HOME=$(mktemp -d) uv run --group dev
+pytest -q -> 189 passed, 8 subtests passed. /bin/bash tests/run.sh and
+/usr/local/bin/bash tests/run.sh -> both 23/23 test files passed.
+tests/test_public_hygiene.sh -> 6 passed, 0 failed (no home path, email,
+session id, git remote, commit hash or system prompt leaked from the new
+fixtures). `ruff check adapters/` proven to actually lint the new files by
+injecting then removing a deliberate unused-import into adapters/opencode
+(caught both times, per phase 7's own E402/F401 trap);
+`ruff check .` and `ruff format --check adapters/ lib/` both clean.
+`fr acceptance check` -> 8 rows OK, all still not-implemented as the
+matrix's own note for feed-reports-live-sessions specifies ("stays
+not-implemented until [phase 8], and phase 10 does the level references
+and the flip") -- matrix.yaml intentionally untouched this phase.

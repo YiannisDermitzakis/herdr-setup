@@ -23,6 +23,7 @@ import importlib.util
 import json
 import os
 import socket
+import sqlite3
 import sys
 import threading
 from pathlib import Path
@@ -281,6 +282,97 @@ def write_claude_session(config_dir: Path, pid, **values) -> Path:
     sessions_dir.mkdir(parents=True, exist_ok=True)
     path = sessions_dir / f"{pid}.json"
     path.write_text(json.dumps(session), encoding="utf-8")
+    return path
+
+
+# --------------------------------------------------------------------------
+# Synthetic opencode and Copilot CLI store state (phase 8)
+#
+# opencode: the SCHEMA in tests/fixtures/opencode/schema.sql is a capture
+# (tests/fixtures/opencode/README.md), taken from a live opencode.db on this
+# machine. The ROWS below are not -- every value here is made up, per the
+# adapted rule the phase 8 brief states for a SQLite store: capture the
+# schema verbatim, synthesise only the rows. Never call this with anything
+# read out of a real opencode.db.
+#
+# Copilot: GitHub Copilot CLI is not installed on this machine, so there is
+# no real store to capture from at all. tests/fixtures/copilot/README.md
+# says so plainly -- this is the one adapter in this tool whose fixture is a
+# construction, not a capture, written from GitHub's own documentation.
+
+OPENCODE_SCHEMA = TESTS_DIR / "fixtures" / "opencode" / "schema.sql"
+COPILOT_CAPTURES = TESTS_DIR / "fixtures" / "copilot"
+
+
+def write_opencode_db(db_path: Path, rows) -> Path:
+    """Create a SQLite file at `db_path` using the captured `session` schema.
+
+    `rows` is an iterable of dicts; each becomes one `session` row. Columns a
+    row does not supply are filled with synthetic values for every `NOT
+    NULL` column the real schema declares (`project_id`, `slug`, `version`,
+    `time_created`) so a test can pass only the handful of columns
+    `adapters/opencode` actually reads (`id`, `parent_id`, `directory`,
+    `title`, `time_updated`, `time_archived`) without tripping a schema
+    constraint the adapter itself never looks at.
+    """
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executescript(OPENCODE_SCHEMA.read_text(encoding="utf-8"))
+        for row in rows:
+            record = dict(row)
+            record.setdefault("project_id", "test-project")
+            record.setdefault("slug", record.get("id", "test-session"))
+            record.setdefault("version", "0.0.0-test")
+            record.setdefault("time_created", record.get("time_updated", 0))
+            columns = sorted(record)
+            placeholders = ", ".join(f":{c}" for c in columns)
+            conn.execute(
+                f"INSERT INTO session ({', '.join(columns)}) VALUES ({placeholders})",
+                record,
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return db_path
+
+
+def copilot_event(**values) -> dict:
+    """The constructed first-event-line shape for a Copilot CLI session, edited.
+
+    See tests/fixtures/copilot/README.md: this is a CONSTRUCTION, the one
+    exception the phase 8 brief names to the capture-not-construction rule,
+    because there is no installed Copilot CLI on this machine to capture
+    from. `data.cwd` in particular is a guess -- GitHub's own documentation
+    names `events.jsonl` and its top-level envelope fields but not what is
+    inside `data` -- recorded as a guess here and in the adapter itself, not
+    quietly presented as observed fact.
+    """
+    event = json.loads((COPILOT_CAPTURES / "event.json").read_text(encoding="utf-8"))
+    for key, value in values.items():
+        if key not in event:
+            raise KeyError(f"{key!r} is not a key the fixture has; do not invent one")
+        event[key] = value
+    return event
+
+
+def write_copilot_session(config_dir: Path, session_id: str, *, extra_lines=(), **values) -> Path:
+    """Write a (possibly edited) constructed event as one session's `events.jsonl`.
+
+    `config_dir` is what `adapters/copilot` calls its config dir ($COPILOT_HOME
+    or ~/.copilot); the file lands at
+    `<config_dir>/session-state/<session_id>/events.jsonl`, matching the
+    layout GitHub's documentation describes. `extra_lines` are appended
+    verbatim after the first, unread by the adapter, for the same reason
+    tests/helpers/feedlib.py's `write_codex_rollout` offers it.
+    """
+    session_dir = Path(config_dir) / "session-state" / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    path = session_dir / "events.jsonl"
+    lines = [json.dumps(copilot_event(**values))]
+    lines.extend(extra_lines)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
 

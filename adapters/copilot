@@ -1,0 +1,202 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.13"
+# dependencies = []
+# ///
+"""adapters/copilot -- GitHub Copilot CLI, heuristic, by directory, UNVERIFIED.
+
+**This adapter has never been confirmed against a real installation.**
+GitHub Copilot CLI is not installed on this machine. `probe` says so
+(`unverified: true`), and its output must keep saying so honestly rather
+than presenting a guess as fact -- see tests/fixtures/copilot/README.md for
+exactly what below is documented (GitHub's own reference,
+https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference,
+plus the `copilot` integration hook template embedded in the `herdr`
+binary itself) versus guessed. Two things ARE confirmed, by two independent
+sources: the `$COPILOT_HOME` / `~/.copilot` env-var pair, and that session
+data lives under `session-state/<session-id>/events.jsonl`, one directory
+per session, its NAME the session id. What is NOT confirmed: the shape of
+the JSON inside `events.jsonl`'s first line beyond the envelope a
+third-party session viewer documents (`type`, `data`, `id`, `timestamp`,
+`parentId`) -- in particular, that a working directory lives at `data.cwd`.
+This adapter reads `data.cwd` because every other adapter in this tool that
+carries a per-session working directory names the field exactly that, which
+is the least surprising guess available, not a confirmed fact. If this is
+ever run against a real Copilot CLI and that guess is wrong, the fix is
+narrow: change what `session_cwd()` reads out of the parsed first line.
+
+Two behaviours the phase brief requires precisely BECAUSE this is
+unverified, both different from the strict "exit non-zero or print nothing"
+failure discipline docs/adapters.md states for the general case:
+
+- **A malformed or unexpectedly shaped individual session is skipped, not
+  fatal** -- the same discipline adapters/codex already applies to a broken
+  rollout file. One session's oddity must not hide every other pane's
+  answer.
+- **An unreadable store as a whole (`session-state/` missing or unlistable
+  at resolve time, despite `probe` having said `available: true`) still
+  answers every pane with an empty candidate list, exit 0, but also warns
+  on stderr, by name, that the store could not be read** -- because this
+  integration's very shape is a guess, the operator should hear about it
+  the moment reality disagrees, not just get silence indistinguishable from
+  "nobody has any Copilot sessions here".
+
+Never opens the Herdr socket. The runner decides; this adapter only answers.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+AGENT = "copilot"
+SOURCE = "herdr:copilot"
+
+
+def warn(message: str) -> None:
+    sys.stderr.write(f"adapters/copilot: {message}\n")
+
+
+def config_dir() -> Path:
+    override = os.environ.get("COPILOT_HOME")
+    if override:
+        return Path(override)
+    return Path.home() / ".copilot"
+
+
+def session_state_dir() -> Path:
+    return config_dir() / "session-state"
+
+
+def read_first_event(events_path: Path) -> dict | None:
+    """The parsed first line of one session's `events.jsonl`, or None.
+
+    None covers every way this can fail to answer: unreadable, empty, not
+    JSON, or JSON that is not an object -- all treated the same, as nothing
+    to report for this one session rather than a fatal error for the run.
+    """
+    try:
+        with events_path.open(encoding="utf-8") as handle:
+            first_line = handle.readline()
+    except OSError:
+        return None
+    if not first_line.strip():
+        return None
+    try:
+        record = json.loads(first_line)
+    except ValueError:
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def session_cwd(event: dict):
+    """`data.cwd` -- a documented-but-unconfirmed guess; see the module docstring."""
+    data = event.get("data")
+    if not isinstance(data, dict):
+        return None
+    cwd = data.get("cwd")
+    return cwd if isinstance(cwd, str) and cwd else None
+
+
+def sort_key(event: dict) -> str:
+    timestamp = event.get("timestamp")
+    return timestamp if isinstance(timestamp, str) else ""
+
+
+def list_session_dirs() -> list[Path] | None:
+    """Every entry directly under `session-state/`, or None if it cannot be listed.
+
+    None (rather than raising) is what lets cmd_resolve tell "the store
+    itself is unreadable" apart from "the store is readable and simply has
+    nothing matching" -- the distinction the phase brief's warning
+    requirement is about.
+    """
+    try:
+        return list(session_state_dir().iterdir())
+    except OSError:
+        return None
+
+
+def sessions_for_cwd(cwd: str, session_dirs: list[Path]) -> list[tuple[str, dict]]:
+    """Every `(session_id, first_event)` under `cwd`, newest first.
+
+    `session_id` is the `session-state/<session-id>/` directory's own NAME
+    -- confirmed by GitHub's documentation, not read out of the event log.
+    """
+    matches = []
+    for session_dir in session_dirs:
+        if not session_dir.is_dir():
+            continue
+        event = read_first_event(session_dir / "events.jsonl")
+        if event is None:
+            continue
+        if session_cwd(event) != cwd:
+            continue
+        matches.append((session_dir.name, event))
+    matches.sort(key=lambda item: sort_key(item[1]), reverse=True)
+    return matches
+
+
+def candidates_for(cwd, session_dirs: list[Path]) -> list[dict]:
+    if not isinstance(cwd, str) or not cwd:
+        return []
+    return [
+        {"session_id": session_id, "confidence": "heuristic"}
+        for session_id, _event in sessions_for_cwd(cwd, session_dirs)
+    ]
+
+
+def cmd_probe() -> int:
+    available = session_state_dir().is_dir()
+    print(
+        json.dumps(
+            {
+                "agent": AGENT,
+                "source": SOURCE,
+                "available": available,
+                "confidence": "heuristic",
+                "unverified": True,
+            }
+        )
+    )
+    return 0
+
+
+def cmd_resolve() -> int:
+    payload = json.loads(sys.stdin.read() or "{}")
+    panes = payload.get("panes") or []
+
+    session_dirs = list_session_dirs()
+    if session_dirs is None:
+        warn(
+            "unverified session store not found or unreadable under "
+            f"{session_state_dir()} -- reporting no candidates for this run's panes"
+        )
+        empty = [{"pane_id": pane.get("pane_id"), "candidates": []} for pane in panes]
+        print(json.dumps({"results": empty}))
+        return 0
+
+    results = [
+        {
+            "pane_id": pane.get("pane_id"),
+            "candidates": candidates_for(pane.get("cwd"), session_dirs),
+        }
+        for pane in panes
+    ]
+    print(json.dumps({"results": results}))
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) == 1 and argv[0] == "probe":
+        return cmd_probe()
+    if len(argv) == 1 and argv[0] == "resolve":
+        return cmd_resolve()
+    sys.stderr.write("usage: adapters/copilot probe|resolve\n")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

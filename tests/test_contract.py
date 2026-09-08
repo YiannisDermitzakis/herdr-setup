@@ -34,7 +34,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "helpers"))
 
-from feedlib import REPO_ROOT, isolate_environment, load_feed  # noqa: E402
+from feedlib import REPO_ROOT, isolate_environment, load_feed, write_opencode_db  # noqa: E402
 
 isolate_environment()
 
@@ -256,6 +256,80 @@ class TestTheWorkedAdapter(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("results", json.loads(proc.stdout))
+
+
+# --------------------------------------------------------------------------
+# Conformance across every real adapter (phase 8)
+# --------------------------------------------------------------------------
+#
+# Every other test in this file exercises the DOCUMENT: the probe example,
+# the resolve shapes, the worked minimal adapter. This section instead walks
+# adapters/ itself, the same way lib/feed.py's own discover() does, and
+# probes each one twice -- once in a fixture home where its agent is
+# ABSENT, once where it is PRESENT -- so a fifth adapter that passes its own
+# tests/test_adapter_<name>.py in isolation but breaks the shared discovery
+# contract does not slip through unnoticed.
+#
+# A new adapter that omits its own entry from ADAPTER_HOME_LAYOUT fails the
+# "present" pass with a message naming exactly what to add, rather than
+# silently skipping itself out of the loop.
+
+ADAPTER_HOME_LAYOUT = {
+    "claude": lambda home: (home / ".claude" / "sessions").mkdir(parents=True),
+    "codex": lambda home: (home / ".codex" / "sessions").mkdir(parents=True),
+    "opencode": lambda home: write_opencode_db(
+        home / ".local" / "share" / "opencode" / "opencode.db", []
+    ),
+    "copilot": lambda home: (home / ".copilot" / "session-state").mkdir(parents=True),
+}
+
+# Every env var an adapter uses to override its own fallback-under-$HOME
+# lookup (adapters/claude's $CLAUDE_CONFIG_DIR, .../codex's $CODEX_HOME,
+# .../opencode's $XDG_DATA_HOME, .../copilot's $COPILOT_HOME). Cleared so
+# this test's fixture $HOME is what every adapter actually looks under,
+# regardless of what the developer's own shell happens to have set.
+ADAPTER_OVERRIDE_VARS = ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "XDG_DATA_HOME", "COPILOT_HOME")
+
+
+class TestConformanceAcrossAllAdapters(unittest.TestCase):
+    def setUp(self) -> None:
+        self._env_saved = dict(os.environ)
+        self.addCleanup(self._restore_env)
+        for var in ADAPTER_OVERRIDE_VARS:
+            os.environ.pop(var, None)
+        self.adapters = feed.discover(REPO_ROOT / "adapters")
+        self.assertTrue(self.adapters, "adapters/ must not be empty for this test to mean anything")
+
+    def _restore_env(self) -> None:
+        os.environ.clear()
+        os.environ.update(self._env_saved)
+
+    def test_every_adapter_is_unavailable_and_error_free_when_its_agent_is_absent(self):
+        for path in self.adapters:
+            with self.subTest(adapter=path.name), tempfile.TemporaryDirectory() as tmp:
+                os.environ["HOME"] = tmp
+                obj = feed.probe(path)
+                feed.validate_probe(obj)
+                self.assertIs(
+                    obj["available"], False, f"{path.name} must report unavailable on an empty home"
+                )
+
+    def test_every_adapter_is_available_when_its_agent_is_present(self):
+        for path in self.adapters:
+            self.assertIn(
+                path.name,
+                ADAPTER_HOME_LAYOUT,
+                f"add a fixture-home layout for adapters/{path.name} to "
+                "ADAPTER_HOME_LAYOUT in tests/test_contract.py",
+            )
+        for path in self.adapters:
+            with self.subTest(adapter=path.name), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp)
+                os.environ["HOME"] = str(home)
+                ADAPTER_HOME_LAYOUT[path.name](home)
+                obj = feed.probe(path)
+                feed.validate_probe(obj)
+                self.assertIs(obj["available"], True, f"{path.name} must report available")
 
 
 if __name__ == "__main__":
