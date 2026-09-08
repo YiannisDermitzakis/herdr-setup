@@ -152,9 +152,7 @@ class TestAgainstTheCapturedShape(FakeHerdrCase):
         Matching a pane's agent on `name` finds nothing, silently. The capture
         is the only reason anyone would know that.
         """
-        processes = captured("pane-process-info")["result"]["process_info"][
-            "foreground_processes"
-        ]
+        processes = captured("pane-process-info")["result"]["process_info"]["foreground_processes"]
         self.assertIn("2.1.260", [p["name"] for p in processes])
         self.assertNotIn("claude", [p["name"] for p in processes])
         self.assertEqual(self.panes()[0]["pid"], 38080)
@@ -171,9 +169,7 @@ class TestAgainstTheCapturedShape(FakeHerdrCase):
 
     def test_the_capture_has_no_foreground_flag_to_test(self):
         """Asserted, because the first implementation tested for one."""
-        processes = captured("pane-process-info")["result"]["process_info"][
-            "foreground_processes"
-        ]
+        processes = captured("pane-process-info")["result"]["process_info"]["foreground_processes"]
         for process in processes:
             self.assertNotIn("foreground", process)
 
@@ -220,10 +216,12 @@ class TestPanesFor(FakeHerdrCase):
     def setUp(self) -> None:
         super().setUp()
         self.fixture(["agent", "list"], AGENT_LIST)
-        self.fixture(["pane", "process-info", "--pane", "w1:p1"],
-                     info("w1:p1", "/work/beta", DEAD_PID))
-        self.fixture(["pane", "process-info", "--pane", "w2:p2"],
-                     info("w2:p2", "/work/herdr", DEAD_PID + 1))
+        self.fixture(
+            ["pane", "process-info", "--pane", "w1:p1"], info("w1:p1", "/work/beta", DEAD_PID)
+        )
+        self.fixture(
+            ["pane", "process-info", "--pane", "w2:p2"], info("w2:p2", "/work/herdr", DEAD_PID + 1)
+        )
 
     def test_returns_one_record_per_matching_pane(self):
         self.assertEqual(
@@ -245,8 +243,9 @@ class TestPanesFor(FakeHerdrCase):
         )
 
     def test_a_pane_whose_process_is_alive_carries_a_start_time(self):
-        self.fixture(["pane", "process-info", "--pane", "w1:p1"],
-                     info("w1:p1", "/work/beta", os.getpid()))
+        self.fixture(
+            ["pane", "process-info", "--pane", "w1:p1"], info("w1:p1", "/work/beta", os.getpid())
+        )
         self.assertIsInstance(self.panes()[0]["pid_start_epoch"], int)
 
     def test_panes_of_another_agent_are_not_asked_about(self):
@@ -256,19 +255,25 @@ class TestPanesFor(FakeHerdrCase):
         self.assertEqual([p["pane_id"] for p in self.panes()], ["w1:p1", "w2:p2"])
 
     def test_an_absolute_argv0_still_matches_the_command(self):
-        self.fixture(["pane", "process-info", "--pane", "w2:p2"],
-                     info("w2:p2", "/work/herdr", DEAD_PID, argv0="/usr/local/bin/claude"))
+        self.fixture(
+            ["pane", "process-info", "--pane", "w2:p2"],
+            info("w2:p2", "/work/herdr", DEAD_PID, argv0="/usr/local/bin/claude"),
+        )
         self.assertEqual([p["pane_id"] for p in self.panes()], ["w1:p1", "w2:p2"])
 
     def test_an_adapter_may_name_a_command_that_is_not_the_agent(self):
-        self.fixture(["pane", "process-info", "--pane", "w1:p1"],
-                     info("w1:p1", "/work/beta", DEAD_PID, argv0="claude-code"))
+        self.fixture(
+            ["pane", "process-info", "--pane", "w1:p1"],
+            info("w1:p1", "/work/beta", DEAD_PID, argv0="claude-code"),
+        )
         panes = self.panes(command="claude-code")
         self.assertEqual([p["pane_id"] for p in panes], ["w1:p1"])
 
     def test_a_pane_with_no_matching_process_is_dropped_with_a_note(self):
-        self.fixture(["pane", "process-info", "--pane", "w2:p2"],
-                     info("w2:p2", "/work/herdr", DEAD_PID, argv0="vim"))
+        self.fixture(
+            ["pane", "process-info", "--pane", "w2:p2"],
+            info("w2:p2", "/work/herdr", DEAD_PID, argv0="vim"),
+        )
         self.assertEqual([p["pane_id"] for p in self.panes()], ["w1:p1"])
         self.assertTrue(any("w2:p2" in w for w in self.warnings), self.warnings)
 
@@ -302,10 +307,12 @@ class TestPanesForFailsClosed(FakeHerdrCase):
     def setUp(self) -> None:
         super().setUp()
         self.fixture(["agent", "list"], AGENT_LIST)
-        self.fixture(["pane", "process-info", "--pane", "w1:p1"],
-                     info("w1:p1", "/work/beta", DEAD_PID))
-        self.fixture(["pane", "process-info", "--pane", "w2:p2"],
-                     info("w2:p2", "/work/herdr", DEAD_PID + 1))
+        self.fixture(
+            ["pane", "process-info", "--pane", "w1:p1"], info("w1:p1", "/work/beta", DEAD_PID)
+        )
+        self.fixture(
+            ["pane", "process-info", "--pane", "w2:p2"], info("w2:p2", "/work/herdr", DEAD_PID + 1)
+        )
 
     def test_protocol_mismatch_raises(self):
         os.environ["FAKE_HERDR_PROTOCOL_MISMATCH"] = "1"
@@ -392,9 +399,7 @@ class TestResolve(unittest.TestCase):
             "results": [
                 {
                     "pane_id": "w1:p1",
-                    "candidates": [
-                        {"session_id": "abc", "label": "frank", "confidence": "exact"}
-                    ],
+                    "candidates": [{"session_id": "abc", "label": "frank", "confidence": "exact"}],
                 }
             ]
         }

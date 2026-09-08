@@ -89,9 +89,7 @@ def exact(session_id, **extra):
 
 
 def heuristic(session_id, **extra):
-    return dict(
-        {"session_id": session_id, "confidence": "heuristic", "label": session_id}, **extra
-    )
+    return dict({"session_id": session_id, "confidence": "heuristic", "label": session_id}, **extra)
 
 
 class RunCase(unittest.TestCase):
@@ -116,10 +114,12 @@ class RunCase(unittest.TestCase):
         os.environ["FAKE_HERDR_FIXTURES"] = str(self.fixtures)
 
         self.fixture(["agent", "list"], AGENT_LIST)
-        self.fixture(["pane", "process-info", "--pane", "w1:p1"],
-                     info("w1:p1", "/work/beta", DEAD_PID))
-        self.fixture(["pane", "process-info", "--pane", "w2:p2"],
-                     info("w2:p2", "/work/herdr", DEAD_PID + 1))
+        self.fixture(
+            ["pane", "process-info", "--pane", "w1:p1"], info("w1:p1", "/work/beta", DEAD_PID)
+        )
+        self.fixture(
+            ["pane", "process-info", "--pane", "w2:p2"], info("w2:p2", "/work/herdr", DEAD_PID + 1)
+        )
 
         self.warnings: list[str] = []
         self.out: list[str] = []
@@ -169,10 +169,12 @@ class RunCase(unittest.TestCase):
 
 class TestReportsOnlyWhenSure(RunCase):
     def test_a_single_exact_candidate_is_reported_without_a_prompt(self):
-        self.adapter([
-            {"pane_id": "w1:p1", "candidates": [exact("aaa")]},
-            {"pane_id": "w2:p2", "candidates": []},
-        ])
+        self.adapter(
+            [
+                {"pane_id": "w1:p1", "candidates": [exact("aaa")]},
+                {"pane_id": "w2:p2", "candidates": []},
+            ]
+        )
         asked = []
         with RecordingServer(self.socket_path) as server:
             rc = self.run_feed(ask=lambda *a, **k: asked.append(a) or None)
@@ -234,9 +236,7 @@ class TestReportsOnlyWhenSure(RunCase):
         self.adapter([{"pane_id": "w1:p1", "candidates": [heuristic("a"), heuristic("b")]}])
         asked = []
         with RecordingServer(self.socket_path) as server:
-            self.run_feed(
-                interactive=True, assume_yes=True, ask=lambda *a: asked.append(a) or None
-            )
+            self.run_feed(interactive=True, assume_yes=True, ask=lambda *a: asked.append(a) or None)
         self.assertEqual(asked, [])
         self.assertEqual(len(server.received), 1)
 
@@ -269,10 +269,12 @@ class TestReportedPayload(RunCase):
         self.assertEqual(params["agent_session_path"], "/t/aaa.jsonl")
 
     def test_seq_is_monotonic_across_panes(self):
-        self.adapter([
-            {"pane_id": "w1:p1", "candidates": [exact("aaa")]},
-            {"pane_id": "w2:p2", "candidates": [exact("bbb")]},
-        ])
+        self.adapter(
+            [
+                {"pane_id": "w1:p1", "candidates": [exact("aaa")]},
+                {"pane_id": "w2:p2", "candidates": [exact("bbb")]},
+            ]
+        )
         with RecordingServer(self.socket_path) as server:
             self.run_feed()
         seqs = [r["params"]["seq"] for r in server.received]
@@ -297,20 +299,24 @@ class TestDryRunAndSummary(RunCase):
         self.assertIn("pane.report_agent_session", self.stdout)
 
     def test_dry_run_still_says_what_it_would_have_done(self):
-        self.adapter([
-            {"pane_id": "w1:p1", "candidates": [exact("aaa")]},
-            {"pane_id": "w2:p2", "candidates": []},
-        ])
+        self.adapter(
+            [
+                {"pane_id": "w1:p1", "candidates": [exact("aaa")]},
+                {"pane_id": "w2:p2", "candidates": []},
+            ]
+        )
         with RecordingServer(self.socket_path):
             self.run_feed(dry_run=True)
         self.assertRegex(self.stdout, r"reported 1 pane\b")
         self.assertRegex(self.stdout, r"skipped 1\b")
 
     def test_the_summary_states_reported_and_skipped_counts(self):
-        self.adapter([
-            {"pane_id": "w1:p1", "candidates": [exact("aaa")]},
-            {"pane_id": "w2:p2", "candidates": [heuristic("x"), heuristic("y")]},
-        ])
+        self.adapter(
+            [
+                {"pane_id": "w1:p1", "candidates": [exact("aaa")]},
+                {"pane_id": "w2:p2", "candidates": [heuristic("x"), heuristic("y")]},
+            ]
+        )
         with RecordingServer(self.socket_path):
             self.run_feed()
         summary = [line for line in self.stdout.splitlines() if line.startswith("feed:")][-1]
@@ -359,12 +365,19 @@ class TestFailuresAreNotSilent(RunCase):
             "  resolve) exit 1 ;;\n"
             "esac\n",
         )
-        self.fixture(["agent", "list"], agent_list([
-            agent_entry(0, pane_id="w1:p1", agent="claude", cwd="/work/beta"),
-            agent_entry(1, pane_id="w2:p2", agent="codex", cwd="/work/other"),
-        ]))
-        self.fixture(["pane", "process-info", "--pane", "w2:p2"],
-                     info("w2:p2", "/work/other", DEAD_PID + 2, argv0="codex"))
+        self.fixture(
+            ["agent", "list"],
+            agent_list(
+                [
+                    agent_entry(0, pane_id="w1:p1", agent="claude", cwd="/work/beta"),
+                    agent_entry(1, pane_id="w2:p2", agent="codex", cwd="/work/other"),
+                ]
+            ),
+        )
+        self.fixture(
+            ["pane", "process-info", "--pane", "w2:p2"],
+            info("w2:p2", "/work/other", DEAD_PID + 2, argv0="codex"),
+        )
         self.adapter([{"pane_id": "w1:p1", "candidates": [exact("aaa")]}])
         with RecordingServer(self.socket_path) as server:
             rc = self.run_feed()
@@ -393,9 +406,15 @@ class TestAtARealTerminal(RunCase):
         env["PATH"] = f"{REPO_ROOT / 'tests' / 'helpers'}{os.pathsep}{env['PATH']}"
         proc = subprocess.Popen(
             [
-                "uv", "run", "--quiet", "--script", str(REPO_ROOT / "lib" / "feed.py"),
-                "--adapters", str(self.adapters),
-                "--socket", str(self.socket_path),
+                "uv",
+                "run",
+                "--quiet",
+                "--script",
+                str(REPO_ROOT / "lib" / "feed.py"),
+                "--adapters",
+                str(self.adapters),
+                "--socket",
+                str(self.socket_path),
                 *extra_args,
             ],
             stdin=slave,
@@ -438,9 +457,15 @@ class TestAtARealTerminal(RunCase):
         with RecordingServer(self.socket_path) as server:
             proc = subprocess.run(
                 [
-                    "uv", "run", "--quiet", "--script", str(REPO_ROOT / "lib" / "feed.py"),
-                    "--adapters", str(self.adapters),
-                    "--socket", str(self.socket_path),
+                    "uv",
+                    "run",
+                    "--quiet",
+                    "--script",
+                    str(REPO_ROOT / "lib" / "feed.py"),
+                    "--adapters",
+                    str(self.adapters),
+                    "--socket",
+                    str(self.socket_path),
                 ],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,

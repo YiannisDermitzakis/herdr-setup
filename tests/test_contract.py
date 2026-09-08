@@ -114,8 +114,10 @@ class TestValidateProbe(unittest.TestCase):
 
     def test_it_accepts_both_documented_confidences(self):
         for value in ("exact", "heuristic"):
-            self.assertEqual(feed.validate_probe(dict(self.example, confidence=value)),
-                             dict(self.example, confidence=value))
+            self.assertEqual(
+                feed.validate_probe(dict(self.example, confidence=value)),
+                dict(self.example, confidence=value),
+            )
 
     def test_it_rejects_a_non_object(self):
         for value in ([], "probe", 7, None):
@@ -140,9 +142,7 @@ class TestTheDocumentedShapes(unittest.TestCase):
         request = json.loads(blocks()["resolve-request"])
         self.assertIn("panes", request)
         for pane in request["panes"]:
-            self.assertEqual(
-                sorted(pane), ["cwd", "pane_id", "pid", "pid_start_epoch"]
-            )
+            self.assertEqual(sorted(pane), ["cwd", "pane_id", "pid", "pid_start_epoch"])
 
     def test_the_resolve_response_survives_the_runner_s_own_parser(self):
         response = blocks()["resolve-response"]

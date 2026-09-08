@@ -1298,3 +1298,8 @@ injecting then removing a deliberate unused-import into adapters/opencode
 matrix's own note for feed-reports-live-sessions specifies ("stays
 not-implemented until [phase 8], and phase 10 does the level references
 and the flip") -- matrix.yaml intentionally untouched this phase.
+
+<!-- fr:journal kind=decision scope=plan id=7c8bc1b30ae0 created=2026-09-08T16:35:26 phase=8 -->
+### 7c8bc1b30ae0 · decision · Operator accepts the identifiers already in this repository's public history (phase 8)
+
+Commit c79e01b, pushed before the masking gap was found, carries in history two of the operator's repository names and three session titles. A full audit of all 443 objects in the pushed history established the complete extent -- no tokens, keys or credentials of any kind; no real home directory path, username or hostname; no IP addresses; and every session identifier is a placeholder, including the example in docs/adapters.md, which matches no session that exists. Of the names, one is already a public repository and the other is not; the session titles are work topics. The operator reviewed this and chose to accept it rather than rewrite history or recreate the repository, on the basis that no secrets escaped. Recorded here so the choice is deliberate and dated rather than an oversight someone later mistakes for one. The current tree is clean, and tests/test_public_hygiene.sh now enforces that mechanically, holding tests/fixtures/ to a stricter bar than the rest of the tree because captures are the highest-risk files in a public repository.
