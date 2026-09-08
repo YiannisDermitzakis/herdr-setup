@@ -33,6 +33,17 @@
 # installed, which is how a tool that could not start at all on 3.2 kept a green
 # suite for five phases.
 #
+# After every test file, the repository this suite is testing must be exactly
+# as it was before. A test belongs in a sandbox of its own making; none may
+# touch the checkout it runs from. This is enforced rather than trusted because
+# it has already happened once: a draft of a test that needed a git repository
+# in a particular state ran `git rm --cached` and `git commit` against the real
+# checkout, untracking the manifest and leaving a commit behind. It was
+# invisible in the suite's own output, and the commit carried a stranger's name
+# -- with the throwaway HOME below, git cannot see the operator's config and
+# invents an identity from the operating system, so the evidence pointed away
+# from the tests rather than at them.
+#
 # Bash 3.2 safe: no associative arrays, no mapfile, no `local -n`.
 set -u
 
@@ -41,6 +52,17 @@ helpers_dir="$script_dir/helpers"
 
 total=0
 failed=0
+
+# A fingerprint of the repository: the commit it is on, plus every staged,
+# unstaged and untracked path. Empty when this is not a git checkout, in which
+# case the comparison below is skipped rather than failed -- a tarball export
+# is a legitimate way to run these tests.
+repo_state() {
+  git -C "$script_dir/.." rev-parse HEAD 2>/dev/null || return 0
+  git -C "$script_dir/.." status --porcelain 2>/dev/null || return 0
+}
+
+state_before_suite="$(repo_state)"
 
 for test_file in "$script_dir"/test_*.sh "$script_dir"/test_*.py; do
   [ -e "$test_file" ] || continue
@@ -66,6 +88,19 @@ for test_file in "$script_dir"/test_*.sh "$script_dir"/test_*.py; do
   fi
 
   rm -rf "$tmp_home"
+
+  # Did this file change the repository it was testing?
+  state_now="$(repo_state)"
+  if [ -n "$state_before_suite" ] && [ "$state_now" != "$state_before_suite" ]; then
+    echo "FAIL: $name modified the repository it is testing." >&2
+    echo "  A test must build its own sandbox and never touch this checkout." >&2
+    echo "  Repository state before this file:" >&2
+    printf '%s\n' "$state_before_suite" | sed 's/^/    /' >&2
+    echo "  and after it:" >&2
+    printf '%s\n' "$state_now" | sed 's/^/    /' >&2
+    failed=$((failed + 1))
+    state_before_suite="$state_now"
+  fi
 done
 
 echo "$((total - failed))/$total test files passed"
