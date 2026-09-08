@@ -109,4 +109,32 @@ assert_eq "hs_herdr_json prints the herdr result unchanged" \
   '{"result":{"plugins":["a"]}}' "$(cat "$out")"
 [ ! -s "$err" ] && pass || fail "hs_herdr_json is silent on stderr when successful"
 
+# A successful response may carry the token "error" inside a value. Deciding by
+# substring reported that as a failed call and threw the result away, so the
+# decision is made by parsing the response for a top-level error key.
+echo '{"id":"x","result":{"plugins":[{"plugin_id":"p","status":"error"}]}}' \
+  > "$fixtures/plugin->list.json"
+out="$HOME/json_token.out"
+err="$HOME/json_token.err"
+FAKE_HERDR_FIXTURES="$fixtures" hs_herdr_json plugin list >"$out" 2>"$err"
+status=$?
+assert_status "hs_herdr_json succeeds when 'error' is only a value" 0 "$status"
+assert_contains "hs_herdr_json returns the result when 'error' is only a value" \
+  "$(cat "$out")" '"plugin_id":"p"'
+[ ! -s "$err" ] && pass || fail "hs_herdr_json is silent when 'error' is only a value"
+
+# And a genuine error object is still caught, with its message on one line.
+echo '{"id":"x","error":{"code":"boom","message":"first line\nsecond line"}}' \
+  > "$fixtures/plugin->list.json"
+out="$HOME/json_realerr.out"
+err="$HOME/json_realerr.err"
+FAKE_HERDR_FIXTURES="$fixtures" hs_herdr_json plugin list >"$out" 2>"$err"
+status=$?
+[ "$status" -ne 0 ] && pass || fail "hs_herdr_json returns non-zero on a real error object"
+[ ! -s "$out" ] && pass || fail "hs_herdr_json prints nothing to stdout on a real error object"
+assert_eq "hs_herdr_json folds the error message onto one line" \
+  1 "$(wc -l < "$err" | tr -d ' ')"
+assert_contains "hs_herdr_json surfaces the error message" \
+  "$(cat "$err")" "first line second line"
+
 hs_test_report

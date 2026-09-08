@@ -196,3 +196,8 @@ diff-runs-under-protocol-mismatch and config-splice-preserves-plugin-blocks
 rows both got their notes updated to describe phase 3's coverage; both stay
 `not-implemented` on purpose, per the same phase-10 bulk-flip convention
 phase 2 established for diff-detects-plugin-drift.
+
+<!-- fr:journal kind=finding scope=plan id=216be8bfed47 created=2026-09-08T10:54:40 phase=3 state=fixed -->
+### 216be8bfed47 · finding [fixed] · hs_herdr_json decided 'is this an error' by substring, and misread good responses (phase 3)
+
+Introduced by me under the since-withdrawn startup-cost rule. A Herdr response is an error when the top-level object has an error key, but the code tested whether the raw text contained the token "error", which a perfectly good response can carry in a value: a plugin list containing "status":"error" was reported as a failed call and its result discarded. Replaced with an authoritative parse, hs_py herdr-error, which reads the response and exits 0 with the message only when there really is an error key. The cheap substring test survives as a filter for whether there is anything to parse at all, which cannot miss a real error because an error key always puts the token in the text. Two regression tests added in tests/test_preflight.sh, one for each direction, plus a check that a multi-line message is folded onto one line.

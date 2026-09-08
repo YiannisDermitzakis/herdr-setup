@@ -56,14 +56,41 @@ def host_plugins(path: Path) -> int:
     return 0
 
 
+def herdr_error() -> int:
+    """Decide whether a Herdr response is an error, and print its message.
+
+    Exits 0 having printed the message when the response is a JSON object with
+    an `error` key, and 1 when it is not. Reading the parsed structure is the
+    whole point: a substring test for `"error"` also matches a perfectly good
+    response that happens to carry the token in a value, and reports a
+    successful call as a failure.
+    """
+    raw = sys.stdin.read()
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return 1
+    if not isinstance(data, dict):
+        return 1
+    err = data.get("error")
+    if err is None:
+        return 1
+    message = err.get("message", "") if isinstance(err, dict) else str(err)
+    print(" ".join(str(message).split()))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hs.py", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("host-plugins", help="read the host's plugins.json from disk")
     p.add_argument("path", type=Path)
+    sub.add_parser("herdr-error", help="detect a Herdr error response on stdin")
     args = parser.parse_args(argv)
     if args.command == "host-plugins":
         return host_plugins(args.path)
+    if args.command == "herdr-error":
+        return herdr_error()
     die(f"unknown subcommand: {args.command}")
     return 2
 

@@ -107,27 +107,30 @@ hs_require_socket() {
 # prints the error message to stderr in either case. On success, prints the
 # herdr output on stdout unchanged and returns 0.
 hs_herdr_json() {
-  local output rc message
+  local output rc message is_error
   output="$(herdr "$@" 2>&1)"
   rc=$?
 
-  # Extract the human-readable message without starting an interpreter: this
-  # runs on every herdr call, and a uv start would dominate a command that makes
-  # twenty of them. Falls back to the raw output when the shape is unfamiliar.
+  # Whether this is an error is decided by parsing the response, not by looking
+  # for a substring: a perfectly good response can carry the token "error" in a
+  # value, and a substring test reports that successful call as a failure. The
+  # cheap test is only a filter for whether there is anything to parse, and it
+  # cannot miss a real error, because an error key always puts the token in the
+  # text.
   message=""
+  is_error=0
   case "$output" in
     *'"error"'*)
-      message="$(printf '%s' "$output" \
-        | sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-        | sed 's/\\n/ /g' \
-        | head -1)"
-      if [ -z "$message" ]; then
-        message="$output"
+      if message="$(printf '%s' "$output" | hs_py herdr-error)"; then
+        is_error=1
+        if [ -z "$message" ]; then
+          message="$output"
+        fi
       fi
       ;;
   esac
 
-  if [ "$rc" -ne 0 ] || [ -n "$message" ]; then
+  if [ "$rc" -ne 0 ] || [ "$is_error" -eq 1 ]; then
     echo "herdr-setup: herdr $*: ${message:-$output}" >&2
     if [ "$rc" -eq 0 ]; then
       return 1
