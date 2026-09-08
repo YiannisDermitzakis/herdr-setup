@@ -74,17 +74,30 @@ assert_contains "diff reports the seeded config as drift on a fresh host" \
 # --- absorb is real now too (phase 5): it WRITES manifest/plugins.list
 # and manifest/config.toml under $HS_ROOT, which resolves to this actual
 # checkout when invoked as "$repo_root/herdr-setup" -- a real (non-dry-run)
-# absorb here would create files in the real repository this test suite
-# lives in. --dry-run never writes, so it is the only safe way to exercise
-# absorb directly against $repo_root; the full read/write/dirty-guard
-# behaviour is covered end to end, via sandbox copies, by
-# tests/test_absorb.sh and tests/test_roundtrip.sh. ---
+# absorb here would overwrite the files phase 10 seeded in the real
+# repository this test suite lives in. --dry-run never writes, so it is
+# the only safe way to exercise absorb directly against $repo_root; the
+# full read/write/dirty-guard behaviour is covered end to end, via sandbox
+# copies, by tests/test_absorb.sh and tests/test_roundtrip.sh.
+#
+# manifest/ now exists for real (phase 10 seeded it), so "did this leave
+# the checkout alone" is no longer "the directory doesn't exist" -- it is
+# "the seeded files are still exactly what they were", byte for byte,
+# checked below against a copy taken before the dry run. ---
+plugins_before="$(cat "$repo_root/manifest/plugins.list")"
+config_before="$(cat "$repo_root/manifest/config.toml")"
+
 out="$work/out_absorb"; err="$work/err_absorb"
 status="$(run_entry "$out" "$err" --dry-run absorb)"
-assert_status "absorb --dry-run is accepted and exits 0 against a clean checkout" 0 "$status"
+assert_status "absorb --dry-run is accepted and exits 0 against the real checkout" 0 "$status"
 assert_contains "absorb --dry-run names the plugins.list target" "$(cat "$out")" "manifest/plugins.list"
 assert_contains "absorb --dry-run names the config.toml target" "$(cat "$out")" "manifest/config.toml"
-[ ! -e "$repo_root/manifest" ] && pass || fail "absorb --dry-run created manifest/ in the real checkout"
+assert_eq "absorb --dry-run left manifest/plugins.list untouched" \
+  "$plugins_before" "$(cat "$repo_root/manifest/plugins.list")"
+assert_eq "absorb --dry-run left manifest/config.toml untouched" \
+  "$config_before" "$(cat "$repo_root/manifest/config.toml")"
+[ -z "$(cd "$repo_root" && git status --porcelain -- manifest/)" ] && pass \
+  || fail "absorb --dry-run left the real checkout's manifest/ dirty"
 
 # --- apply calls hs_require_socket first, unconditionally, and fails
 # closed there before it ever gets to a missing manifest -- proving the
