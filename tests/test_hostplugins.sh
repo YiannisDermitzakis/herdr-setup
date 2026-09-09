@@ -55,4 +55,19 @@ assert_status "malformed plugins.json exits 2" 2 "$status"
 err="$(hs_host_plugins "$fixtures/plugins_malformed.json" 2>&1 1>/dev/null)"
 assert_contains "malformed-file error names the file" "$err" "plugins_malformed.json"
 
+# --- a plugin installed WITHOUT --ref has no `requested_ref` at all ---
+#
+# Herdr omits the key entirely when it took the repository's default branch.
+# Treating it as required made hs_host_plugins die with exit 2, which made
+# `diff` unusable on the first Linux host this ran on. The fixture is that
+# host's own entry, masked. The ref column comes back empty; the resolved
+# commit, which is what drift is actually measured against, is unaffected.
+
+out="$(hs_host_plugins "$fixtures/plugins_no_requested_ref.json")"
+status=$?
+assert_status "a plugin with no requested_ref is not an error" 0 "$status"
+assert_eq "its ref column is empty and its commit survives" \
+  "herdr.auto-title$(printf '\t')kryptamine/herdr-auto-title$(printf '\t')$(printf '\t')743bb2f9c8b7e70cdeb0cbb998ed343acb77690a" \
+  "$out"
+
 hs_test_report

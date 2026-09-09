@@ -1,0 +1,20 @@
+[
+  {
+    "plugin_id": "herdr.auto-title",
+    "name": "Auto Title",
+    "version": "0.3.2",
+    "enabled": true,
+    "platforms": [
+      "linux",
+      "macos"
+    ],
+    "source": {
+      "kind": "github",
+      "owner": "kryptamine",
+      "repo": "herdr-auto-title",
+      "resolved_commit": "743bb2f9c8b7e70cdeb0cbb998ed343acb77690a",
+      "managed_path": "/home/placeholder-user/.config/herdr/plugins/github/herdr.auto-title-4b7d61f48ce8",
+      "installed_unix_ms": 1788353140113
+    }
+  }
+]

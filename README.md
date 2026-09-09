@@ -106,6 +106,10 @@ $ herdr-setup absorb
 The reverse of `apply`, and the reason this tool is usable day to day:
 change Herdr interactively on any host, `absorb`, commit, `apply` elsewhere.
 Rewrites `manifest/plugins.list` and `manifest/config.toml` straight from the
+
+A line may name a ref or omit it. `owner/repo v1.2.3` pins a branch or tag.
+`owner/repo` alone means the repository's default branch, which is what Herdr
+installs from when given no `--ref`, and what it records for such a plugin.
 host's own `plugins.json` and `config.toml`, touching only the checkout.
 Refuses to run — and writes nothing — when the manifest has uncommitted
 changes, or when it cannot tell whether it does: git failing for any reason

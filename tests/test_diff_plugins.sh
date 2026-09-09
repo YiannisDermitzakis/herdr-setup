@@ -317,4 +317,17 @@ status=$?
 assert_status "herdr-setup diff still exits 0 under a protocol mismatch" 0 "$status"
 assert_contains "herdr-setup diff still reports ok under a protocol mismatch" "$(cat "$out")" "ok: kryptamine/herdr-auto-title"
 
+# --- a manifest line with NO ref resolves the remote's default branch ---
+#
+# Herdr installs from the default branch when given no --ref, and records no
+# `requested_ref`. A manifest describing such a plugin names no ref either, so
+# resolution has to ask the remote for HEAD rather than for a named ref. This
+# is the path that did not exist until a Linux host with such a plugin made
+# `diff` fail outright.
+
+sha_head="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+echo "$sha_head" > "$fixtures/$(git_fixture_name 'https://github.com/kryptamine/herdr-auto-title.git' 'HEAD')"
+resolved="$(FAKE_GIT_FIXTURES="$fixtures" hs_resolve_ref 'kryptamine/herdr-auto-title' '')"
+assert_eq "an empty ref resolves the remote's HEAD" "$sha_head" "$resolved"
+
 hs_test_report

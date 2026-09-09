@@ -401,8 +401,12 @@ hs_manifest_plugins() {
     source="${1:-}"
     ref="${2:-}"
 
-    if [ "$field_count" -ne 2 ]; then
-      echo "herdr-setup: $file:$line_num: expected '<source> <ref>', got '$trimmed'" >&2
+    # One field or two. Two pins a branch or tag; one means "whatever the
+    # repository's default branch is", which is exactly what Herdr records when
+    # a plugin was installed without `--ref`. Requiring two made the manifest
+    # unable to describe a host that has such a plugin.
+    if [ "$field_count" -ne 1 ] && [ "$field_count" -ne 2 ]; then
+      echo "herdr-setup: $file:$line_num: expected '<owner>/<repo>[/<subdir>] [<ref>]', got: $trimmed" >&2
       return 2
     fi
 
@@ -462,13 +466,19 @@ hs_host_plugins() {
 # whenever it is present; a lightweight tag or a branch has no peeled line
 # and the single line it does have IS the commit.
 hs_resolve_ref() {
-  local source="$1" ref="$2"
+  local source="$1" ref="${2:-}"
   local owner_repo url output sha
 
   owner_repo="$(printf '%s' "$source" | cut -d/ -f1-2)"
   url="https://github.com/${owner_repo}.git"
 
-  output="$(git ls-remote "$url" "$ref" "${ref}^{}" 2>/dev/null)"
+  # An empty ref means the manifest named none, so resolve the remote's default
+  # branch, which is what Herdr installed from.
+  if [ -z "$ref" ]; then
+    output="$(git ls-remote "$url" HEAD 2>/dev/null)"
+  else
+    output="$(git ls-remote "$url" "$ref" "${ref}^{}" 2>/dev/null)"
+  fi
   sha="$(printf '%s\n' "$output" | awk '$2 ~ /\^\{\}$/ { print $1; exit }')"
   if [ -z "$sha" ]; then
     sha="$(printf '%s\n' "$output" | awk 'NF { print $1; exit }')"
@@ -870,7 +880,13 @@ hs_apply_plugins() {
 
     if [ "$needs_install" -eq 1 ]; then
       local install_args install_rc=0
-      install_args=(plugin install "$m_source" --ref "$m_ref")
+      if [ -n "$m_ref" ]; then
+        install_args=(plugin install "$m_source" --ref "$m_ref")
+      else
+        # No ref in the manifest: install the way Herdr does by default, from
+        # the repository's default branch. Passing --ref "" would be an error.
+        install_args=(plugin install "$m_source")
+      fi
       if [ "${HS_YES:-0}" -eq 1 ]; then
         install_args+=(--yes)
       fi
