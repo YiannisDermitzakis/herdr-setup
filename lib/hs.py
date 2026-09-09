@@ -56,7 +56,12 @@ def host_plugins(path: Path) -> int:
             src = f"{source['owner']}/{source['repo']}"
             if source.get("subdir"):
                 src = f"{src}/{source['subdir']}"
-            rows.append((plugin_id, src, source["requested_ref"], source["resolved_commit"]))
+            # `requested_ref` is absent when the plugin was installed without
+            # `--ref`, which is how Herdr records "take the default branch".
+            # Treating it as required made `diff` die on any such host.
+            rows.append(
+                (plugin_id, src, source.get("requested_ref", ""), source["resolved_commit"])
+            )
         except (KeyError, TypeError):
             die(f"{path}: malformed plugin entry: {entry!r}")
 
@@ -84,7 +89,7 @@ def absorb_plugins(path: Path) -> int:
             src = f"{source['owner']}/{source['repo']}"
             if source.get("subdir"):
                 src = f"{src}/{source['subdir']}"
-            rows.append((src, source["requested_ref"]))
+            rows.append((src, source.get("requested_ref", "")))
         except (KeyError, TypeError):
             die(f"{path}: malformed plugin entry: {entry!r}")
 

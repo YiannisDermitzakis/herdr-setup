@@ -36,14 +36,32 @@ expected="$(printf '%s\n%s\n%s' \
 assert_eq "valid manifest prints one <source>TAB<ref> line per entry, subdir kept" \
   "$expected" "$out"
 
-# --- one field (missing ref): fatal, exit 2, names file and line number ---
+# --- one field: VALID, and means the repository's default branch ---
+#
+# Herdr records no `requested_ref` for a plugin installed without `--ref`; it
+# simply took the default branch. A manifest that could not express that could
+# not describe such a host, and `diff` died with exit 2 on the first Linux
+# machine this was run on. One field is therefore a plugin with no pinned ref,
+# and the ref field comes back empty.
+
+out="$(hs_manifest_plugins "$fixtures/manifest_no_ref.list")"
+status=$?
+assert_status "a ref-less line is accepted" 0 "$status"
+assert_eq "a ref-less line yields an empty ref" \
+  "kryptamine/herdr-auto-title$(printf '\t')" \
+  "$(printf '%s' "$out" | sed -n 1p)"
+assert_eq "a pinned line still yields its ref" \
+  "ezcorp-org/herdr-pc-ram-and-cpu-usage-overlay$(printf '\t')main" \
+  "$(printf '%s' "$out" | sed -n 2p)"
+
+# The old fixture repeats one source, so it is a DUPLICATE test, not a
+# field-count test. Keeping it under its real name, because it passed under the
+# wrong one while the field-count rule was being changed out from under it.
 
 status="$(hs_manifest_plugins "$fixtures/manifest_one_field.list" >/dev/null 2>/dev/null; echo $?)"
-assert_status "one-field line exits 2" 2 "$status"
-
+assert_status "a repeated source exits 2" 2 "$status"
 err="$(hs_manifest_plugins "$fixtures/manifest_one_field.list" 2>&1 1>/dev/null)"
-assert_contains "one-field error names the file" "$err" "manifest_one_field.list"
-assert_contains "one-field error names the line number" "$err" ":2:"
+assert_contains "the duplicate error names the file" "$err" "manifest_one_field.list"
 
 # --- three fields (extra token after ref): fatal, exit 2, names file/line ---
 
