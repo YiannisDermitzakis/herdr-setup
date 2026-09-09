@@ -1,0 +1,26 @@
+[
+  {
+    "plugin_id": "kryptamine.auto-title",
+    "source": {
+      "kind": "github",
+      "owner": "kryptamine",
+      "repo": "herdr-auto-title",
+      "requested_ref": "v0.3.3",
+      "resolved_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "managed_path": "/home/placeholder-user/.config/herdr/plugins/kryptamine.auto-title",
+      "installed_unix_ms": 1788500000000
+    }
+  },
+  {
+    "plugin_id": "ez-corp.space-usage",
+    "source": {
+      "kind": "github",
+      "owner": "ezcorp-org",
+      "repo": "herdr-pc-ram-and-cpu-usage-overlay",
+      "requested_ref": "main",
+      "resolved_commit": "94a2ea3bf21ec35c6da51b9657c97167e68034ce",
+      "managed_path": "/home/placeholder-user/.config/herdr/plugins/ez-corp.space-usage",
+      "installed_unix_ms": 1788513988756
+    }
+  }
+]

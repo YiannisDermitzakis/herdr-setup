@@ -1,0 +1,180 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.13"
+# dependencies = []
+# ///
+"""adapters/claude -- Claude Code, exact, by process id.
+
+Claude Code writes one file per running process, named after its own pid:
+`<config>/sessions/<pid>.json`. That is what lets this adapter claim `exact`
+-- a pane's own pid identifies its session, and no other pane can share it,
+unlike a directory two panes might both be sitting in.
+
+`<config>` is `$CLAUDE_CONFIG_DIR` if set, else `$HOME/.claude`, matching how
+Claude Code itself resolves it.
+
+See docs/adapters.md for the contract this implements, and
+tests/fixtures/claude/README.md for where the shape below comes from -- it is
+a capture, not a guess (the same discipline tests/fixtures/herdr/ established,
+after phase 6 got burned inventing one).
+
+Two details a change here must not lose:
+
+- **The time frame.** The session file's own `procStart` is a UTC wall-clock
+  string with no zone marker; `pid_start_epoch`, supplied by the runner, is
+  an absolute epoch. Parsing `procStart` with `time.mktime` reads it as
+  LOCAL and is wrong by the host's UTC offset -- see docs/adapters.md and
+  tests/fixtures/claude/README.md, where the capture itself is two hours off
+  on the machine this was written on. `calendar.timegm` is correct.
+- **The transcript's cwd.** Once a pid has matched a session file, that file
+  is this adapter's whole source of truth for the pane. The transcript path
+  is slugified from the SESSION FILE's own `cwd`, not the pane's `cwd` from
+  the `resolve` request -- they should ordinarily agree, but the session
+  file does not become less authoritative if a directory is later renamed
+  out from under a live pane.
+
+Never opens the Herdr socket. The runner decides; this adapter only answers.
+"""
+
+from __future__ import annotations
+
+import calendar
+import json
+import os
+import re
+import sys
+import time
+from pathlib import Path
+
+AGENT = "claude"
+SOURCE = "herdr:claude"
+
+# `pid_start_epoch` and `procStart` come from different clocks (`ps` and the
+# process itself) and round differently; a second or two of slack is the
+# contract's own guidance (docs/adapters.md).
+START_TIME_SLACK_SECONDS = 5
+
+SLUG_RE = re.compile(r"[^A-Za-z0-9]")
+
+
+def config_dir() -> Path:
+    override = os.environ.get("CLAUDE_CONFIG_DIR")
+    if override:
+        return Path(override)
+    return Path.home() / ".claude"
+
+
+def sessions_dir() -> Path:
+    return config_dir() / "sessions"
+
+
+def slugify(cwd: str) -> str:
+    """Every character that is not a letter or digit becomes a hyphen."""
+    return SLUG_RE.sub("-", cwd)
+
+
+def parse_proc_start_utc(text: str):
+    """`procStart` as epoch seconds, read as UTC -- see the module docstring."""
+    try:
+        return calendar.timegm(time.strptime(text, "%a %b %d %H:%M:%S %Y"))
+    except (ValueError, TypeError):
+        return None
+
+
+def read_session(pid) -> dict | None:
+    path = sessions_dir() / f"{pid}.json"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def transcript_path(session: dict) -> str | None:
+    cwd = session.get("cwd")
+    session_id = session.get("sessionId")
+    if not isinstance(cwd, str) or not isinstance(session_id, str) or not session_id:
+        return None
+    path = config_dir() / "projects" / slugify(cwd) / f"{session_id}.jsonl"
+    return str(path) if path.is_file() else None
+
+
+def candidate_for(pane: dict) -> dict | None:
+    """The one candidate for `pane`, or None if there is nothing to report.
+
+    A missing session file, a pane with no pid, or a session file that
+    cannot even be read as JSON are all the same answer: nothing here, not
+    an error -- the runner treats an adapter's silence about a pane the same
+    as an empty candidate list for it.
+    """
+    pid = pane.get("pid")
+    if not isinstance(pid, int):
+        return None
+    session = read_session(pid)
+    if session is None:
+        return None
+    session_id = session.get("sessionId")
+    if not isinstance(session_id, str) or not session_id:
+        return None
+
+    # A recycled pid: the file was written by a different, earlier process
+    # that happened to get the same id. `null` on either side cannot rule
+    # reuse out or in, and is not treated as either (docs/adapters.md).
+    pane_epoch = pane.get("pid_start_epoch")
+    own_epoch = parse_proc_start_utc(session.get("procStart", ""))
+    if (
+        isinstance(pane_epoch, int)
+        and isinstance(own_epoch, int)
+        and abs(pane_epoch - own_epoch) > START_TIME_SLACK_SECONDS
+    ):
+        return None
+
+    candidate = {"session_id": session_id, "confidence": "exact"}
+    path = transcript_path(session)
+    if path:
+        candidate["session_path"] = path
+    return candidate
+
+
+def cmd_probe() -> int:
+    available = sessions_dir().is_dir()
+    print(
+        json.dumps(
+            {
+                "agent": AGENT,
+                "source": SOURCE,
+                "available": available,
+                "confidence": "exact",
+            }
+        )
+    )
+    return 0
+
+
+def cmd_resolve() -> int:
+    payload = json.loads(sys.stdin.read() or "{}")
+    panes = payload.get("panes") or []
+    results = []
+    for pane in panes:
+        candidate = candidate_for(pane)
+        candidates = [candidate] if candidate else []
+        results.append({"pane_id": pane.get("pane_id"), "candidates": candidates})
+    print(json.dumps({"results": results}))
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) == 1 and argv[0] == "probe":
+        return cmd_probe()
+    if len(argv) == 1 and argv[0] == "resolve":
+        return cmd_resolve()
+    sys.stderr.write("usage: adapters/claude probe|resolve\n")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

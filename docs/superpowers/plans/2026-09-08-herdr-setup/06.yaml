@@ -1,0 +1,123 @@
+schema_version: 2
+phase:
+  number: 6
+  title: The adapter seam and the feed runner
+  tag: agentic
+  depends_on:
+  - 1
+  tracking_issue: null
+  acceptance:
+  - feed-reports-live-sessions
+  - socket-commands-refuse-under-mismatch
+tasks:
+- number: 1
+  title: Adapter discovery and probe
+  steps:
+  - id: P6.T1.S1
+    text: |
+      Add tests/test_feed_probe.py (python unittest, run by tests/run.sh) with
+      FAILING tests for lib/feed.py: `discover(adapter_dir)` returns executable
+      files only, sorted, ignoring names starting with a dot or ending .md;
+      `probe(path)` runs `<path> probe`, parses one JSON object and returns it;
+      an adapter whose probe exits non-zero, prints nothing, prints
+      non-JSON, or omits a required key is SKIPPED with a warning rather than
+      crashing the run; an adapter answering `available: false` is skipped
+      silently; one answering `unverified: true` is used but produces a warning
+      naming it. Required probe keys: agent, source, available, confidence.
+      confidence must be `exact` or `heuristic`; anything else is a skip.
+      Use tiny inline shell adapters written into a temp directory as fixtures.
+      Run `bash tests/run.sh` -> expect failure.
+  - id: P6.T1.S2
+    text: |
+      Implement discover and probe in lib/feed.py. Standard library only. Make
+      it a PEP 723 uv script: the `#!/usr/bin/env -S uv run --script` shebang
+      and the `# /// script` header, exactly as lib/hs.py has them, and invoke
+      it through uv. Run `bash tests/run.sh` -> green.
+- number: 2
+  title: Pane gathering and resolve
+  steps:
+  - id: P6.T2.S1
+    text: |
+      Add tests/test_feed_resolve.py with FAILING tests: `panes_for(agent)`
+      asks herdr for the agent list, keeps entries whose `agent` field equals
+      the adapter's agent, then for each asks `pane process-info --pane <id>`
+      and builds {pane_id, cwd, pid, pid_start_epoch} where pid is the
+      foreground process whose argv0 equals the agent's command; a pane with no
+      matching foreground process is dropped with a note; a herdr call that
+      fails raises rather than yielding an empty list. `resolve(adapter, panes)`
+      pipes the payload to `<adapter> resolve` on stdin and returns the parsed
+      results, tolerating an adapter that returns fewer results than panes.
+      Run -> expect failure.
+  - id: P6.T2.S2
+    text: |
+      Implement both. The empty-list-versus-error distinction is the whole
+      point of this task: a blocked herdr answers with an error object, and
+      treating that as zero panes would report success having fed nothing.
+      Run `bash tests/run.sh` -> green.
+- number: 3
+  title: Decision and reporting
+  steps:
+  - id: P6.T3.S1
+    text: |
+      Add tests/test_feed_report.py with FAILING tests, using a temporary unix
+      socket server that records the JSON lines it receives:
+      a single candidate at `exact` confidence is reported without a prompt;
+      anything else (several candidates, or one at `heuristic` confidence)
+      prompts, and in a non-interactive run without --yes is skipped with a
+      note rather than guessed; the reported payload is a
+      `pane.report_agent_session` request whose params carry pane_id, source,
+      agent, a monotonic seq, agent_session_id, and agent_session_path only
+      when the adapter supplied one; --dry-run opens no socket; the summary
+      line at the end states how many panes were reported and how many skipped.
+      Run -> expect failure.
+  - id: P6.T3.S2
+    text: |
+      Implement the decision and report stage, and wire cmd_feed in the
+      entrypoint to call lib/feed.py after hs_require_socket.
+      Run `bash tests/run.sh` -> green.
+- number: 4
+  title: The written contract
+  steps:
+  - id: P6.T4.S1
+    text: |
+      Write docs/adapters.md: the two subcommands, the exact probe and resolve
+      JSON shapes with every key, the meaning of `exact` versus `heuristic`,
+      the rule that the runner decides and the adapter never touches the Herdr
+      socket, and a worked minimal adapter in shell. Add
+      tests/test_contract.py asserting that a `validate_probe(obj)` helper in
+      lib/feed.py accepts the documented example and rejects each single-key
+      omission. Run -> expect failure, then implement validate_probe -> green.
+state:
+  steps:
+    P6.T1.S1:
+      state: x
+      ticked_at: '2026-09-08T10:58:13+00:00'
+      note: null
+    P6.T1.S2:
+      state: x
+      ticked_at: '2026-09-08T10:58:15+00:00'
+      note: null
+    P6.T2.S1:
+      state: x
+      ticked_at: '2026-09-08T11:02:01+00:00'
+      note: null
+    P6.T2.S2:
+      state: x
+      ticked_at: '2026-09-08T11:02:02+00:00'
+      note: null
+    P6.T3.S1:
+      state: x
+      ticked_at: '2026-09-08T11:08:00+00:00'
+      note: null
+    P6.T3.S2:
+      state: x
+      ticked_at: '2026-09-08T11:08:02+00:00'
+      note: null
+    P6.T4.S1:
+      state: x
+      ticked_at: '2026-09-08T11:12:57+00:00'
+      note: null
+  completion:
+    at: '2026-09-08T11:24:25+00:00'
+    note: null
+    observed_prs: []

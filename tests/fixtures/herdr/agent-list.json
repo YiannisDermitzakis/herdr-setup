@@ -1,0 +1,71 @@
+{
+  "id": "cli:agent:list",
+  "result": {
+    "type": "agent_list",
+    "agents": [
+      {
+        "terminal_id": "term_65aa46e80e5fb20",
+        "agent": "claude",
+        "terminal_title": "\u25d1 add the health endpoint",
+        "terminal_title_stripped": "add the health endpoint",
+        "agent_status": "working",
+        "agent_session": {
+          "source": "herdr:claude",
+          "agent": "claude",
+          "kind": "id",
+          "value": "00000000-0000-4000-8000-000000000001"
+        },
+        "workspace_id": "w2",
+        "tab_id": "w2:t9",
+        "pane_id": "w2:p9",
+        "focused": false,
+        "state_change_seq": 1087,
+        "cwd": "/work/alpha",
+        "foreground_cwd": "/work/alpha",
+        "revision": 8
+      },
+      {
+        "terminal_id": "term_65a27d620bd9e9",
+        "agent": "claude",
+        "terminal_title": "\u2733 fix-image-size-check",
+        "terminal_title_stripped": "fix-image-size-check",
+        "agent_status": "idle",
+        "agent_session": {
+          "source": "herdr:claude",
+          "agent": "claude",
+          "kind": "id",
+          "value": "00000000-0000-4000-8000-000000000001"
+        },
+        "workspace_id": "w2",
+        "tab_id": "w2:t2",
+        "pane_id": "w2:p2",
+        "focused": false,
+        "state_change_seq": 848,
+        "cwd": "/work/beta",
+        "foreground_cwd": "/work/beta",
+        "revision": 11
+      },
+      {
+        "terminal_id": "term_65a282e4d224e13",
+        "agent": "claude",
+        "terminal_title": "\u2733 check-engine-version",
+        "terminal_title_stripped": "check-engine-version",
+        "agent_status": "idle",
+        "agent_session": {
+          "source": "herdr:claude",
+          "agent": "claude",
+          "kind": "id",
+          "value": "00000000-0000-4000-8000-000000000001"
+        },
+        "workspace_id": "w2",
+        "tab_id": "w2:t7",
+        "pane_id": "w2:p7",
+        "focused": false,
+        "state_change_seq": 1020,
+        "cwd": "/work/beta",
+        "foreground_cwd": "/work/beta",
+        "revision": 9
+      }
+    ]
+  }
+}

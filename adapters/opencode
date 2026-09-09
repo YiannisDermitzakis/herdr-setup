@@ -1,0 +1,173 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.13"
+# dependencies = []
+# ///
+"""adapters/opencode -- opencode, heuristic, by directory.
+
+opencode keeps one SQLite database, `<data>/opencode/opencode.db`, whose
+`session` table carries every session it has ever run, top-level and
+nested. Two panes open in the same directory look identical to this
+adapter -- the same limit adapters/codex has -- so it is `heuristic` and
+never promotes a lone match to `exact`, matching that adapter's own
+discipline (docs/adapters.md).
+
+`<data>` is `$XDG_DATA_HOME` if set, else `$HOME/.local/share`, which is
+what opencode itself honours (confirmed against opencode's own resolution
+of the variable, not assumed by analogy the way adapters/codex's own
+$CODEX_HOME choice had to be -- see that adapter's module docstring, and
+tests/fixtures/opencode/README.md for how this was checked). This is a
+deliberately different shape from adapters/claude's $CLAUDE_CONFIG_DIR and
+adapters/codex's $CODEX_HOME: not every agent invents its own variable, and
+guessing one here instead of checking would have been wrong.
+
+See docs/adapters.md for the contract this implements, and
+tests/fixtures/opencode/README.md for where the `session` table's schema
+below comes from -- captured verbatim from a live opencode.db; the fixture
+rows built against it are synthesised, never copied out of a real one.
+
+Two details a change here must not lose:
+
+- **`time_updated` is epoch MILLISECONDS**, not seconds -- confirmed
+  against the live database (tests/fixtures/opencode/README.md). Divide by
+  1000 before turning it into the `updated` field's ISO 8601 string, or
+  every session reports a date decades in the future. This does not fail
+  loudly, which is exactly why it is called out here and pinned by a test.
+- **The database is opened read-only, via a `file:...?mode=ro` URI**, not a
+  plain path, so a running opencode is never made to wait on this adapter
+  and can never be made to write anything it did not intend to
+  (tests/fixtures/opencode/README.md explains why a `mode=ro` URI is a
+  stronger guarantee than relying on filesystem permissions alone).
+
+Never opens the Herdr socket. The runner decides; this adapter only answers.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from urllib.parse import quote
+
+AGENT = "opencode"
+SOURCE = "herdr:opencode"
+
+# Three columns of the real `session` table, filtered on three more; see
+# tests/fixtures/opencode/README.md for the rest of the (captured) schema.
+SELECT_SQL = """
+    SELECT id, title, time_updated
+    FROM session
+    WHERE directory = ? AND parent_id IS NULL AND time_archived IS NULL
+    ORDER BY time_updated DESC
+"""
+
+
+def data_dir() -> Path:
+    override = os.environ.get("XDG_DATA_HOME")
+    if override:
+        return Path(override)
+    return Path.home() / ".local" / "share"
+
+
+def db_path() -> Path:
+    return data_dir() / "opencode" / "opencode.db"
+
+
+def open_readonly(path: Path) -> sqlite3.Connection:
+    """Open `path` such that SQLite itself refuses any write, not just this code."""
+    uri = f"file:{quote(str(path))}?mode=ro"
+    return sqlite3.connect(uri, uri=True)
+
+
+def updated_iso(time_updated) -> str | None:
+    if not isinstance(time_updated, int):
+        return None
+    return datetime.fromtimestamp(time_updated / 1000, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def candidates_for(cwd, conn: sqlite3.Connection) -> list[dict]:
+    if not isinstance(cwd, str) or not cwd:
+        return []
+    candidates = []
+    for session_id, title, time_updated in conn.execute(SELECT_SQL, (cwd,)):
+        if not isinstance(session_id, str) or not session_id:
+            continue
+        candidate = {"session_id": session_id, "confidence": "heuristic"}
+        if isinstance(title, str) and title:
+            candidate["label"] = title
+        updated = updated_iso(time_updated)
+        if updated:
+            candidate["updated"] = updated
+        candidates.append(candidate)
+    return candidates
+
+
+def cmd_probe() -> int:
+    available = db_path().is_file()
+    print(
+        json.dumps(
+            {
+                "agent": AGENT,
+                "source": SOURCE,
+                "available": available,
+                "confidence": "heuristic",
+            }
+        )
+    )
+    return 0
+
+
+def cmd_resolve() -> int:
+    payload = json.loads(sys.stdin.read() or "{}")
+    panes = payload.get("panes") or []
+
+    path = db_path()
+    if not path.is_file():
+        # Consistent with adapters/claude and adapters/codex: nothing here
+        # is an error, it is "nothing to say about any of these panes".
+        empty = [{"pane_id": pane.get("pane_id"), "candidates": []} for pane in panes]
+        print(json.dumps({"results": empty}))
+        return 0
+
+    # A database that is here but cannot be READ is a failure to answer, not
+    # "nothing to say" -- so it exits non-zero, and it does it in one sentence.
+    # opencode runs in WAL mode: a reader that finds a hot `-wal` has to
+    # recover the log first, `mode=ro` forbids exactly that, and SQLite raises.
+    # Uncaught, the operator got a Python traceback out of a tool whose whole
+    # manner is one clear line, and the runner quoted its last line as the
+    # reason the pane went unfed.
+    conn = None
+    try:
+        conn = open_readonly(path)
+        results = [
+            {"pane_id": pane.get("pane_id"), "candidates": candidates_for(pane.get("cwd"), conn)}
+            for pane in panes
+        ]
+    except sqlite3.Error as exc:
+        sys.stderr.write(
+            f"adapters/opencode: cannot read the opencode database at {path}: {exc}. "
+            "It may be mid-write (a hot write-ahead log); try again, or check the file's "
+            "permissions.\n"
+        )
+        return 2
+    finally:
+        if conn is not None:
+            conn.close()
+    print(json.dumps({"results": results}))
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) == 1 and argv[0] == "probe":
+        return cmd_probe()
+    if len(argv) == 1 and argv[0] == "resolve":
+        return cmd_resolve()
+    sys.stderr.write("usage: adapters/opencode probe|resolve\n")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

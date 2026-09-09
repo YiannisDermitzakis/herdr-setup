@@ -1,0 +1,87 @@
+schema_version: 2
+phase:
+  number: 8
+  title: Adapters for opencode and GitHub Copilot CLI
+  tag: agentic
+  depends_on:
+  - 6
+  tracking_issue: null
+  acceptance:
+  - feed-reports-live-sessions
+tasks:
+- number: 1
+  title: opencode adapter
+  steps:
+  - id: P8.T1.S1
+    text: |
+      Add tests/test_adapter_opencode.py with FAILING tests against a fixture
+      sqlite database built in the test from CREATE TABLE session(id TEXT
+      PRIMARY KEY, parent_id TEXT, directory TEXT NOT NULL, title TEXT NOT
+      NULL, time_updated INTEGER NOT NULL, time_archived INTEGER): probe
+      reports agent `opencode`, source `herdr:opencode`, confidence
+      `heuristic`, available only when the database file exists; resolve
+      returns rows whose directory equals the pane cwd AND parent_id IS NULL
+      AND time_archived IS NULL, newest time_updated first, label from title;
+      child sessions and archived sessions never appear; the database is opened
+      read-only so a running opencode is never disturbed.
+      Run -> expect failure.
+  - id: P8.T1.S2
+    text: |
+      Write adapters/opencode as a PEP 723 uv script (same shebang and header
+      as lib/hs.py) using sqlite3 with a `file:...?mode=ro` URI, chmod +x. Run `bash tests/run.sh` -> green.
+- number: 2
+  title: Copilot CLI adapter, shipped unverified
+  steps:
+  - id: P8.T2.S1
+    text: |
+      Add tests/test_adapter_copilot.py with FAILING tests against a fixture
+      session store under $COPILOT_HOME (falling back to ~/.copilot): probe
+      reports agent `copilot`, source `herdr:copilot`, confidence `heuristic`
+      and `unverified: true`; resolve matches stored sessions by working
+      directory, newest first; an unreadable or unexpectedly shaped store
+      yields no candidates and a warning rather than an exception. Record in
+      the test file's docstring that the layout is taken from GitHub's
+      documentation and Herdr's own copilot integration, and has not been
+      confirmed against a real installation.
+      Run -> expect failure.
+  - id: P8.T2.S2
+    text: |
+      Write adapters/copilot, chmod +x. Make its probe output and its warning
+      both say plainly that it is unverified. Run `bash tests/run.sh` -> green.
+- number: 3
+  title: Contract conformance across all four
+  steps:
+  - id: P8.T3.S1
+    text: |
+      Extend tests/test_contract.py with a FAILING test that iterates every
+      executable in adapters/, runs its probe in a fixture home where that
+      agent is absent, and asserts the output validates against validate_probe
+      and reports available false without error. Then run each with a fixture
+      home where the agent is present and assert available true.
+      Run -> expect failure, then fix whichever adapters fail -> green.
+state:
+  steps:
+    P8.T1.S1:
+      state: x
+      ticked_at: '2026-09-08T14:31:14+00:00'
+      note: null
+    P8.T1.S2:
+      state: x
+      ticked_at: '2026-09-08T14:31:16+00:00'
+      note: null
+    P8.T2.S1:
+      state: x
+      ticked_at: '2026-09-08T14:31:18+00:00'
+      note: null
+    P8.T2.S2:
+      state: x
+      ticked_at: '2026-09-08T14:31:20+00:00'
+      note: null
+    P8.T3.S1:
+      state: x
+      ticked_at: '2026-09-08T14:31:22+00:00'
+      note: null
+  completion:
+    at: '2026-09-08T14:31:29+00:00'
+    note: null
+    observed_prs: []

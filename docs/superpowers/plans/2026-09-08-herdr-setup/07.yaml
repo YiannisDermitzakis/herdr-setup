@@ -1,0 +1,72 @@
+schema_version: 2
+phase:
+  number: 7
+  title: Adapters for Claude Code and Codex
+  tag: agentic
+  depends_on:
+  - 6
+  tracking_issue: null
+  acceptance:
+  - feed-reports-live-sessions
+tasks:
+- number: 1
+  title: Claude Code adapter, exact by process id
+  steps:
+  - id: P7.T1.S1
+    text: |
+      Add tests/test_adapter_claude.py with FAILING tests against a fixture
+      home directory: probe reports agent `claude`, source `herdr:claude`,
+      confidence `exact`, available true when $CLAUDE_CONFIG_DIR or
+      ~/.claude/sessions exists and false otherwise; resolve reads
+      <config>/sessions/<pid>.json for each pane's pid and returns one
+      candidate carrying sessionId as session_id, the transcript path under
+      <config>/projects/<slugified cwd>/<id>.jsonl as session_path when that
+      file exists, and confidence `exact`; a pane whose pid has no session file
+      yields an empty candidate list, not an error. Slugification replaces
+      every character that is not a letter or digit with a hyphen.
+      Run -> expect failure.
+  - id: P7.T1.S2
+    text: |
+      Write adapters/claude, chmod +x. Run `bash tests/run.sh` -> green.
+- number: 2
+  title: Codex adapter, heuristic by directory
+  steps:
+  - id: P7.T2.S1
+    text: |
+      Add tests/test_adapter_codex.py with FAILING tests against a fixture
+      ~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-<ts>-<id>.jsonl tree whose
+      first line is {"type":"session_meta","payload":{"id":...,"cwd":...}}:
+      probe reports agent `codex`, source `herdr:codex`, confidence
+      `heuristic`; resolve returns every session whose payload cwd equals the
+      pane cwd, newest file first, each with confidence `heuristic` and a label
+      built from the rollout timestamp; sessions under a different cwd are
+      excluded; a rollout whose first line is not session_meta or is not JSON
+      is skipped rather than fatal; only the first line of each file is read.
+      Run -> expect failure.
+  - id: P7.T2.S2
+    text: |
+      Write adapters/codex, chmod +x. Bound the scan to the newest N day
+      directories (N=30) so a long history does not make feed slow.
+      Run `bash tests/run.sh` -> green.
+state:
+  steps:
+    P7.T1.S1:
+      state: x
+      ticked_at: '2026-09-08T12:22:30+00:00'
+      note: null
+    P7.T1.S2:
+      state: x
+      ticked_at: '2026-09-08T12:22:31+00:00'
+      note: null
+    P7.T2.S1:
+      state: x
+      ticked_at: '2026-09-08T12:22:33+00:00'
+      note: null
+    P7.T2.S2:
+      state: x
+      ticked_at: '2026-09-08T12:22:35+00:00'
+      note: null
+  completion:
+    at: '2026-09-08T12:22:37+00:00'
+    note: null
+    observed_prs: []

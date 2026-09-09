@@ -1,0 +1,403 @@
+# Acceptance matrix — the registry of business-level acceptance tests and
+# where each is verified. Rendered by `fr acceptance report`; gated in CI by
+# .github/workflows/acceptance-report.yml (`fr acceptance check`).
+#
+# Row schema:
+#   id:         kebab-case, stable
+#   capability: grouping (tables render in first-seen order)
+#   acceptance: the business-level statement
+#   origin:     list of "repo:path[#anchor]" refs (spec §, design doc)
+#   levels:     unit/api/int/ui → list of "repo:path[#Lline]" test refs
+#               ([] = level does not verify this row)
+#   status:     ci | scheduled | skipped | not-implemented | failing
+#     ci               automated on every PR — cannot drift silently
+#     scheduled        automated on cron/path triggers
+#     skipped          verification exists but does not run in CI (proven
+#                      live once / manual walk) → CI warning, backfill owed
+#     not-implemented  no test or surface exists yet → CI warning
+#     failing          known red → `fr acceptance check` exits 2, CI FAILS
+#   notes:      evidence detail, drift context
+#
+# Rule: .claude/rules/acceptance-matrix.md — update rows in the SAME PR that
+# changes a Test Plan, adds tests, ships a surface, or touches CI.
+# Add rows with `fr acceptance add` (schema-validated append). Keep `rows:`
+# as the LAST top-level key — `add` appends to the end of this file.
+
+org: YiannisDermitzakis
+repo: herdr-setup
+rows:
+  - id: diff-runs-under-protocol-mismatch
+    capability: Version gate
+    acceptance: diff reports plugins, config and integration state in full even when
+      the Herdr command line and the running server speak different protocol versions.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    levels:
+      unit:
+      - herdr-setup:tests/test_diff_plugins.sh
+      - herdr-setup:tests/test_diff_config.sh
+    status: ci
+    notes: Reads plugins.json and config.toml from disk; only integration state comes
+      from the CLI, which stays unblocked. Phase 2 (herdr-setup:tests/test_diff_plugins.sh)
+      proves the plugin section is byte-identical whether or not
+      FAKE_HERDR_PROTOCOL_MISMATCH is set, since hs_manifest_plugins/hs_host_plugins/
+      hs_resolve_ref never call herdr. Phase 3 (herdr-setup:tests/test_diff_config.sh)
+      implements and unit-tests the config and integration sections and a
+      hs_preflight_banner that names the state as cmd_diff's first line -- hs_diff_config
+      reads config.toml from disk (never through herdr) and hs_diff_integrations calls
+      `herdr integration status` directly, which the fake herdr harness exempts from its
+      protocol-mismatch simulation, matching the real command. An end-to-end
+      herdr-setup diff run proves the exit status (0 match / 1 drift) is unchanged
+      under FAKE_HERDR_PROTOCOL_MISMATCH=1.
+      Phase 10 -- flipped to `ci` -- .github/workflows/ci.yml runs tests/run.sh (the two
+      files above, with everything else) on ubuntu-latest and macos-latest, macOS
+      twice (its system bash 3.2.57 and a newer one), on every PR and push.
+  - id: socket-commands-refuse-under-mismatch
+    capability: Version gate
+    acceptance: apply, onboard and feed stop with one line naming the protocol
+      mismatch and the restart needed, instead of parsing a JSON error object as an
+      empty result.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    levels:
+      unit:
+      - herdr-setup:tests/test_preflight.sh
+      - herdr-setup:tests/test_feed_entrypoint.sh
+      - herdr-setup:tests/test_feed_resolve.py
+      - herdr-setup:tests/test_entrypoint.sh
+      - herdr-setup:tests/test_onboard_offer.sh
+    status: ci
+    notes: The failure this guards against reads as success having done nothing.
+      Phase 1 (herdr-setup:tests/test_preflight.sh) unit-tests the two primitives
+      this row depends on -- hs_require_socket refuses under mismatched/no-server/
+      no-herdr with one stderr line and exit 3, and hs_herdr_json never returns a
+      result from a failed herdr call -- but apply/absorb/onboard/feed are still
+      phase 1 stubs that do not call hs_require_socket yet. Left not-implemented on
+      purpose, pending phase 6 (herdr-setup:docs/superpowers/plans/2026-09-08-herdr-setup/06.yaml),
+      which wires cmd_feed to hs_require_socket and is where this row actually flips.
+      Phase 5 finding, not yet resolved -- this row's own wording names absorb
+      alongside apply/onboard/feed, but the design doc's Commands > absorb and
+      Errors and safety > Preflight sections do not name absorb there -- absorb never
+      crosses the socket at all (it reads plugins.json and config.toml straight from
+      disk, exactly like diff's plugin/config sections), so cmd_absorb (herdr-setup)
+      deliberately does NOT call hs_require_socket -- a protocol mismatch or
+      no-server host still lets absorb run. Whoever flips this row at phase 6 should
+      either drop "absorb" from the acceptance wording to match the design doc, or
+      decide absorb should gate on the socket after all and wire it there -- phase 5
+      did not make that call unilaterally. Milestone remediation -- the gate this row
+      rests on used to fail open two ways, and both are fixed and covered in
+      herdr-setup:tests/test_preflight.sh -- hs_preflight now reports `matched` only
+      for a probe that SUCCEEDED (a fourth state, `unreachable`, carries every other
+      failure, and hs_require_socket refuses on it), and the probe reads stderr as
+      well as stdout, so an error object reported there is no longer invisible. The
+      fake herdr grew FAKE_HERDR_ERROR_CODE and FAKE_HERDR_ERROR_STREAM to express
+      those two failures at all.
+      Phase 6 wired cmd_feed (herdr-setup) to hs_require_socket, first and
+      unconditionally, and covered it end to end in
+      herdr-setup:tests/test_feed_entrypoint.sh -- feed exits 3 naming the restart
+      under a mismatch, under a mismatch WITH --dry-run, with no server, and with an
+      unreachable one, printing nothing on stdout in every case; and
+      herdr-setup:tests/test_entrypoint.sh adds the same no-server assertion at
+      dispatch level. lib/feed.py's own herdr_json refuses a result from a failed call
+      the way hs_herdr_json does, including the case the fake could not express before
+      -- an error object returned alongside exit 0 -- for which the fake grew
+      FAKE_HERDR_ERROR_EXIT (herdr-setup:tests/test_feed_resolve.py). The absorb
+      question this row's notes raised at phase 5 was already settled -- the wording
+      now reads apply, onboard and feed, matching the design doc, and absorb is
+      correctly ungated. Phase 9 wired cmd_onboard (herdr-setup) to hs_require_socket
+      too, first and unconditionally like apply and feed, and covered it end to end in
+      herdr-setup:tests/test_onboard_offer.sh (a mismatch and a missing server both
+      refuse with exit 3, naming the fix, before the detection table is ever printed)
+      and herdr-setup:tests/test_entrypoint.sh (the same no-server assertion at
+      dispatch level, alongside apply and feed's own).
+      Phase 10 -- flipped to `ci`, level references above.
+      Final-review remediation -- the gate failed open a third way, and it was the
+      worst of them. hs_preflight decided purely on the EXIT STATUS, so a server that
+      answered a well-formed error object and exited 0 was reported `matched`,
+      hs_require_socket returned 0, and apply rewrote a live config against a server
+      that had refused every call, exiting 1 rather than 3. hs_preflight now parses
+      the answer as well as the status, via a shared hs_response_error used by both
+      the probe and hs_herdr_json, and all four combinations (protocol_mismatch or
+      socket_closed, on stdout or stderr, exit 0) are covered in
+      herdr-setup:tests/test_preflight.sh. hs_herdr_json had the mirror-image hole --
+      it captured stderr separately and then never looked at it for an error object,
+      so a refusal reported there came back as a SUCCESS with the error text passed
+      through as a notice -- now also covered, both exit statuses, in the same file,
+      alongside a case proving the fix is not a blanket empty-stdout check (`server
+      reload-config` legitimately answers nothing). hs.py's herdr-error now
+      distinguishes "read it, no error key" (1) from "could not read it" (3), which
+      were collapsed into 1 and read as the former. The two readers of `herdr
+      integration status` (hs_diff_integrations, hs_detect_agents) had the same
+      exit-status-only bug and are fixed and covered in
+      herdr-setup:tests/test_diff_config.sh and
+      herdr-setup:tests/test_onboard_detect.sh.
+  - id: diff-detects-plugin-drift
+    capability: Configuration sync
+    acceptance: diff reports each manifest plugin as missing, matching its pinned ref,
+      or moved, and lists host plugins the manifest does not name as unmanaged.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    levels:
+      unit:
+      - herdr-setup:tests/test_diff_plugins.sh
+      - herdr-setup:tests/test_manifest.sh
+      - herdr-setup:tests/test_hostplugins.sh
+    status: ci
+    notes: Moved is decided by resolving the ref with git ls-remote against the commit
+      Herdr recorded. Implemented and unit-tested in phase 2
+      (herdr-setup:tests/test_diff_plugins.sh, herdr-setup:tests/test_manifest.sh,
+      herdr-setup:tests/test_hostplugins.sh) -- hs_diff_plugins covers missing/ok/moved/
+      ref-gone/unmanaged, and cmd_diff wires it to the real manifest and the host's
+      plugins.json. Milestone remediation -- "matching its pinned ref" was wrong for an
+      ANNOTATED tag. git ls-remote answers with two lines for one, and hs_resolve_ref took
+      the first, which is the tag object; Herdr records the commit, so such a plugin was
+      reported moved on every diff and reinstalled on every apply without ever converging,
+      and the design doc's own example manifest pins v0.3.3. hs_resolve_ref now asks for
+      `<ref>` and `<ref>^{}` and prefers the peeled line, and the test's fake git can
+      produce both shapes. hs_manifest_plugins also rejects a source named twice rather
+      than resolving and installing it twice.
+      Phase 10 -- flipped to `ci`, level references above.
+  - id: apply-reproduces-manifest
+    capability: Configuration sync
+    acceptance: On a host missing every manifest plugin, apply installs them at their
+      pinned refs and a following diff reports a match.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    levels:
+      unit:
+      - herdr-setup:tests/test_apply_plugins.sh
+    status: ci
+    notes: The second-machine case the tool exists for. Phase 4
+      (herdr-setup:tests/test_apply_plugins.sh) implements and unit-tests hs_apply_plugins
+      -- a missing or ref-moved manifest plugin gets exactly one
+      `plugin install <source> --ref <ref>` call (with `--yes` under HS_YES=1, none at all
+      under HS_DRY_RUN=1), an already-matching plugin gets none, and cmd_apply refuses
+      with exit 3 and makes no call at all under a protocol mismatch (hs_require_socket
+      runs first, unconditionally). The "a following diff reports a match" half of this
+      row is not separately exercised end to end -- hs_diff_plugins and hs_apply_plugins
+      share hs_manifest_plugins/hs_host_plugins/hs_resolve_ref, so a diff after a
+      successful apply reads the same host state apply just wrote, but no test drives
+      apply then diff together against one fake host. Milestone remediation -- the DEFAULT
+      install path (no --yes) sent Herdr's trust preview into a command substitution and
+      then blocked on a read behind a prompt the operator never saw, and the manifest loop
+      held stdin, so the answer would have come from plugins.list. An install without --yes
+      now runs through hs_herdr_interactive with stdio inherited, and the manifest is read
+      on fd 3. FAKE_HERDR_PROMPT gives the fake herdr a preview and a read so the path can
+      be tested at all, and FAKE_HERDR_FAIL makes the failed-install branch reachable for
+      the first time. hs_resolve_ref also asks for the peeled `^{}` line, so a plugin
+      pinned to an annotated tag converges instead of reinstalling on every apply.
+      The "a following diff reports a match" half stays exercised only via the shared
+      helper functions above, not a dedicated apply-then-diff test -- Phase 10 flips this
+      row to `ci` on that basis, not on closing that gap.
+  - id: config-splice-preserves-plugin-blocks
+    capability: Configuration sync
+    acceptance: apply updates the operator's own config lines while leaving plugin-written
+      marked blocks exactly where they were.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    levels:
+      unit:
+      - herdr-setup:tests/test_blocks.sh
+      - herdr-setup:tests/test_apply_config.sh
+      - herdr-setup:tests/test_diff_config.sh
+    status: ci
+    notes: A plugin owns its block; the tool must never eat it. Phase 3
+      (herdr-setup:tests/test_blocks.sh) builds and unit-tests the two primitives this
+      depends on -- hs_strip_plugin_blocks and hs_extract_plugin_blocks, matching the id
+      in a `# --- added by <id> ...` marker against the id in its `# --- end <id> ---`
+      rather than accepting any end marker, fatal (exit 2, naming the id) on an
+      unterminated block or a stray end marker. These are read-only primitives also used
+      by `diff`'s config section (herdr-setup:tests/test_diff_config.sh). Phase 4
+      (herdr-setup:tests/test_apply_config.sh) implements and unit-tests the actual
+      splice-and-preserve behaviour this row names -- hs_splice_config reinserts every
+      block, unchanged and markers included, into the manifest's operator-line skeleton
+      via a third `splice` walk mode that records each block's anchor as the number of
+      operator lines that preceded it on the host, byte-exact in the steady state where
+      the host's own stripped content already equals the manifest (the common case round
+      to round), and still order-preserving otherwise; hs_apply_config only writes when
+      the spliced content actually differs, backs the previous content up first, writes
+      via a temp file in the same directory and renames it over the target, and calls
+      `herdr server reload-config` exactly once. Milestone remediation -- that write was
+      also the quietest thing the tool did. It now prints the unified diff of the change
+      before making it (dry runs included), gates a write that removes lines behind --yes
+      or an answer at the terminal (exit 4, nothing written, propagated by cmd_apply),
+      takes a timestamped backup no later run overwrites, and keeps the host file's own
+      mode instead of taking it down to mktemp's 0600. hs.py's splice splits on "\n"
+      alone now, so a form feed in a config no longer becomes a real newline in the
+      operator's file, and the two sides no longer disagree on the line counts every
+      anchor in this row is measured in.
+      Phase 10 -- flipped to `ci`, level references above.
+      Final-review remediation -- two ways this write could still lose content
+      silently, both covered in herdr-setup:tests/test_apply_config.sh. The
+      shrinking-write gate counted lines with `wc -l`, which counts NEWLINES, so a
+      host config with no trailing newline counted one short and a removal was
+      invisible -- exactly the hosts the design doc's "One deliberate normalisation"
+      section is about; it counts with awk's NR now. And none of the three steps of
+      the write had its status read (the backup copy, the content write, the rename),
+      all running under the caller's `|| rc=$?` with `set -e` suppressed -- so a full
+      disk left the config unchanged or truncated, returned 0, and still called
+      reload-config. Each step is checked and returns 2 before the rename.
+  - id: absorb-apply-roundtrip-is-noop
+    capability: Configuration sync
+    acceptance: absorb followed by apply against an unchanged host makes no further
+      change, and absorb refuses to run when the manifest has uncommitted edits.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    levels:
+      unit:
+      - herdr-setup:tests/test_absorb.sh
+      - herdr-setup:tests/test_roundtrip.sh
+    status: ci
+    notes: Guards the overwrite-not-merge design against eating a hand edit.
+      Implemented and unit-tested in phase 5 (herdr-setup:tests/test_absorb.sh,
+      herdr-setup:tests/test_roundtrip.sh) -- cmd_absorb rewrites manifest/plugins.list
+      (source + requested_ref only, sorted by source, resolved_commit and managed_path
+      dropped) and manifest/config.toml (plugin-written blocks stripped) straight from
+      the host's plugins.json and config.toml on disk, refuses with exit 4 and writes
+      nothing when `git status --porcelain -- manifest/` reports anything, and refuses
+      with exit 2 rather than write a line containing $HOME or a /Users/ or /home/
+      path. test_roundtrip.sh drives absorb then apply against one unchanged fake host
+      and asserts zero plugin-install and zero reload-config calls, then a following
+      diff exits 0 -- this is phase 4's byte-exact anchor case by construction, since
+      the freshly-absorbed manifest/config.toml IS the host's own stripped content.
+      Milestone remediation -- the second half of this row's acceptance ("refuses to run
+      when the manifest has uncommitted edits") was failing open and its test could not
+      say so. hs_require_clean_manifest read git's OUTPUT and discarded its exit status,
+      so any git failure produced an empty listing, which reads as a clean tree; in a
+      sandbox that was not a git repository, absorb overwrote a hand-edited manifest and
+      exited 0. git's exit status now decides, and a non-zero one is a hard refusal
+      (exit 2) naming what git said. The test's fake git -- which ignored its arguments,
+      always exited 0, and printed a canned string, against a sandbox that was not a
+      repository -- is gone. test_absorb.sh now uses real `git init` sandboxes covering
+      clean, dirty and not-a-repository, and drives the hand-edit-survives case end to
+      end through the entrypoint.
+      Phase 10 -- flipped to `ci`, level references above.
+      Final-review remediation -- the same guard failed open once more, for a
+      different reason -- `git status --porcelain -- manifest/` says NOTHING about a
+      path git is IGNORING, which is the same empty answer a clean tree gives, so a
+      fork that keeps its manifest private had its hand edit overwritten with exit 0.
+      Untracked was caught (it shows as `??`); ignored was invisible. Every file
+      under manifest/ must now be tracked, and a file git will not vouch for is a
+      refusal (exit 4), never a clean tree. absorb's own two writes are checked too,
+      the same unchecked-write shape hs_apply_config had. Both covered in
+      herdr-setup:tests/test_absorb.sh.
+  - id: onboard-offers-stale-integration
+    capability: Agent onboarding
+    acceptance: onboard lists the agents present on the host, reports an integration
+      Herdr calls outdated with both versions, and installs a refresh only when accepted.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    levels:
+      unit:
+      - herdr-setup:tests/test_onboard_detect.sh
+      - herdr-setup:tests/test_onboard_offer.sh
+      - herdr-setup:tests/test_confirm.py
+    status: ci
+    notes: Different hosts run different agents, so this is per-host and interactive.
+      Implemented and unit-tested in phase 9 (herdr-setup:tests/test_onboard_detect.sh,
+      herdr-setup:tests/test_onboard_offer.sh) -- hs_detect_agents (lib/common.sh) reads
+      its target LIST and each target's state from `herdr integration status` itself,
+      never a list this tool maintains, and a small local table
+      (hs_agent_detect_spec) supplies only the command name and configuration
+      directory used to decide `how` a known target was detected (path, config, or
+      both); an agent neither on PATH nor with a configuration directory present is
+      omitted entirely, same as a target the table has never heard of. cmd_onboard
+      (herdr-setup) prints the table, then offers each `absent` or `outdated` agent
+      one y/n question via the existing hs_confirm (naming the agent and, for
+      outdated, both versions), installs on accept through hs_herdr_interactive (the
+      same trust-preview reasoning as hs_apply_plugins' own install path), and feeds
+      exactly the agents it actually installed via a new
+      hs_onboard_feed_adapters_dir helper -- a scratch directory holding only
+      their adapters, symlinked in, so lib/feed.py's own directory-based discovery
+      scopes the hand-off without a new CLI flag. --yes installs every offered
+      agent without asking; --dry-run prints the would-run install line for each
+      offered agent and asks nothing, matching hs_apply_plugins' own dry-run
+      precedent, and never triggers the feed hand-off (nothing was actually
+      installed to feed). hs_require_socket gates the whole command first and
+      unconditionally, matching apply and feed. The one path this phase's own tests
+      did not exercise end to end -- hs_confirm's real-terminal y/n branch, which
+      needs an actual pty to prove, the same gap tests/test_apply_config.sh already
+      carried for hs_confirm's only other caller -- is now closed, at phase 10, by
+      tests/test_confirm.py -- y/yes (and case variants) accept; n/no/an empty answer/
+      a nonsense answer decline; end-of-input declines; and a plain pipe fed "yes",
+      with no terminal at all, still declines rather than defaulting to yes. It tests
+      hs_confirm directly, once, rather than duplicating the real-pty drive per
+      caller -- cmd_onboard's and hs_apply_config's own contribution (wiring
+      hs_confirm in at the right point) stays proven by their existing no-terminal
+      and --yes coverage.
+      Phase 10 -- flipped to `ci`, level references above.
+      Final-review remediation -- "installs a refresh only when accepted" had no
+      regression guard on the half that shows the operator what they are accepting.
+      cmd_onboard calls hs_herdr_interactive for the trust preview, but the fake
+      herdr implemented FAKE_HERDR_PROMPT for `plugin install` only, so that call
+      could be reverted to hs_herdr_json and all 26 test files still passed. The fake
+      now prompts for `integration install` as well, and logs WHERE the preview went
+      (`prompt-stdout pipe|direct`) -- stdin is inherited through a command
+      substitution too, so the answer alone cannot tell the two callers apart. The
+      mutation now fails herdr-setup:tests/test_onboard_offer.sh, which also carries
+      the decision that onboard's --yes does NOT become feed's --yes -- different
+      consents, and passing one through waived a session confirmation the operator
+      was never shown.
+      The spec's post-merge Test Plan step 3 said onboard offers the refresh under a
+      protocol mismatch, which contradicts this repo's own preflight rule and the
+      socket-commands-refuse-under-mismatch row -- it now reads "onboard refuses,
+      naming the mismatch", with the refresh moved after the restart in step 5.
+  - id: feed-reports-live-sessions
+    capability: Agent onboarding
+    acceptance: feed reports a session id for every live agent pane and Herdr persists
+      a record per pane; a following server restart brings each pane back running its
+      agent's resume command rather than a bare shell.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    levels:
+      unit:
+      - herdr-setup:tests/test_feed_probe.py
+      - herdr-setup:tests/test_feed_resolve.py
+      - herdr-setup:tests/test_feed_report.py
+      - herdr-setup:tests/test_contract.py
+      - herdr-setup:tests/test_feed_entrypoint.sh
+      - herdr-setup:tests/test_adapter_claude.py
+      - herdr-setup:tests/test_adapter_codex.py
+      - herdr-setup:tests/test_adapter_opencode.py
+      - herdr-setup:tests/test_adapter_copilot.py
+    status: skipped
+    notes: The end-to-end reason the tool exists. Phase 6 built the runner and the
+      adapter seam -- herdr-setup:lib/feed.py (discovery, probe, pane gathering,
+      resolve, the decision, the report), herdr-setup:docs/adapters.md (the written
+      contract), and cmd_feed in herdr-setup wired after hs_require_socket. Covered by
+      herdr-setup:tests/test_feed_probe.py, herdr-setup:tests/test_feed_resolve.py,
+      herdr-setup:tests/test_feed_report.py (a real AF_UNIX server records the
+      pane.report_agent_session lines, and a pty drives the prompt),
+      herdr-setup:tests/test_contract.py (every example is extracted from the contract
+      document and executed) and herdr-setup:tests/test_feed_entrypoint.sh. Phases 7
+      and 8 then built the four adapters against fixtures -- Claude Code (exact, by
+      pid, herdr-setup:tests/test_adapter_claude.py), Codex, opencode and Copilot CLI
+      (heuristic, by directory, herdr-setup:tests/test_adapter_codex.py,
+      herdr-setup:tests/test_adapter_opencode.py,
+      herdr-setup:tests/test_adapter_copilot.py, the last one a construction rather
+      than a capture, ships `unverified=true`) -- so an agent can now actually be fed
+      in CI, against the fake herdr and fixture session stores, which is what the
+      level references above prove.
+      Phase 10 -- status is `skipped`, not `ci`, and stays that way -- the automated
+      half above runs in CI on every PR (.github/workflows/ci.yml), but this row's
+      OWN acceptance statement is end-to-end against a real Herdr and a real
+      restart -- "Herdr persists a record" and "a following server restart brings
+      each pane back" are not something a fake herdr and fixture session stores can
+      prove, and Copilot stays unverified until a host with the real CLI confirms a
+      resume. That live half is the spec's post-merge test plan
+      (herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md#test-plan),
+      run once by the operator, not automated here -- `skipped` records that the
+      verification exists and does not run in CI, which is the honest status per this
+      file's own schema, not a debt phase 10 left behind.
+      Final-review remediation -- the runner did not enforce the adapter contract's
+      own confidence rule. docs/adapters.md says a `heuristic` adapter may not
+      promote a match to `exact`, but decide() read the candidate's confidence alone,
+      so a third-party adapter declaring `heuristic` could return an `exact`
+      candidate and have it reported unasked, non-interactive, without --yes. Both
+      confidences are now required to agree, on the one seam whose purpose is
+      accepting adapters this repository did not write
+      (herdr-setup:tests/test_feed_report.py). adapters/opencode also raised a Python
+      traceback where a clean operator message belongs when the database could not be
+      opened -- a hot write-ahead log is the realistic case, since opencode runs in
+      WAL mode and this adapter opens `mode=ro` -- now one sentence and exit 2
+      (herdr-setup:tests/test_adapter_opencode.py).

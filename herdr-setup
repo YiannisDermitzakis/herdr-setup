@@ -1,0 +1,470 @@
+#!/usr/bin/env bash
+# herdr-setup: reproduce and sync a Herdr setup across machines.
+#
+# See docs/superpowers/specs/2026-09-08-herdr-setup-design.md for the design.
+# Bash 3.2 floor (macOS): no associative arrays, no mapfile, no `local -n`.
+# Python comes from uv, not from the host -- see AGENTS.md.
+set -euo pipefail
+
+# Resolve the directory this script lives in, following symlinks, so it can
+# be invoked as (or symlinked from) anywhere and still find lib/ next to it.
+hs_resolve_root() {
+  local target="$1"
+  local dir
+  while [ -h "$target" ]; do
+    dir="$(cd -P "$(dirname "$target")" && pwd)"
+    target="$(readlink "$target")"
+    case "$target" in
+      /*) ;;
+      *) target="$dir/$target" ;;
+    esac
+  done
+  cd -P "$(dirname "$target")" && pwd
+}
+
+HS_ROOT="$(hs_resolve_root "$0")"
+# shellcheck source=lib/common.sh
+. "$HS_ROOT/lib/common.sh"
+
+hs_usage() {
+  cat <<'EOF'
+usage: herdr-setup [--dry-run] [--yes] <command> [args]
+
+commands:
+  diff      report how this host differs from the checkout (read-only)
+  apply     install missing plugins and splice the checkout's config in
+  absorb    rewrite the checkout from this host's Herdr configuration
+  onboard   detect coding agents and offer their Herdr integration
+  feed      report live agent sessions to Herdr so a restart can resume them
+
+  --dry-run print what would change, change nothing
+  --yes     answer this command's own prompts with yes
+
+`onboard --yes` accepts the integration installs it offers. It does NOT
+carry into the feed step that follows: a pane whose session is uncertain is
+still a question, and answering it wrongly resumes the wrong conversation.
+Run `herdr-setup feed --yes` deliberately to waive that one.
+EOF
+}
+
+HS_DRY_RUN=0
+HS_YES=0
+HS_COMMAND=""
+HS_ARGS=()
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --help|-h)
+      hs_usage
+      exit 0
+      ;;
+    --dry-run)
+      HS_DRY_RUN=1
+      shift
+      ;;
+    --yes)
+      HS_YES=1
+      shift
+      ;;
+    diff|apply|absorb|onboard|feed)
+      if [ -z "$HS_COMMAND" ]; then
+        HS_COMMAND="$1"
+      else
+        HS_ARGS+=("$1")
+      fi
+      shift
+      ;;
+    *)
+      if [ -z "$HS_COMMAND" ]; then
+        echo "herdr-setup: unknown subcommand '$1'" >&2
+        exit 2
+      fi
+      HS_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$HS_COMMAND" ]; then
+  hs_usage >&2
+  exit 2
+fi
+
+export HS_DRY_RUN
+export HS_YES
+
+# cmd_diff: read-only. hs_preflight_banner prints first, so a mismatched
+# or serverless host says so up front. Each section below reports its own
+# drift and contributes to the overall exit status; none of them stop
+# early on a soft failure, so one section's drift doesn't hide another
+# section's report. A section is run with `|| section_rc=$?` (never as a
+# bare statement) so a nonzero exit doesn't trip this script's `set -e`
+# before the status is captured. The integration section never affects
+# the exit status at all (informational only -- integrations aren't in
+# the manifest), so it is invoked with `|| true` and never contributes to
+# $rc.
+#
+# Exit status: 2 if any section hit a hard parse error (missing/malformed
+# manifest or host state) -- which also skips every section after it --
+# else 1 if anything drifted, else 0.
+cmd_diff() {
+  local rc=0
+  local plugins_rc=0
+  local config_rc=0
+
+  hs_preflight_banner
+
+  hs_diff_plugins "$HS_ROOT/manifest/plugins.list" "$(hs_plugins_json_path)" || plugins_rc=$?
+
+  if [ "$plugins_rc" -eq 2 ]; then
+    return 2
+  fi
+  if [ "$plugins_rc" -ne 0 ]; then
+    rc=1
+  fi
+
+  hs_diff_config "$(hs_config_toml_path)" "$HS_ROOT/manifest/config.toml" || config_rc=$?
+
+  if [ "$config_rc" -eq 2 ]; then
+    return 2
+  fi
+  if [ "$config_rc" -ne 0 ]; then
+    rc=1
+  fi
+
+  hs_diff_integrations || true
+
+  return "$rc"
+}
+# cmd_apply: installs missing/moved plugins and splices the manifest's
+# config into the host, in that order. hs_require_socket runs FIRST and
+# unconditionally -- unlike cmd_diff, apply needs the socket (to install
+# plugins and to reload the host's config) and must not proceed to a
+# partial result under a protocol mismatch, matching the design doc's
+# "apply, onboard, and feed stop with one line naming the mismatch ...
+# rather than proceeding to a confusing partial result." This holds even
+# under --dry-run: a dry run's whole point is to show what a real apply
+# would do, and a mismatched host cannot answer that either.
+#
+# Both halves are invoked as `section || section_rc=$?` (never bare),
+# same as cmd_diff, because of `set -e`. A hard error (2) from either
+# section short-circuits the other and returns 2 immediately; a refused
+# config write (4, hs_apply_config's shrinking-write gate) is passed
+# through unchanged, so "refused, nothing written" stays distinguishable
+# from "tried and failed" -- the same meaning exit 4 carries for absorb's
+# dirty-manifest guard. Otherwise a non-zero rc from either section (a
+# failed install or a failed reload-config call) makes the whole command
+# exit 1.
+cmd_apply() {
+  hs_require_socket || return 3
+
+  local plugins_rc=0
+  local config_rc=0
+
+  hs_apply_plugins "$HS_ROOT/manifest/plugins.list" "$(hs_plugins_json_path)" || plugins_rc=$?
+  if [ "$plugins_rc" -eq 2 ]; then
+    return 2
+  fi
+
+  hs_apply_config "$(hs_config_toml_path)" "$HS_ROOT/manifest/config.toml" || config_rc=$?
+  if [ "$config_rc" -eq 2 ]; then
+    return 2
+  fi
+  if [ "$config_rc" -eq 4 ]; then
+    return 4
+  fi
+
+  if [ "$plugins_rc" -ne 0 ] || [ "$config_rc" -ne 0 ]; then
+    return 1
+  fi
+  return 0
+}
+# cmd_absorb: the reverse of apply -- rewrites manifest/plugins.list and
+# manifest/config.toml FROM the host's own Herdr state (plugins.json and
+# config.toml, both read straight from disk, exactly like the plugin and
+# config sections of `diff`). It never calls herdr at all, so unlike
+# apply/onboard/feed it does not gate on hs_require_socket -- there is no
+# socket call here to be blocked by a protocol mismatch.
+#
+# It overwrites rather than merges, so hs_require_clean_manifest runs
+# first and unconditionally: a dirty manifest/ (uncommitted changes,
+# hand-edited since the last absorb) refuses the whole command before
+# anything is read from the host, exit 4. Every line of both files is then
+# checked with hs_absorb_check_no_home_path before anything is written or
+# printed -- this repository is public, and absorb is the one command most
+# able to leak a real path into it -- a hit refuses with exit 2 and writes
+# nothing. --dry-run prints both files' content to stdout and writes
+# neither. A real run writes each file via a temporary file in the
+# manifest directory, then renames it over the target, so neither file is
+# ever observed half-written; nothing outside the manifest directory is
+# touched.
+cmd_absorb() {
+  local manifest_dir="$HS_ROOT/manifest"
+  local plugins_out="$manifest_dir/plugins.list"
+  local config_out="$manifest_dir/config.toml"
+
+  hs_require_clean_manifest "$HS_ROOT" || return "$?"
+
+  local plugins_tmp config_tmp
+  plugins_tmp="$(mktemp)" || return 2
+  config_tmp="$(mktemp)" || { rm -f "$plugins_tmp"; return 2; }
+
+  local rc=0
+  hs_absorb_plugins "$(hs_plugins_json_path)" > "$plugins_tmp" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$plugins_tmp" "$config_tmp"
+    return 2
+  fi
+
+  hs_absorb_config "$(hs_config_toml_path)" > "$config_tmp" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$plugins_tmp" "$config_tmp"
+    return 2
+  fi
+
+  if ! hs_absorb_check_no_home_path "$plugins_tmp"; then
+    echo "herdr-setup: absorb: refusing to write $plugins_out: it would contain a home directory path" >&2
+    rm -f "$plugins_tmp" "$config_tmp"
+    return 2
+  fi
+  if ! hs_absorb_check_no_home_path "$config_tmp"; then
+    echo "herdr-setup: absorb: refusing to write $config_out: it would contain a home directory path" >&2
+    rm -f "$plugins_tmp" "$config_tmp"
+    return 2
+  fi
+
+  if [ "$HS_DRY_RUN" -eq 1 ]; then
+    echo "+ $plugins_out"
+    cat "$plugins_tmp"
+    echo "+ $config_out"
+    cat "$config_tmp"
+    rm -f "$plugins_tmp" "$config_tmp"
+    return 0
+  fi
+
+  mkdir -p "$manifest_dir"
+
+  local write_tmp
+  write_tmp="$(mktemp "$manifest_dir/.herdr-setup-absorb.XXXXXX")" || {
+    rm -f "$plugins_tmp" "$config_tmp"
+    return 2
+  }
+  # Both steps of both writes are CHECKED, the same rule hs_apply_config
+  # follows: neither the content write nor the rename used to have its status
+  # read, so a full disk left the manifest unchanged -- or left plugins.list
+  # rewritten and config.toml not -- with nothing said about it. The operator
+  # then commits a manifest they believe was refreshed.
+  if ! cat "$plugins_tmp" > "$write_tmp"; then
+    echo "herdr-setup: absorb: could not write $plugins_out; nothing was changed." >&2
+    rm -f "$plugins_tmp" "$config_tmp" "$write_tmp"
+    return 2
+  fi
+  if ! mv -f "$write_tmp" "$plugins_out"; then
+    echo "herdr-setup: absorb: could not install $plugins_out; nothing was changed." >&2
+    rm -f "$plugins_tmp" "$config_tmp" "$write_tmp"
+    return 2
+  fi
+  rm -f "$plugins_tmp"
+
+  write_tmp="$(mktemp "$manifest_dir/.herdr-setup-absorb.XXXXXX")" || {
+    rm -f "$config_tmp"
+    return 2
+  }
+  if ! cat "$config_tmp" > "$write_tmp"; then
+    echo "herdr-setup: absorb: could not write $config_out; $plugins_out was already updated." >&2
+    rm -f "$config_tmp" "$write_tmp"
+    return 2
+  fi
+  if ! mv -f "$write_tmp" "$config_out"; then
+    echo "herdr-setup: absorb: could not install $config_out; $plugins_out was already updated." >&2
+    rm -f "$config_tmp" "$write_tmp"
+    return 2
+  fi
+  rm -f "$config_tmp"
+
+  return 0
+}
+# cmd_onboard: detect coding agents on this host, offer each one's Herdr
+# integration individually, install what is accepted, and feed exactly the
+# agents this run changed.
+#
+# hs_require_socket runs FIRST and unconditionally, like cmd_apply's and
+# cmd_feed's -- both `herdr integration install` and the feed hand-off cross
+# the socket, and the design doc's "apply, onboard, and feed stop ... rather
+# than proceeding to a confusing partial result" names onboard explicitly.
+# Nothing -- not even the detection table -- is printed under a mismatch.
+#
+# hs_detect_agents supplies the rows, read into a temp file and then read on
+# fd 3 for the offer loop below, never on stdin: a `while read` loop that
+# read the table on stdin would answer hs_confirm's own read with the NEXT
+# agent's detection line instead of the operator's keystroke -- the exact
+# trap hs_apply_plugins' manifest loop already had to avoid.
+#
+# Under --yes every offered agent (state absent or outdated) is installed
+# without asking, matching hs_apply_plugins' own --yes shortcut. Otherwise
+# hs_confirm asks, once per offered agent, naming the agent and -- for an
+# outdated one -- both versions; hs_confirm's own "no terminal to confirm
+# on" refusal (lib/common.sh) is exactly the non-interactive contract this
+# command needs, so nothing here re-implements it. An agent already
+# `current` is never asked about and never appears in the install loop at
+# all. --dry-run never asks either: it prints the command each offered
+# agent would run, the same "show what a real run would do, make none"
+# contract --dry-run keeps everywhere else, so a script running with
+# --dry-run never blocks on a question it cannot answer.
+#
+# Each accepted install runs through hs_herdr_interactive, not hs_herdr_json
+# -- `herdr integration install` shows its own trust preview the same way
+# `plugin install` does (hs_apply_plugins' own comment explains why a
+# command substitution would swallow it). A failed install counts against
+# the exit status but does not stop the remaining agents from being offered.
+#
+# feed then runs once, through hs_onboard_feed_adapters_dir, scoped to
+# exactly the agents this run actually installed or refreshed -- never the
+# full agent set, and never anything under --dry-run, since nothing was
+# actually installed to feed.
+cmd_onboard() {
+  hs_require_socket || return 3
+
+  local table_tmp
+  table_tmp="$(mktemp)" || return 2
+  if ! hs_detect_agents > "$table_tmp"; then
+    rm -f "$table_tmp"
+    return 2
+  fi
+
+  if [ ! -s "$table_tmp" ]; then
+    echo "onboard: no coding agent detected on this host."
+    rm -f "$table_tmp"
+    return 0
+  fi
+
+  echo "onboard: detected agents"
+  local d_target d_how d_state d_detail
+  while IFS=$'\t' read -r d_target d_how d_state d_detail; do
+    [ -z "$d_target" ] && continue
+    if [ -n "$d_detail" ]; then
+      printf '  %s\t%s\t%s (%s)\n' "$d_target" "$d_how" "$d_state" "$d_detail"
+    else
+      printf '  %s\t%s\t%s\n' "$d_target" "$d_how" "$d_state"
+    fi
+  done < "$table_tmp"
+
+  local rc=0
+  local fed_agents=""
+
+  local t_target t_state t_detail
+  # The second column (how the agent was detected) is printed above but not
+  # needed for the install decision here; read into "_", which shellcheck
+  # and the reader both recognise as deliberately discarded.
+  while IFS=$'\t' read -r t_target _ t_state t_detail <&3; do
+    [ -z "$t_target" ] && continue
+    case "$t_state" in
+      absent|outdated) ;;
+      *) continue ;;
+    esac
+
+    local question
+    if [ "$t_state" = "outdated" ]; then
+      question="$t_target is outdated ($t_detail); install the Herdr integration"
+    else
+      question="$t_target has no Herdr integration; install it"
+    fi
+
+    if [ "$HS_DRY_RUN" -eq 1 ]; then
+      echo "+ herdr integration install $t_target"
+      continue
+    fi
+
+    local do_install=0
+    if [ "$HS_YES" -eq 1 ]; then
+      do_install=1
+    elif hs_confirm "$question"; then
+      do_install=1
+    fi
+
+    if [ "$do_install" -eq 1 ]; then
+      local install_rc=0
+      hs_herdr_interactive integration install "$t_target" || install_rc=$?
+      if [ "$install_rc" -ne 0 ]; then
+        rc=1
+      else
+        fed_agents="$fed_agents $t_target"
+      fi
+    fi
+  done 3< "$table_tmp"
+
+  rm -f "$table_tmp"
+
+  if [ -n "$fed_agents" ]; then
+    local feed_dir feed_rc=0
+    # Intentional word-splitting on $fed_agents: it is a list of agent
+    # names built one space-separated word at a time above, the same
+    # pattern hs_manifest_plugins documents for its own field-count check.
+    # shellcheck disable=SC2086
+    feed_dir="$(hs_onboard_feed_adapters_dir "$HS_ROOT/adapters" $fed_agents)" || {
+      echo "herdr-setup: onboard: could not build a scratch adapters directory for feed" >&2
+      return 1
+    }
+
+    # --yes deliberately does NOT carry into feed. They are different
+    # consents: onboard's --yes accepts the integration installs it just
+    # offered, while feed's --yes waives the "which session is this pane in?"
+    # confirmation the whole design is organised around -- and answering that
+    # one wrongly resumes somebody else's conversation in a live pane.
+    # Passing one flag through as the other let an operator waive a question
+    # they were never shown. An uncertain pane is skipped here and said so;
+    # `herdr-setup feed --yes` is how it gets waived, on purpose.
+    local feed_args
+    feed_args=(--adapters "$feed_dir" --socket "$(hs_socket_path)")
+
+    hs_feed "${feed_args[@]}" || feed_rc=$?
+    rm -rf "$feed_dir"
+    if [ "$feed_rc" -ne 0 ]; then
+      rc=1
+    fi
+  fi
+
+  return "$rc"
+}
+
+# cmd_feed: report every live agent pane's session to Herdr, so a server
+# restart brings the pane back running its agent's resume command instead of
+# a bare shell.
+#
+# hs_require_socket runs FIRST and unconditionally, like cmd_apply's. feed is
+# named in the design doc's preflight section and in the acceptance row
+# socket-commands-refuse-under-mismatch, and it is the command the gate was
+# built for: a mismatched Herdr answers `agent list` with a JSON error object,
+# and a run that read that as zero panes would print a clean summary having
+# fed nothing -- the exact failure that left 21 sessions stranded. The gate
+# holds under --dry-run too: a dry run's job is to say what a real run would
+# do, and a host that refuses every call cannot answer that either.
+#
+# The work itself is lib/feed.py's, reached through hs_feed (uv). Its stdio
+# is inherited, because feed asks the operator which session a pane is in
+# whenever it is not certain. Its exit status is this command's: 0 reported
+# what it was sure of, 1 something did not get through, 2 Herdr could not be
+# read.
+cmd_feed() {
+  local args
+  args=(--adapters "$HS_ROOT/adapters" --socket "$(hs_socket_path)")
+
+  hs_require_socket || return 3
+
+  if [ "$HS_DRY_RUN" -eq 1 ]; then
+    args+=(--dry-run)
+  fi
+  if [ "$HS_YES" -eq 1 ]; then
+    args+=(--yes)
+  fi
+
+  local rc=0
+  hs_feed "${args[@]}" || rc=$?
+  return "$rc"
+}
+
+# bash 3.2 (and up to 4.3) treats expansion of an EMPTY array under `set -u`
+# as an unbound variable, and HS_ARGS is empty for every documented
+# invocation. The `+` form expands to nothing at all when the array is
+# empty, which is the portable idiom.
+"cmd_$HS_COMMAND" ${HS_ARGS[@]+"${HS_ARGS[@]}"}

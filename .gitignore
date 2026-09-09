@@ -2,3 +2,4 @@
 __pycache__/
 .fr-isolation
 .DS_Store
+docs/acceptance/report.html

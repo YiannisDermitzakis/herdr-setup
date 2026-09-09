@@ -1,0 +1,70 @@
+schema_version: 2
+phase:
+  number: 5
+  title: absorb
+  tag: agentic
+  depends_on:
+  - 2
+  - 3
+  tracking_issue: null
+  acceptance:
+  - absorb-apply-roundtrip-is-noop
+tasks:
+- number: 1
+  title: Writing the manifest from the host
+  steps:
+  - id: P5.T1.S1
+    text: |
+      Add tests/test_absorb.sh with FAILING asserts: absorb rewrites
+      manifest/plugins.list from the host plugins.json using source.owner,
+      source.repo and source.requested_ref, one line per plugin sorted by
+      source, dropping source.resolved_commit and source.managed_path entirely;
+      it rewrites manifest/config.toml as the host config with plugin-written
+      blocks stripped; it writes a short header comment naming the tool but NOT
+      the hostname, username or any absolute path; it touches nothing outside
+      the manifest directory; `--dry-run` prints both files to stdout and
+      writes neither.
+      Run -> expect failure.
+  - id: P5.T1.S2
+    text: |
+      Implement cmd_absorb. Assert in code that no produced line contains
+      `$HOME` or a leading `/Users/` or `/home/`, and fail loudly if one does,
+      since this repository is public. Run `bash tests/run.sh` -> green.
+- number: 2
+  title: Dirty-manifest guard and the round trip
+  steps:
+  - id: P5.T2.S1
+    text: |
+      Add FAILING asserts to tests/test_absorb.sh: with a fake git on PATH
+      reporting the manifest directory as dirty, absorb exits 4 without writing
+      anything and names the files that are uncommitted; with a clean tree it
+      proceeds. Add tests/test_roundtrip.sh asserting that absorb followed by
+      apply against an unchanged fake host makes no further change: the second
+      diff exits 0 and the fake herdr log records no install call.
+      Run -> expect failure.
+  - id: P5.T2.S2
+    text: |
+      Implement the guard with `git status --porcelain -- manifest/` and make
+      the round trip pass. Run `bash tests/run.sh` -> green.
+state:
+  steps:
+    P5.T1.S1:
+      state: x
+      ticked_at: '2026-09-08T09:39:49+00:00'
+      note: null
+    P5.T1.S2:
+      state: x
+      ticked_at: '2026-09-08T09:39:51+00:00'
+      note: null
+    P5.T2.S1:
+      state: x
+      ticked_at: '2026-09-08T09:39:53+00:00'
+      note: null
+    P5.T2.S2:
+      state: x
+      ticked_at: '2026-09-08T09:39:55+00:00'
+      note: null
+  completion:
+    at: '2026-09-08T09:39:56+00:00'
+    note: null
+    observed_prs: []

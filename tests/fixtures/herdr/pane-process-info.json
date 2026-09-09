@@ -1,0 +1,36 @@
+{
+  "id": "cli:pane:process_info",
+  "result": {
+    "type": "pane_process_info",
+    "process_info": {
+      "pane_id": "w2:p2",
+      "shell_pid": 3285,
+      "foreground_process_group_id": 38080,
+      "foreground_processes": [
+        {
+          "pid": 38480,
+          "name": "node",
+          "argv0": "node",
+          "argv": [
+            "node",
+            "/home/placeholder-user/.example-plugin/scripts/mcp-server.cjs"
+          ],
+          "cmdline": "node /home/placeholder-user/.example-plugin/scripts/mcp-server.cjs",
+          "cwd": "/work/beta"
+        },
+        {
+          "pid": 38080,
+          "name": "2.1.260",
+          "argv0": "claude",
+          "argv": [
+            "claude",
+            "--resume",
+            "fix-image-size-check"
+          ],
+          "cmdline": "claude --resume fix-image-size-check",
+          "cwd": "/work/beta"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,11 @@
+# tests/fixtures/manifest_valid.list
+#
+# A well-formed plugins.list: comments and blank lines are ignored, leading/
+# trailing whitespace on a real line is stripped, and a source with a subdir
+# keeps the subdir in the source field.
+
+kryptamine/herdr-auto-title              v0.3.3
+
+# a plugin pinned to a branch rather than a tag
+ezcorp-org/herdr-pc-ram-and-cpu-usage-overlay   main
+   some-org/some-repo/tools/subdir   v1.2

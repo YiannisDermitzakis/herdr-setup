@@ -1,0 +1,113 @@
+schema_version: 2
+phase:
+  number: 2
+  title: Manifest and host plugin readers, and `diff` for plugins
+  tag: agentic
+  depends_on:
+  - 1
+  tracking_issue: null
+  acceptance:
+  - diff-detects-plugin-drift
+  - diff-runs-under-protocol-mismatch
+tasks:
+- number: 1
+  title: Manifest plugin list parser
+  steps:
+  - id: P2.T1.S1
+    text: |
+      Add tests/test_manifest.sh with FAILING asserts for `hs_manifest_plugins
+      <file>`, which prints one `<owner>/<repo>[/<subdir>]<TAB><ref>` line per
+      entry: blank lines and `#` comments are ignored; leading and trailing
+      whitespace is stripped; a line with one field or three fields is a fatal
+      error naming the file and line number, exit 2; `owner/repo/subdir v1.2`
+      keeps the subdir in the source field. Include a fixture manifest under
+      tests/fixtures/.
+      Run -> expect failure.
+  - id: P2.T1.S2
+    text: |
+      Implement hs_manifest_plugins in lib/common.sh with a plain `while read`
+      loop. Run `bash tests/run.sh` -> green.
+- number: 2
+  title: Host plugin reader, from disk
+  steps:
+  - id: P2.T2.S1
+    text: |
+      Add tests/test_hostplugins.sh with FAILING asserts for `hs_host_plugins
+      <plugins.json>`, printing one
+      `<plugin_id><TAB><owner>/<repo>[/<subdir>]<TAB><requested_ref><TAB><resolved_commit>`
+      line per entry, sorted by plugin_id: it reads the FILE and never invokes
+      herdr, so it still works with FAKE_HERDR_PROTOCOL_MISMATCH=1; a missing
+      file yields no output and exit 0 (a host with no plugins); a malformed
+      file is a fatal error, exit 2. Add a fixture plugins.json with two
+      entries shaped like herdr 0.8.2 writes them (source.kind github,
+      source.owner, source.repo, source.requested_ref, source.resolved_commit,
+      source.managed_path).
+      Run -> expect failure.
+  - id: P2.T2.S2
+    text: |
+      Implement hs_host_plugins on top of `hs_py host-plugins`, a subcommand
+      of the pinned PEP 723 uv script lib/hs.py. jq is not available and must
+      not be assumed.
+      Run `bash tests/run.sh` -> green.
+- number: 3
+  title: diff for plugins
+  steps:
+  - id: P2.T3.S1
+    text: |
+      Add tests/test_diff_plugins.sh with FAILING asserts: a manifest plugin
+      absent from the host prints `missing`; one whose recorded resolved_commit
+      equals what the ref resolves to prints `ok`; one where they differ prints
+      `moved` with both short shas; a host plugin absent from the manifest
+      prints `unmanaged`; exit is 0 when everything is `ok` or `unmanaged` and
+      1 when anything is `missing` or `moved`. Ref resolution goes through
+      `hs_resolve_ref <source> <ref>`, stubbed in the test by a fake git on
+      PATH answering `ls-remote`. Assert the whole command also succeeds with
+      FAKE_HERDR_PROTOCOL_MISMATCH=1.
+      Run -> expect failure.
+  - id: P2.T3.S2
+    text: |
+      Implement hs_resolve_ref (`git ls-remote <https url> <ref>`, empty output
+      means the ref is gone, which reports as `moved` with a note) and the
+      plugin section of cmd_diff. Run `bash tests/run.sh` -> green.
+  - id: P2.T3.S3
+    text: |
+      OPTIONAL refactor: if the plugin comparison grew a long inline pipeline,
+      extract it into `hs_compare_plugins` in lib/common.sh, leaving cmd_diff
+      as presentation only. Stay green, add no behaviour. Skip if there is
+      nothing to clean.
+state:
+  steps:
+    P2.T1.S1:
+      state: x
+      ticked_at: '2026-09-08T08:15:25+00:00'
+      note: null
+    P2.T1.S2:
+      state: x
+      ticked_at: '2026-09-08T08:15:27+00:00'
+      note: null
+    P2.T2.S1:
+      state: x
+      ticked_at: '2026-09-08T08:15:29+00:00'
+      note: null
+    P2.T2.S2:
+      state: x
+      ticked_at: '2026-09-08T08:15:31+00:00'
+      note: null
+    P2.T3.S1:
+      state: x
+      ticked_at: '2026-09-08T08:15:33+00:00'
+      note: null
+    P2.T3.S2:
+      state: x
+      ticked_at: '2026-09-08T08:15:34+00:00'
+      note: null
+    P2.T3.S3:
+      state: '-'
+      ticked_at: '2026-09-08T08:15:36+00:00'
+      note: hs_diff_plugins already lives in lib/common.sh, not an inline pipeline
+        in cmd_diff -- built that way from the start (P2.T3.S2), so there was nothing
+        left to extract. cmd_diff stayed presentation-only (rc accumulation) throughout.
+  completion:
+    at: '2026-09-08T08:15:44+00:00'
+    note: null
+    observed_prs: []

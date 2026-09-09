@@ -1,0 +1,187 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.13"
+# dependencies = []
+# ///
+"""adapters/codex -- Codex CLI, heuristic, by directory.
+
+Codex keeps no per-process session file. Instead it writes one rollout file
+per session at
+`<config>/sessions/<yyyy>/<mm>/<dd>/rollout-<timestamp>-<id>.jsonl`, whose
+FIRST line is a `session_meta` record carrying the working directory the
+session started in. Two panes open in the same directory look identical to
+this adapter and one of them may well be wrong, so it is `heuristic` and
+never promotes a lone match to `exact` -- see docs/adapters.md.
+
+`<config>` is `$CODEX_HOME` if set, else `$HOME/.codex`, mirroring how
+adapters/claude resolves `$CLAUDE_CONFIG_DIR`. Codex CLI itself honours
+`$CODEX_HOME` for this same directory.
+
+See tests/fixtures/codex/README.md for where the shape below comes from --
+a capture, not a guess, per the discipline tests/fixtures/herdr/ established.
+
+Two performance details the phase's own brief calls for:
+
+- **Only the first line of each rollout is read.** The rest of the file is
+  the actual transcript, which can be arbitrarily long; this adapter never
+  needs it.
+- **The scan is bounded to the newest 30 day directories.** A long history
+  must not make `feed` slow. Day-directory names are always zero-padded
+  (`yyyy`, `mm`, `dd`), so sorting them as strings is already chronological
+  order -- no integer parsing needed to find the newest ones.
+
+Never opens the Herdr socket. The runner decides; this adapter only answers.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+AGENT = "codex"
+SOURCE = "herdr:codex"
+
+MAX_DAY_DIRS = 30
+
+
+def config_dir() -> Path:
+    override = os.environ.get("CODEX_HOME")
+    if override:
+        return Path(override)
+    return Path.home() / ".codex"
+
+
+def sessions_dir() -> Path:
+    return config_dir() / "sessions"
+
+
+def newest_day_dirs(root: Path, limit: int = MAX_DAY_DIRS) -> list[Path]:
+    """The `limit` newest `<yyyy>/<mm>/<dd>` directories under `root`.
+
+    Zero-padded names sort chronologically as plain strings, so this needs
+    no date parsing. Anything that is not a directory, at any level, is
+    quietly skipped rather than raised on -- a stray file here is not this
+    adapter's problem to fail over.
+    """
+    days = []
+    if not root.is_dir():
+        return days
+    for year_dir in root.iterdir():
+        if not year_dir.is_dir():
+            continue
+        for month_dir in year_dir.iterdir():
+            if not month_dir.is_dir():
+                continue
+            for day_dir in month_dir.iterdir():
+                if not day_dir.is_dir():
+                    continue
+                days.append(day_dir)
+    days.sort(key=lambda p: (p.parent.parent.name, p.parent.name, p.name), reverse=True)
+    return days[:limit]
+
+
+def read_session_meta(path: Path) -> dict | None:
+    """The `payload` of a rollout's first line, or None if it is not usable.
+
+    None covers every way a rollout can fail to answer: unreadable, not
+    JSON, JSON but not an object, or an object whose `type` is not
+    `session_meta`. All are skipped, never fatal -- one broken or
+    in-progress rollout must not stop the others from being found.
+    """
+    try:
+        with path.open(encoding="utf-8") as handle:
+            first_line = handle.readline()
+    except OSError:
+        return None
+    if not first_line.strip():
+        return None
+    try:
+        record = json.loads(first_line)
+    except ValueError:
+        return None
+    if not isinstance(record, dict) or record.get("type") != "session_meta":
+        return None
+    payload = record.get("payload")
+    return payload if isinstance(payload, dict) else None
+
+
+def label_for(payload: dict) -> str:
+    timestamp = payload.get("timestamp")
+    return str(timestamp) if timestamp else str(payload.get("id", ""))
+
+
+def sort_key(payload: dict) -> str:
+    timestamp = payload.get("timestamp")
+    return str(timestamp) if isinstance(timestamp, str) else ""
+
+
+def sessions_for_cwd(cwd: str) -> list[dict]:
+    """Every session_meta payload under `cwd`, newest first."""
+    matches = []
+    for day_dir in newest_day_dirs(sessions_dir()):
+        for rollout in sorted(day_dir.glob("rollout-*.jsonl")):
+            payload = read_session_meta(rollout)
+            if payload is None or payload.get("cwd") != cwd:
+                continue
+            matches.append((payload, rollout))
+    matches.sort(key=lambda item: sort_key(item[0]), reverse=True)
+    return [payload for payload, _rollout in matches]
+
+
+def candidates_for(cwd) -> list[dict]:
+    if not isinstance(cwd, str) or not cwd:
+        return []
+    candidates = []
+    for payload in sessions_for_cwd(cwd):
+        session_id = payload.get("id")
+        if not isinstance(session_id, str) or not session_id:
+            continue
+        candidates.append(
+            {
+                "session_id": session_id,
+                "label": label_for(payload),
+                "confidence": "heuristic",
+            }
+        )
+    return candidates
+
+
+def cmd_probe() -> int:
+    available = sessions_dir().is_dir()
+    print(
+        json.dumps(
+            {
+                "agent": AGENT,
+                "source": SOURCE,
+                "available": available,
+                "confidence": "heuristic",
+            }
+        )
+    )
+    return 0
+
+
+def cmd_resolve() -> int:
+    payload = json.loads(sys.stdin.read() or "{}")
+    panes = payload.get("panes") or []
+    results = [
+        {"pane_id": pane.get("pane_id"), "candidates": candidates_for(pane.get("cwd"))}
+        for pane in panes
+    ]
+    print(json.dumps({"results": results}))
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) == 1 and argv[0] == "probe":
+        return cmd_probe()
+    if len(argv) == 1 and argv[0] == "resolve":
+        return cmd_resolve()
+    sys.stderr.write("usage: adapters/codex probe|resolve\n")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# tests/helpers/fake-herdr
+#
+# A stand-in for the real `herdr` command line, so tests never touch a real
+# Herdr, a real socket, or the operator's home directory. Put this directory
+# on PATH ahead of the real one (tests/run.sh does this for every test file).
+# lib/common.sh and the entrypoint call the bare `herdr` command, so this
+# directory also carries a `herdr` symlink pointing at this file — that is
+# what PATH resolution actually finds.
+#
+# A fake that can only succeed, only on stdout, and never asks a question can
+# only prove the happy path. Every switch below exists because a real failure
+# it could not express got past a test that looked like it covered it.
+#
+# Behaviour:
+#   - Every call appends its full argv, space-joined, as one line to the file
+#     named by $FAKE_HERDR_LOG (when set).
+#   - If $FAKE_HERDR_FIXTURES/<argv words joined by "->">.json exists, its
+#     contents are printed to stdout.
+#
+# Failure switches, all exempting `--version` and `integration status` (a real
+# herdr 0.9.0 command line stuck against a 0.8.2 server still answers those
+# two, and only those two, so the fake must too):
+#
+#   FAKE_HERDR_PROTOCOL_MISMATCH=1
+#       Every other call fails with a protocol_mismatch error object, exit 1.
+#       Shorthand for FAKE_HERDR_ERROR_CODE=protocol_mismatch.
+#   FAKE_HERDR_ERROR_CODE=<code>
+#       Same, with an arbitrary error code. The preflight gate used to treat
+#       anything that was not protocol_mismatch as a healthy host; with only
+#       the one hard-coded code to fake, no test could say so.
+#   FAKE_HERDR_ERROR_STREAM=stderr
+#       Emit the error object on stderr instead of stdout. A caller that
+#       discards stderr then sees nothing at all and concludes the call was
+#       fine, which is what the preflight probe did.
+#   FAKE_HERDR_ERROR_EXIT=<n>
+#       Exit with <n> after emitting the error object, instead of 1. Set it to
+#       0 for the nastiest shape of all: a well-formed error object returned
+#       alongside a successful exit status. A caller that checks only the exit
+#       status parses that object as its answer, finds no `result.agents`, and
+#       reports success having fed nothing. hs_herdr_json has always guarded
+#       this case ("an error key even if the exit status was 0") but no test
+#       could construct it, because the fake could only ever fail loudly.
+#   FAKE_HERDR_FAIL=<subcommand-prefix>
+#       Exit 1 for a call whose argv starts with that prefix (e.g.
+#       "plugin install"), with a plain, non-JSON message on stderr — how a
+#       command fails when it is not the protocol that is wrong. Nothing
+#       could fake a failed install before, so apply's failure path was
+#       unreachable from a test.
+#   FAKE_HERDR_STDERR_NOTE=<text>
+#       Write <text> to stderr and still succeed, like a deprecation notice
+#       alongside a perfectly good answer on stdout.
+#   FAKE_HERDR_PROMPT=1
+#       For `plugin install` and `integration install` WITHOUT --yes, print a
+#       trust preview to stdout and read one line from stdin, exactly as the
+#       real herdr does. Logs "prompt-stdout pipe|direct" and
+#       "prompt-answer <answer>", and exits 1 on anything but y/yes. With
+#       --yes, no preview and no read. This is the mode that catches a caller
+#       running the install inside a command substitution: the preview never
+#       reaches the operator's terminal.
+#
+#       `integration install` was missing here for a whole phase, and the
+#       consequence was exact: onboard's own interactive install could be
+#       reverted to hs_herdr_json and the entire suite still passed. The
+#       "prompt-stdout" line exists for the same reason -- an inherited stdin
+#       answers the question either way, so only where the PREVIEW went tells
+#       the two callers apart.
+#
+# Bash 3.2 safe: no associative arrays, no mapfile, no `local -n`.
+set -u
+
+if [ -n "${FAKE_HERDR_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$FAKE_HERDR_LOG"
+fi
+
+joined=""
+for arg in "$@"; do
+  if [ -z "$joined" ]; then
+    joined="$arg"
+  else
+    joined="$joined->$arg"
+  fi
+done
+
+exempt_from_mismatch=0
+if [ "$*" = "integration status" ] || [ "$*" = "--version" ]; then
+  exempt_from_mismatch=1
+fi
+
+error_code="${FAKE_HERDR_ERROR_CODE:-}"
+if [ -z "$error_code" ] && [ "${FAKE_HERDR_PROTOCOL_MISMATCH:-}" = "1" ]; then
+  error_code="protocol_mismatch"
+fi
+
+if [ -n "$error_code" ] && [ "$exempt_from_mismatch" -eq 0 ]; then
+  if [ "$error_code" = "protocol_mismatch" ]; then
+    error_message="client protocol 22 is newer than server protocol 20; restart the Herdr server before using this command."
+  else
+    error_message="the server refused this call ($error_code)."
+  fi
+  payload="{\"id\":\"x\",\"error\":{\"code\":\"$error_code\",\"message\":\"$error_message\"}}"
+  if [ "${FAKE_HERDR_ERROR_STREAM:-stdout}" = "stderr" ]; then
+    printf '%s\n' "$payload" >&2
+  else
+    printf '%s\n' "$payload"
+  fi
+  exit "${FAKE_HERDR_ERROR_EXIT:-1}"
+fi
+
+if [ -n "${FAKE_HERDR_FAIL:-}" ] && [ "$exempt_from_mismatch" -eq 0 ]; then
+  case "$* " in
+    "$FAKE_HERDR_FAIL "*)
+      echo "herdr: $FAKE_HERDR_FAIL failed" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+if [ "${FAKE_HERDR_PROMPT:-}" = "1" ]; then
+  case "${1:-} ${2:-}" in
+    "plugin install"|"integration install")
+      has_yes=0
+      for arg in "$@"; do
+        if [ "$arg" = "--yes" ]; then
+          has_yes=1
+        fi
+      done
+      if [ "$has_yes" -eq 0 ]; then
+        echo "TRUST PREVIEW for ${3:-<unknown>}"
+        echo "  this runs code on your machine."
+        printf 'Install it? [y/N] '
+        answer=""
+        read -r answer || answer=""
+        if [ -n "${FAKE_HERDR_LOG:-}" ]; then
+          # WHERE the preview went, not just whether the question was
+          # answered. A caller that wraps this in a command substitution --
+          # the whole defect hs_herdr_interactive exists to undo -- still
+          # gets its answer from an inherited stdin, so "prompt-answer y"
+          # alone cannot tell the two apart. Its stdout is a PIPE, and the
+          # operator's is not: on a real host it is their terminal, and in
+          # this suite it is the test's own output file. So a `pipe` here is
+          # a preview the operator never saw.
+          if [ -p /dev/fd/1 ]; then
+            printf 'prompt-stdout pipe\n' >> "$FAKE_HERDR_LOG"
+          else
+            printf 'prompt-stdout direct\n' >> "$FAKE_HERDR_LOG"
+          fi
+          printf 'prompt-answer %s\n' "$answer" >> "$FAKE_HERDR_LOG"
+        fi
+        case "$answer" in
+          y|Y|yes|Yes|YES) ;;
+          *)
+            echo "herdr: install declined" >&2
+            exit 1
+            ;;
+        esac
+      fi
+      ;;
+  esac
+fi
+
+if [ -n "${FAKE_HERDR_STDERR_NOTE:-}" ]; then
+  printf '%s\n' "$FAKE_HERDR_STDERR_NOTE" >&2
+fi
+
+if [ -n "${FAKE_HERDR_FIXTURES:-}" ] && [ -f "$FAKE_HERDR_FIXTURES/$joined.json" ]; then
+  cat "$FAKE_HERDR_FIXTURES/$joined.json"
+fi
+
+exit 0
