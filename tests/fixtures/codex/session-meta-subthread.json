@@ -1,0 +1,23 @@
+{
+  "timestamp": "2026-07-06T11:05:17.754Z",
+  "type": "session_meta",
+  "payload": {
+    "session_id": "00000000-0000-4000-8000-000000000001",
+    "id": "00000000-0000-4000-8000-000000000002",
+    "parent_thread_id": "00000000-0000-4000-8000-000000000001",
+    "timestamp": "2026-07-06T11:05:17.721Z",
+    "cwd": "/work/alpha",
+    "originator": "Codex Desktop",
+    "cli_version": "0.142.5",
+    "source": {
+      "subagent": {
+        "other": "guardian"
+      }
+    },
+    "thread_source": "subagent",
+    "model_provider": "openai",
+    "base_instructions": {
+      "text": "[elided -- this subagent thread's own system prompt (a guardian/risk-judgment prompt, distinct from the standard interactive CLI prompt in session-meta.json and session-meta-no-git.json), several KB, which this adapter never reads. Kept as a string value, shortened rather than removed, matching tests/fixtures/codex/session-meta.json's own README note.]"
+    }
+  }
+}

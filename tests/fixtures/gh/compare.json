@@ -1,0 +1,11 @@
+{
+  "data": {
+    "repository": {
+      "defaultBranchRef": {
+        "c0": {
+          "status": "IDENTICAL"
+        }
+      }
+    }
+  }
+}

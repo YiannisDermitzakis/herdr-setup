@@ -1,0 +1,31 @@
+{
+  "data": {
+    "repository": {
+      "defaultBranchRef": {
+        "name": "main"
+      },
+      "r0": null,
+      "r1": {
+        "target": {
+          "oid": "0000000000000000000000000000000000000000"
+        }
+      },
+      "p0": {
+        "nodes": [
+          {
+            "number": 2,
+            "state": "MERGED",
+            "isDraft": false,
+            "url": "https://github.com/example-user/example-repo/pull/2",
+            "headRepository": {
+              "nameWithOwner": "example-user/example-repo"
+            }
+          }
+        ]
+      },
+      "p1": {
+        "nodes": []
+      }
+    }
+  }
+}

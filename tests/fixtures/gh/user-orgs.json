@@ -1,0 +1,16 @@
+[
+  {
+    "login": "example-org",
+    "id": 2,
+    "node_id": "MDEyOk9yZ2FuaXphdGlvbjI=",
+    "url": "https://api.github.com/orgs/example-org",
+    "repos_url": "https://api.github.com/orgs/example-org/repos",
+    "events_url": "https://api.github.com/orgs/example-org/events",
+    "hooks_url": "https://api.github.com/orgs/example-org/hooks",
+    "issues_url": "https://api.github.com/orgs/example-org/issues",
+    "members_url": "https://api.github.com/orgs/example-org/members{/member}",
+    "public_members_url": "https://api.github.com/orgs/example-org/public_members{/member}",
+    "avatar_url": "https://avatars.githubusercontent.com/u/2?v=4",
+    "description": null
+  }
+]

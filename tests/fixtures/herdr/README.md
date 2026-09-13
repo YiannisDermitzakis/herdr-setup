@@ -29,6 +29,33 @@ socket answered normally, so the captures are the server's own output.
 |---|---|---|
 | `agent-list.json` | `agent.list` | Trimmed from 20 entries to 3 — one `working` and two `idle` — keeping every key. |
 | `pane-process-info.json` | `pane.process_info` with `pane_id` | Verbatim, one pane. |
+| `tab-list.json` | `tab.list` | Captured 2026-09-13 from the same server (see below), trimmed from ~35 tabs across five workspaces to the three whose `tab_id` matches `agent-list.json`'s three panes (`w2:t9`, `w2:t2`, `w2:t7`), keeping every key. |
+
+### `tab-list.json`, captured 2026-09-13
+
+The real `herdr tab list` on this host names every tab across every
+workspace — real project names, real branch-derived titles, several dozen
+entries. All of that is masked or dropped: only the three tabs `audit`'s own
+read (`herdr tab list`, joined against `agent list`'s `tab_id`) needs are
+kept. Because this fixture exists to be JOINED against `agent-list.json`
+(the same three panes, described by two different calls), every value that
+the join depends on agreeing was checked against `agent-list.json` and
+corrected where the two captures -- taken on different days, of a host whose
+tabs keep moving -- no longer lined up:
+
+| Field | What it is here | Why |
+|---|---|---|
+| `tab_id` | `w2:t9`, `w2:t2`, `w2:t7`, unchanged from the real 2026-09-13 capture | These are the join key; they already matched `agent-list.json`'s three panes' own `tab_id` values, captured 2026-09-08. |
+| `label`'s agent segment | `claude` on all three | The real 2026-09-13 capture had `codex` on the `w2:t7` entry (a different tab occupies that id today; tabs are reused). `agent-list.json`'s own `agent` field for the pane at `w2:t7` is `claude`, and this fixture describes THAT pane, so the label was corrected to agree -- inventing a `codex` join here would test a case this fixture set does not otherwise support (no `agent-list.json` entry is `codex`). |
+| `label`'s topic text | `add the health endpoint`, `fix-image-size-check`, `check-engine-version` | `agent-list.json`'s own `terminal_title` fields for these same three panes, reused rather than inventing new placeholder text, so the same event reads as the same event across both captures. |
+| `label`'s leading number, and the `number` field | Both `9` for `w2:t9`, both `2` for `w2:t2`, both `7` for `w2:t7` | The real 2026-09-13 capture's three matched entries did NOT have a leading label digit equal to `number` -- on a live host with tabs opened and closed over time, a tab's position-derived `number` and the digit its own label happened to be given at creation drift apart. Nothing in this fixture set exercises label-number parsing, so the mismatch was pure noise here; it was set consistent (leading digit == `number`) on all three rather than leaving two unrelated-looking numbers sitting next to each other in committed test data, which is more likely to be copied into a wrong assumption than to be useful. |
+| `pane_count`, `agent_status`, `focused`, `workspace_id` | Kept as captured | Opaque per-run counters and flags, not identity, and not part of the join. |
+
+**Not seen, and therefore a construction in a later phase:** a tab with
+`pane_count` greater than 1, a workspace other than `w2`, and a label whose
+leading number genuinely disagrees with its own `number` field (the real,
+ordinary case this fixture deliberately does not preserve -- see the table
+above).
 
 ### Envelope
 

@@ -1,0 +1,1 @@
+{"data":{"repository":{"defaultBranchRef":{"c0":null}}},"errors":[{"type":"NOT_FOUND","path":["repository","defaultBranchRef","c0"],"locations":[{"line":5,"column":7}],"message":"Could not resolve head ref 'example-branch'."}]}
