@@ -38,10 +38,22 @@ HS_ROOT="$(hs_resolve_root "$0")"
 # A dangling link (its final target does not exist) returns 1 and prints
 # nothing: it is never "this entrypoint", and cmd_install's caller reads that
 # failure as "not the same", not as an error.
+#
+# A symlink loop (a self-loop, or a longer cycle) is the same "not this
+# entrypoint" answer, not a hang: the loop is capped at 40 hops (real
+# symlink chains are a handful deep at most) and returns 1 on overflow,
+# exactly like a dangling link. cmd_install already reads a failed resolve
+# as "not the same, and therefore a symlink to something else" -- exit 4,
+# naming what the link itself points at -- so nothing downstream needed to
+# change for this to be safe.
 hs_resolve_path() {
   local target="$1"
-  local dir
+  local dir hops=0
   while [ -h "$target" ]; do
+    hops=$((hops + 1))
+    if [ "$hops" -gt 40 ]; then
+      return 1
+    fi
     dir="$(cd -P "$(dirname "$target")" && pwd)"
     target="$(readlink "$target")"
     case "$target" in
@@ -155,6 +167,11 @@ export HS_YES
 # exit status, because a dry run's whole job is to say what a real run would
 # do, and a run that would have refused cannot say otherwise.
 cmd_install() {
+  if [ "$#" -gt 0 ]; then
+    echo "herdr-setup: install: unexpected argument '$1'; install takes only --dry-run." >&2
+    return 2
+  fi
+
   local target dir link
   target="$HS_ROOT/herdr-setup"
   dir="$HOME/.local/bin"

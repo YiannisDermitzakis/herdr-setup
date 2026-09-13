@@ -55,6 +55,27 @@ run_install() {
   echo $?
 }
 
+# run_install_watchdog <entry> <home> <path> <out> <err> [args...]: same as
+# run_install, but for a case whose whole POINT is a symlink loop -- a
+# regression in hs_resolve_path's hop cap would hang, not fail, and a hang
+# here would hang the entire suite rather than turn one assertion red. The
+# invocation runs in the background under a 10s kill watchdog; the STATUS
+# this prints is the watchdog's kill (never 4) when that fires, so a
+# regression is a normal failed assertion, not a stuck test run.
+run_install_watchdog() {
+  local entry="$1" home="$2" path_val="$3" out="$4" err="$5"
+  shift 5
+  ( HOME="$home" PATH="$path_val" "$entry" install "$@" >"$out" 2>"$err" ) &
+  local pid=$!
+  ( sleep 10; kill -9 "$pid" 2>/dev/null ) &
+  local watchdog=$!
+  local status=0
+  wait "$pid" 2>/dev/null || status=$?
+  kill "$watchdog" 2>/dev/null
+  wait "$watchdog" 2>/dev/null
+  echo "$status"
+}
+
 # ---------------------------------------------------------------------
 # 1. no ~/.local/bin -> created, link made, stdout names both, exit 0
 # ---------------------------------------------------------------------
@@ -246,5 +267,148 @@ assert_status "11: install through a symlink exits 0" 0 "$status"
 link_target11="$(readlink "$home11/.local/bin/herdr-setup" 2>/dev/null || true)"
 assert_eq "11: it installs the sandbox entrypoint's real path, not the runner symlink" \
   "$entry11" "$link_target11"
+
+# ---------------------------------------------------------------------
+# 12. a self-loop symlink at the link path -> exit 4, promptly (not a hang)
+# ---------------------------------------------------------------------
+entry12="$(hs_test_sandbox)"
+home12="$work/home12"
+mkdir -p "$home12/.local/bin"
+ln -s "$home12/.local/bin/herdr-setup" "$home12/.local/bin/herdr-setup"
+out="$work/out12"; err="$work/err12"
+status="$(run_install_watchdog "$entry12" "$home12" "/usr/bin:/bin" "$out" "$err")"
+assert_status "12: a self-loop symlink is refused promptly, not hung" 4 "$status"
+
+# ---------------------------------------------------------------------
+# 13. a two-link symlink cycle at the link path -> exit 4, promptly
+# ---------------------------------------------------------------------
+entry13="$(hs_test_sandbox)"
+home13="$work/home13"
+mkdir -p "$home13/.local/bin"
+ln -s "$home13/.local/bin/herdr-setup" "$home13/.local/bin/other-link"
+ln -s "$home13/.local/bin/other-link" "$home13/.local/bin/herdr-setup"
+out="$work/out13"; err="$work/err13"
+status="$(run_install_watchdog "$entry13" "$home13" "/usr/bin:/bin" "$out" "$err")"
+assert_status "13: a two-link symlink cycle is refused promptly, not hung" 4 "$status"
+
+# ---------------------------------------------------------------------
+# 14 & 15: the hs_resolve_path branch of the "already installed" test --
+# a link to an INTERMEDIATE link (not the entrypoint's own readlink target),
+# and a RELATIVE link to the entrypoint. Both only pass because
+# hs_resolve_path actually resolves the chain; mutate_always_fail_resolve
+# below proves that by breaking hs_resolve_path and watching both flip red.
+# ---------------------------------------------------------------------
+
+# mutate_always_fail_resolve <entrypoint>: rewrites <entrypoint> IN PLACE so
+# its hs_resolve_path unconditionally returns 1 (an always-dangling
+# resolve), inserted right after the function's opening line via awk rather
+# than `sed -i`, which needs a different flag on BSD (macOS) and GNU sed and
+# is not worth portability-testing for a one-off test mutation. In place,
+# not a copy elsewhere, because HS_ROOT (and so `target`) is derived from
+# the entrypoint's OWN path -- a copy under a different directory would
+# change what "this checkout" means and refuse for the wrong reason.
+mutate_always_fail_resolve() {
+  local entry="$1" tmp
+  tmp="$(mktemp)"
+  awk '
+    { print }
+    /^hs_resolve_path\(\) \{$/ { print "  return 1" }
+  ' "$entry" > "$tmp"
+  chmod +x "$tmp"
+  mv "$tmp" "$entry"
+}
+
+# --- 14: link -> intermediate-link -> entrypoint ---
+entry14="$(hs_test_sandbox)"
+home14="$work/home14"
+mkdir -p "$home14/.local/bin"
+intermediate14="$home14/.local/bin/intermediate-link"
+ln -s "$entry14" "$intermediate14"
+ln -s "$intermediate14" "$home14/.local/bin/herdr-setup"
+out="$work/out14"; err="$work/err14"
+status="$(run_install "$entry14" "$home14" "/usr/bin:/bin" "$out" "$err")"
+assert_status "14: a link to an intermediate link exits 0" 0 "$status"
+assert_contains "14: it reads as already installed" "$(cat "$out")" "already installed:"
+
+# --- 15: a RELATIVE link to the entrypoint ---
+entry15="$(hs_test_sandbox)"
+home15="$work/home15"
+mkdir -p "$home15/.local/bin"
+entry15_dir="${entry15%/*}"
+entry15_base="${entry15##*/}"
+entry15_sandbox_name="${entry15_dir##*/}"
+# $home15/.local/bin is $work/home15/.local/bin (three levels below $work);
+# $entry15 is $work/<sandbox>/herdr-setup (one level below $work). Relative
+# from the link's own directory: up three (bin -> .local -> home15 -> work),
+# then down into the sandbox.
+relative15="../../../$entry15_sandbox_name/$entry15_base"
+ln -s "$relative15" "$home15/.local/bin/herdr-setup"
+out="$work/out15"; err="$work/err15"
+status="$(run_install "$entry15" "$home15" "/usr/bin:/bin" "$out" "$err")"
+assert_status "15: a relative link to the entrypoint exits 0" 0 "$status"
+assert_contains "15: it reads as already installed" "$(cat "$out")" "already installed:"
+
+# --- mutation check: with hs_resolve_path forced to fail, both 14 and 15
+# must now be refused (exit 4), proving the assertions above actually
+# exercise hs_resolve_path rather than passing some other way. Mutated IN
+# PLACE, after the real assertions above are done with these two sandboxes,
+# so `target` (derived from the entrypoint's own path) is unchanged. ---
+mutate_always_fail_resolve "$entry14"
+mutate_always_fail_resolve "$entry15"
+
+out="$work/out14mut"; err="$work/err14mut"
+status="$(run_install "$entry14" "$home14" "/usr/bin:/bin" "$out" "$err")"
+assert_status "14 (mutated): a broken hs_resolve_path refuses the intermediate-link case" 4 "$status"
+
+out="$work/out15mut"; err="$work/err15mut"
+status="$(run_install "$entry15" "$home15" "/usr/bin:/bin" "$out" "$err")"
+assert_status "15 (mutated): a broken hs_resolve_path refuses the relative-link case" 4 "$status"
+
+# ---------------------------------------------------------------------
+# 16 & 17: "mkdir or ln fails -> 2", naming the step. Skipped under root,
+# which ignores permission bits entirely and would make both directories
+# writable regardless of mode -- turning a real refusal into a silent
+# success and reporting nothing wrong.
+# ---------------------------------------------------------------------
+if [ "$(id -u)" -eq 0 ]; then
+  pass
+  pass
+else
+  # --- 16: ~/.local mode 555 -> mkdir -p ~/.local/bin fails -> exit 2 ---
+  entry16="$(hs_test_sandbox)"
+  home16="$work/home16"
+  mkdir -p "$home16/.local"
+  chmod 555 "$home16/.local"
+  out="$work/out16"; err="$work/err16"
+  status="$(run_install "$entry16" "$home16" "/usr/bin:/bin" "$out" "$err")"
+  chmod 755 "$home16/.local"
+  assert_status "16: mkdir failing under a read-only ~/.local exits 2" 2 "$status"
+  assert_contains "16: stderr names the directory it could not create" \
+    "$(cat "$err")" "$home16/.local/bin"
+
+  # --- 17: ~/.local/bin mode 555 -> ln -s into it fails -> exit 2 ---
+  entry17="$(hs_test_sandbox)"
+  home17="$work/home17"
+  mkdir -p "$home17/.local/bin"
+  chmod 555 "$home17/.local/bin"
+  out="$work/out17"; err="$work/err17"
+  status="$(run_install "$entry17" "$home17" "/usr/bin:/bin" "$out" "$err")"
+  chmod 755 "$home17/.local/bin"
+  assert_status "17: ln failing under a read-only ~/.local/bin exits 2" 2 "$status"
+  assert_contains "17: stderr names the link it could not create" \
+    "$(cat "$err")" "$home17/.local/bin/herdr-setup"
+fi
+
+# ---------------------------------------------------------------------
+# 18. an unexpected argument -> exit 2, one stderr line naming it
+# ---------------------------------------------------------------------
+entry18="$(hs_test_sandbox)"
+home18="$work/home18"
+mkdir -p "$home18"
+out="$work/out18"; err="$work/err18"
+status="$(run_install "$entry18" "$home18" "/usr/bin:/bin" "$out" "$err" some-extra-argument)"
+assert_status "18: an unexpected argument exits 2" 2 "$status"
+assert_contains "18: stderr names the unexpected argument" "$(cat "$err")" "some-extra-argument"
+[ ! -e "$home18/.local" ] && pass || fail "18: install wrote something despite the refusal"
 
 hs_test_report
