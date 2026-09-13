@@ -50,6 +50,27 @@ out="$work/out_help"; err="$work/err_help"
 status="$(run_entry "$out" "$err" --help)"
 assert_status "--help exits 0" 0 "$status"
 assert_contains "--help prints usage" "$(cat "$out")" "usage:"
+assert_contains "--help names install with a description" "$(cat "$out")" "install"
+assert_contains "--help names audit with a description" "$(cat "$out")" "audit"
+
+# --- install and audit (phase 1) are ACCEPTED subcommands -- proven here by
+# each reaching its own gate rather than the "unknown subcommand" exit 2.
+# audit's full behaviour (the preflight gate, the hs_audit door, argument
+# passthrough) is tests/test_audit_entrypoint.sh's; install's full behaviour
+# (every row of the install table) is tests/test_install.sh's. This file only
+# proves the dispatch case statement itself knows both words. ---
+out="$work/out_audit_dispatch"; err="$work/err_audit_dispatch"
+status="$(HERDR_SOCKET_PATH="$work/no-such-herdr.sock" run_entry "$out" "$err" audit)"
+assert_status "audit is accepted; fails closed with no Herdr server reachable" 3 "$status"
+assert_contains "audit names the missing server on stderr" "$(cat "$err")" "server"
+assert_eq "a refused audit prints nothing to stdout" "" "$(cat "$out")"
+
+out="$work/out_install_dispatch"; err="$work/err_install_dispatch"
+install_home="$work/install-home"
+mkdir -p "$install_home"
+status="$(HOME="$install_home" PATH="/usr/bin:/bin" run_entry "$out" "$err" install)"
+assert_status "install is accepted and needs no Herdr at all" 0 "$status"
+assert_contains "install says it made the link" "$(cat "$out")" "installed:"
 
 # --- diff (phase 2), apply (phase 4), absorb (phase 5), feed (phase 6) and
 # onboard (phase 9) all now have real implementations. Phase 10 seeds this
