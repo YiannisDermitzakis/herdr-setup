@@ -261,6 +261,44 @@ status="$(run_install "$entry10" "$home10" "$decoy_dir:$home10/.local/bin:/usr/b
 assert_status "10: install still succeeds despite the shadow" 0 "$status"
 assert_contains "10: shadowing warning names the earlier one" "$(cat "$err")" "$decoy_dir/herdr-setup"
 
+# --- 10b: the SAME decoy, but AFTER ~/.local/bin on PATH -> no warning ---
+entry10b="$(hs_test_sandbox)"
+home10b="$work/home10b"
+mkdir -p "$home10b"
+out="$work/out10b"; err="$work/err10b"
+status="$(run_install "$entry10b" "$home10b" "$home10b/.local/bin:$decoy_dir:/usr/bin:/bin" "$out" "$err")"
+assert_status "10b: install succeeds" 0 "$status"
+case "$(cat "$err")" in
+  *"shadows"*) fail "10b: a later herdr-setup on PATH warned as if it shadowed: $(cat "$err")" ;;
+  *) pass ;;
+esac
+
+# --- 10c: an EARLIER herdr-setup that resolves to the SAME entrypoint
+# (another link to it) -> no warning; it is the same tool, not a shadow ---
+entry10c="$(hs_test_sandbox)"
+home10c="$work/home10c"
+mkdir -p "$home10c"
+decoy_dir_c="$work/decoy-bin-c"
+mkdir -p "$decoy_dir_c"
+ln -s "$entry10c" "$decoy_dir_c/herdr-setup"
+out="$work/out10c"; err="$work/err10c"
+status="$(run_install "$entry10c" "$home10c" "$decoy_dir_c:$home10c/.local/bin:/usr/bin:/bin" "$out" "$err")"
+assert_status "10c: install succeeds" 0 "$status"
+case "$(cat "$err")" in
+  *"shadows"*) fail "10c: an earlier link to the SAME entrypoint warned as a shadow: $(cat "$err")" ;;
+  *) pass ;;
+esac
+
+# --- 10d: an earlier, genuinely different herdr-setup, under --dry-run ->
+# the warning still fires (a dry run says what a real run would do) ---
+entry10d="$(hs_test_sandbox)"
+home10d="$work/home10d"
+mkdir -p "$home10d"
+out="$work/out10d"; err="$work/err10d"
+status="$(run_install "$entry10d" "$home10d" "$decoy_dir:$home10d/.local/bin:/usr/bin:/bin" "$out" "$err" --dry-run)"
+assert_status "10d: --dry-run still succeeds" 0 "$status"
+assert_contains "10d: the shadowing warning fires under --dry-run too" "$(cat "$err")" "$decoy_dir/herdr-setup"
+
 # ---------------------------------------------------------------------
 # 11. installing by running a symlink to the sandbox entrypoint installs
 #     the sandbox entrypoint's real path

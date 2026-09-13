@@ -259,11 +259,55 @@ cmd_install_warn() {
       ;;
   esac
 
-  local shadow
-  shadow="$(command -v herdr-setup 2>/dev/null || true)"
-  if [ -n "$shadow" ] && [ "$shadow" != "$link" ]; then
-    echo "herdr-setup: install: $shadow is on PATH ahead of $link and shadows it." >&2
-  fi
+  cmd_install_warn_shadow "$dir" "$link"
+}
+
+# cmd_install_warn_shadow <dir> <link>: walks $PATH in the ORDER a shell
+# would search it, and warns about the FIRST executable `herdr-setup` found
+# -- stopping as soon as it reaches <dir> itself, since nothing past that
+# point would ever be reached first. When <dir> is not on PATH at all, there
+# is no such stopping point, so the whole PATH is walked: any executable
+# `herdr-setup` anywhere shadows the one just installed, because nothing
+# will ever resolve to <link> either.
+#
+# The one found is a shadow only if its RESOLVED real path differs from this
+# checkout's own target -- `command -v herdr-setup` alone (the previous
+# check) compared a literal path against $link and could not tell "a
+# different tool" from "another symlink to the identical entrypoint", so a
+# host that happened to symlink this same checkout from two directories on
+# PATH warned about itself on every install. hs_resolve_path is what makes
+# that comparison possible; a candidate hs_resolve_path cannot read (not a
+# symlink, or one it cannot follow) falls back to its own literal path,
+# which still compares correctly against a resolved target.
+#
+# Called for a dry run too (cmd_install_warn's own contract): $link may not
+# exist yet, so <link>'s own resolve is tried first and the checkout's
+# target ($HS_ROOT/herdr-setup, already a real path) is the fallback -- a
+# dry run must warn exactly as a completed real run would.
+cmd_install_warn_shadow() {
+  local dir="$1" link="$2"
+  local target
+  target="$(hs_resolve_path "$link" 2>/dev/null)" || target="$HS_ROOT/herdr-setup"
+
+  local saved_ifs="$IFS" entry candidate resolved
+  IFS=':'
+  for entry in $PATH; do
+    IFS="$saved_ifs"
+    [ -z "$entry" ] && continue
+    if [ "${entry%/}" = "${dir%/}" ]; then
+      return 0
+    fi
+    candidate="$entry/herdr-setup"
+    if [ -x "$candidate" ]; then
+      resolved="$(hs_resolve_path "$candidate" 2>/dev/null)" || resolved="$candidate"
+      if [ "$resolved" != "$target" ]; then
+        echo "herdr-setup: install: $candidate is on PATH ahead of $dir and shadows it." >&2
+      fi
+      return 0
+    fi
+    IFS=':'
+  done
+  IFS="$saved_ifs"
 }
 # cmd_diff: read-only. hs_preflight_banner prints first, so a mismatched
 # or serverless host says so up front. Each section below reports its own
