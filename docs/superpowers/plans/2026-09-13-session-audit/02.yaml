@@ -1,0 +1,253 @@
+schema_version: 2
+phase:
+  number: 2
+  title: The adapter sessions query — contract, Claude Code, Codex
+  tag: agentic
+  tier: standard
+  depends_on:
+  - 1
+  tracking_issue: null
+  acceptance:
+  - adapter-sessions-query
+tasks:
+- number: 1
+  title: Contract and runner-side validation
+  steps:
+  - id: P2.T1.S1
+    text: |
+      RED. tests/test_contract.py: the marked-block list becomes
+      ["minimal-adapter", "probe", "resolve-request", "resolve-response",
+      "sessions-probe", "sessions-response"]; the wrong-type probe test gains
+      ("sessions", "yes"); the sessions-probe example passes validate_probe
+      with sessions true; the sessions-response example survives
+      feed.parse_sessions and yields at least one session with one branch.
+      Add tests/test_feed_sessions.py for lib/feed.py:
+      - parse_sessions(obj) raises AdapterError for a non-object, a missing
+        or non-list `sessions`; drops (and counts) a session missing id/cwd/
+        last_active or with a non-list branches; drops a branch with an
+        evidence outside {session-meta, git-branch-field, command,
+        worktree-path} or a missing name/dir/seen_at;
+      - branch_name_ok(name) is False for "", main, master, HEAD,
+        worktree-agent-x, a$b, -x, "a b", a..b, a~1, a^, a:b, a?b, a*b, a[b,
+        a\\b, a@{b, a//b, /a, a/, a., a.lock, a/.b, <branch>, {branch}, a|b,
+        a;b, a&b, (a), 'a', "a", `a`; True for feat/x, fix/y-2, release/1.2,
+        user@host-ok, 123;
+      - parse_sessions re-applies branch_name_ok;
+      - sessions(adapter, since, include_sdk) runs `<adapter> sessions
+        --since N` (plus --include-sdk only when asked), and raises
+        AdapterError on non-zero exit, empty output, non-JSON, and timeout
+        (inject a small timeout); an Adapter whose probe lacks `sessions`
+        has `.sessions` False.
+      Run the suite -> rc non-zero.
+  - id: P2.T1.S2
+    text: |
+      GREEN. lib/feed.py: validate_probe checks `sessions` is bool when
+      present; Adapter gains `sessions: bool`; add EVIDENCE constant,
+      SESSIONS_TIMEOUT = 120.0, branch_name_ok, parse_sessions (returns
+      (sessions, dropped_count)), sessions(). docs/adapters.md: add the
+      spec's `sessions` section verbatim in substance, with
+      `<!-- contract: sessions-probe -->` and
+      `<!-- contract: sessions-response -->` blocks, the key table, the
+      read-only/bounded/tolerant/--include-sdk/filter/failing rules, and
+      checklist item 7. feed's own behaviour is unchanged. Run the suite ->
+      rc=0.
+  - id: P2.T1.S3
+    text: |
+      REFACTOR. Make branch_name_ok read as the spec's list (one named
+      pattern per rule, a comment on why template text is dropped). Suite
+      rc=0.
+- number: 2
+  title: Claude Code — store walk, identity, title, SDK, gitBranch
+  steps:
+  - id: P2.T2.S1
+    text: |
+      RED. tests/test_adapter_claude_sessions.py, building a store under a
+      temp CLAUDE_CONFIG_DIR from tests/fixtures/claude/transcript.jsonl line
+      shapes (placeholder ids, /work paths), running `adapters/claude
+      sessions --since 30` as a subprocess:
+      - probe now carries "sessions": true;
+      - a top-level transcript yields id = file stem, cwd = last cwd,
+        last_active = last timestamp (Z-suffixed UTC), title = latest
+        customTitle else latest aiTitle else absent;
+      - projects/<slug>/<id>/subagents/*.jsonl and isSidechain lines are
+        ignored;
+      - entrypoint sdk-cli and sdk-py sessions are skipped, and included with
+        --include-sdk; cli and claude-desktop are included;
+      - a file whose mtime is older than --since is ignored (os.utime);
+      - a truncated last line and an unparseable middle line are skipped,
+        the rest still read; an unreadable file (chmod 000) is skipped;
+      - gitBranch values become git-branch-field branches with dir = that
+        line's cwd and seen_at = that line's timestamp, deduped per
+        (name, dir) keeping the latest; main is filtered;
+      - no projects dir -> {"sessions": []}, exit 0;
+      - an unknown subcommand exits 2; `sessions` never writes (store tree
+        listing + mtimes identical before/after).
+      Run the suite -> rc non-zero.
+  - id: P2.T2.S2
+    text: |
+      GREEN. adapters/claude: argv parsing accepts `sessions --since N
+      [--include-sdk]` (argparse), probe adds "sessions": true, add
+      cmd_sessions with the walk above, reading files as bytes and decoding
+      per line with errors="replace". Keep resolve untouched. Output via
+      json.dumps. Run the suite -> rc=0.
+  - id: P2.T2.S3
+    text: |
+      REFACTOR. Separate "read transcript lines" from "derive a session" so
+      task 3 adds evidence extractors without touching the walk. Suite rc=0.
+- number: 3
+  title: Claude Code — command and worktree-path evidence
+  steps:
+  - id: P2.T3.S1
+    text: |
+      RED. Extend tests/test_adapter_claude_sessions.py with Bash tool_use
+      lines whose input.command is each spec shape, asserting name, dir and
+      evidence:
+      - `fr isolation up --branch feat/a` and `--branch=feat/a`, `attach
+        --session s --branch feat/b`, with `--repo /work/r` as dir;
+      - `git checkout -b fix/c`, `git switch -c fix/d`, `git checkout -B e/f`;
+      - `git worktree add ../wt -b feat/g` (dir resolved against cwd) and
+        `git worktree add -b feat/h /work/wt2`;
+      - `git push -u origin feat/i`, `git push --set-upstream origin
+        +feat/j:feat/j`, `git push -u origin HEAD` (filtered);
+      - `gh pr create --head feat/k`, `-H example-user:feat/l`;
+      - `cd /work/other && git checkout -b feat/m` (dir /work/other),
+        `git -C /work/third switch -c feat/n`, `a&&git checkout -b feat/o`
+        (no spaces), a command with an unbalanced quote still yielding
+        `git checkout -b feat/p` via the whitespace fallback,
+        `git checkout -b "$BR"` (filtered);
+      - worktree-path: a line whose cwd is
+        /work/home/.cache/fr/worktrees/example-repo/feat__q/src -> branch
+        feat/q, dir /work/home/.cache/fr/worktrees/example-repo/feat__q;
+        the same path inside a command -> branch feat/q; the same path
+        inside a tool_result content -> NOT evidence.
+      Run the suite -> rc non-zero.
+  - id: P2.T3.S2
+    text: |
+      GREEN. adapters/claude: shlex.shlex(line, posix=True,
+      punctuation_chars=True) with whitespace_split=True per command line,
+      falling back to line.split() on ValueError; segment at && || ; |;
+      track cd/-C dirs (relative -> os.path.normpath(join(cwd, p)), ~ ->
+      $HOME, text only); one extractor per shape; worktree-path regex
+      r"(/[^\s\"']*?/\.cache/fr/worktrees/[^/\s\"']+/([^/\s\"']+))" on cwd
+      fields and command text only, slug "__" -> "/". Apply the shared name
+      filter (same rules as feed.branch_name_ok; duplicated in the adapter
+      with a comment pointing at docs/adapters.md, since adapters do not
+      import the runner). Run the suite -> rc=0.
+  - id: P2.T3.S3
+    text: |
+      REFACTOR. Table-drive the extractors if they repeat; confirm the
+      adapter's filter and feed.branch_name_ok agree by adding one test that
+      runs both over the same name list. Suite rc=0.
+- number: 4
+  title: Codex sessions
+  steps:
+  - id: P2.T4.S1
+    text: |
+      RED. tests/test_adapter_codex_sessions.py under a temp CODEX_HOME,
+      from the codex fixtures: probe carries "sessions": true; a rollout
+      yields id = payload.id, cwd = payload.cwd, last_active = file mtime
+      (UTC Z), branch payload.git.branch as session-meta with seen_at =
+      payload.timestamp and dir = cwd; no git block -> branches []; git.branch
+      null or "" (detached HEAD, a construction) -> branches []; a
+      parent_thread_id rollout is skipped; an empty file, a truncated first
+      line and a non-session_meta first line are skipped; mtime older than
+      --since skipped; --include-sdk accepted and ignored; no sessions dir ->
+      {"sessions": []}; only the first line is read (a rollout whose second
+      line is invalid UTF-8 garbage still works).
+      Run the suite -> rc non-zero.
+  - id: P2.T4.S2
+    text: |
+      GREEN. adapters/codex: argparse for `sessions --since N
+      [--include-sdk]`, probe "sessions": true, cmd_sessions walking
+      sessions/*/*/*/rollout-*.jsonl filtered by mtime, reusing
+      read_session_meta. resolve untouched. Run the suite -> rc=0.
+  - id: P2.T4.S3
+    text: |
+      REFACTOR. Share the mtime-window helper name and shape with the claude
+      adapter by convention (not import). Suite rc=0.
+- number: 5
+  title: Conformance and gates
+  steps:
+  - id: P2.T5.S1
+    text: |
+      RED. tests/test_contract.py conformance: for every adapter whose probe
+      declares sessions, `sessions --since 30` on an empty home and on the
+      ADAPTER_HOME_LAYOUT home prints exactly {"sessions": []} and exits 0;
+      opencode and copilot probes do not declare sessions. Run the suite ->
+      rc non-zero only if an adapter misbehaves; if it passes first time,
+      break it deliberately (make claude print nothing on an empty home),
+      confirm the test fails, and restore.
+  - id: P2.T5.S2
+    text: |
+      GREEN. Fix whatever the conformance pass found. Run all gates; every
+      exit status 0.
+  - id: P2.T5.S3
+    text: |
+      REFACTOR + quality gate. Re-read docs/adapters.md top to bottom against
+      both adapters' behaviour; update any drift. All gates 0.
+state:
+  steps:
+    P2.T1.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P2.T1.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P2.T1.S3:
+      state: ' '
+      ticked_at: null
+      note: null
+    P2.T2.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P2.T2.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P2.T2.S3:
+      state: ' '
+      ticked_at: null
+      note: null
+    P2.T3.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P2.T3.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P2.T3.S3:
+      state: ' '
+      ticked_at: null
+      note: null
+    P2.T4.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P2.T4.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P2.T4.S3:
+      state: ' '
+      ticked_at: null
+      note: null
+    P2.T5.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P2.T5.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P2.T5.S3:
+      state: ' '
+      ticked_at: null
+      note: null
+  completion:
+    at: null
+    note: null
+    observed_prs: []

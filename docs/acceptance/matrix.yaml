@@ -401,3 +401,60 @@ rows:
       opened -- a hot write-ahead log is the realistic case, since opencode runs in
       WAL mode and this adapter opens `mode=ro` -- now one sentence and exit 2
       (herdr-setup:tests/test_adapter_opencode.py).
+  - id: audit-reports-stranded-work
+    capability: Session audit
+    acceptance: audit reports the agent sessions open in Herdr with the branches they
+      work on, the closed sessions that left unmerged branches, and the open PRs across
+      the configured GitHub owners that match no session branch, and it writes nothing.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
+    levels: {}
+    status: not-implemented
+    notes: Born with the spec (not-implemented). The 2026-09-13-session-audit plan adds
+      the verifying tests and moves this row up. The live comparison with a hand audit
+      is the spec's post-merge Test Plan.
+  - id: audit-merge-state-sees-squash-merges
+    capability: Session audit
+    acceptance: A branch merged by squash counts as merged, and a branch with no ref
+      and no open or merged PR is counted as gone rather than listed; neither is reported
+      as work to act on.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
+    levels: {}
+    status: not-implemented
+    notes: Born with the spec (not-implemented). The 2026-09-13-session-audit plan adds
+      the verifying tests and moves this row up.
+  - id: audit-fails-closed
+    capability: Session audit
+    acceptance: audit exits 3 when Herdr is unreachable and 2 with no report when git
+      or gh is missing or a GitHub call fails; an adapter that cannot answer marks the
+      report incomplete and exits 2, so a source it could not read never becomes an
+      empty section.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
+    levels: {}
+    status: not-implemented
+    notes: Born with the spec (not-implemented). The 2026-09-13-session-audit plan adds
+      the verifying tests and moves this row up.
+  - id: adapter-sessions-query
+    capability: Session audit
+    acceptance: The adapter contract documents an optional read-only sessions query
+      whose examples are executed; Claude Code and Codex answer it from their own session
+      history, and agents without it are reported as unsupported.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
+    levels: {}
+    status: not-implemented
+    notes: Born with the spec (not-implemented). The 2026-09-13-session-audit plan adds
+      the verifying tests and moves this row up.
+  - id: install-adds-never-overwrites
+    capability: Install
+    acceptance: install puts herdr-setup on PATH by symlinking it into ~/.local/bin,
+      creates that directory when missing, warns when it is not on PATH, and refuses
+      with exit 4 to replace any other file or link.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
+    levels: {}
+    status: not-implemented
+    notes: Born with the spec (not-implemented). The 2026-09-13-session-audit plan adds
+      the verifying tests and moves this row up.

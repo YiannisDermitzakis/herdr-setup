@@ -1,0 +1,172 @@
+schema_version: 2
+phase:
+  number: 1
+  title: Walking skeleton — install, audit dispatch, captured fixtures
+  tag: agentic
+  tier: standard
+  depends_on: []
+  tracking_issue: null
+  acceptance:
+  - install-adds-never-overwrites
+  - audit-fails-closed
+  skeleton: true
+tasks:
+- number: 1
+  title: The entrypoint knows install and audit
+  steps:
+  - id: P1.T1.S1
+    text: |
+      RED. Extend tests/test_entrypoint.sh: `install` and `audit` are accepted
+      subcommands, and `--help` usage names both with a one-line description.
+      Add tests/test_audit_entrypoint.sh (sandbox pattern of
+      tests/test_feed_entrypoint.sh: copy herdr-setup, lib/common.sh, lib/hs.py,
+      lib/feed.py and lib/audit.py into a mktemp -d root; create the socket
+      path file so hs_preflight probes):
+      (a) FAKE_HERDR_PROTOCOL_MISMATCH=1 -> `herdr-setup audit` exits 3, stderr
+      carries the existing mismatch line, and stdout is empty;
+      (b) a matched fake herdr -> `herdr-setup audit` reaches lib/audit.py
+      through a new `hs_audit` door and exits 2 with stdout line
+      `incomplete: the audit runner is not implemented yet` (the skeleton
+      fails closed; it never prints a clean empty report);
+      (c) `herdr-setup audit --since 0` exits 2 naming --since (argparse).
+      Run the suite -> rc non-zero, the new assertions failing.
+  - id: P1.T1.S2
+    text: |
+      GREEN. herdr-setup: add `install|audit` to the subcommand case and to
+      hs_usage; add `cmd_audit` = `hs_require_socket || return 3`, then
+      `hs_audit "$@"` returning its status (mirror cmd_feed's comment style:
+      why the gate is first). lib/common.sh: add `hs_audit` beside hs_feed
+      (same uv check, `uv run --quiet --script "$HS_LIB_DIR/audit.py" "$@"`,
+      stdio inherited). lib/audit.py: PEP 723 header copied from lib/feed.py,
+      argparse with --since (int 1..3650), --owner (append), --include-sdk,
+      --include-bots, --json, --adapters, --socket; main prints the
+      incomplete line and returns 2. chmod +x lib/audit.py. `cmd_install`
+      stub is added in task 2. Run the suite -> rc=0.
+  - id: P1.T1.S3
+    text: |
+      REFACTOR. Run shellcheck and ruff on the touched files; tidy names and
+      comments to match the neighbouring cmd_feed/hs_feed. If nothing
+      changes, record `fr journal add --scope plan --slug
+      2026-09-13-session-audit --kind note --title "no-refactor-because:
+      P1.T1" --body "<reason>"`. Run the suite -> rc=0.
+- number: 2
+  title: herdr-setup install
+  steps:
+  - id: P1.T2.S1
+    text: |
+      RED. Add tests/test_install.sh (bash 3.2 safe, assert.sh helpers). Each
+      case builds a sandbox checkout (copied entrypoint + lib) and a fresh
+      HOME=mktemp -d, and runs with an explicit PATH:
+      1. no ~/.local/bin -> created, link made, stdout names both, exit 0,
+         `readlink "$HOME/.local/bin/herdr-setup"` = sandbox entrypoint path;
+      2. second run -> `already installed:` and exit 0, link unchanged;
+      3. link to another file -> exit 4, stderr names what it points at,
+         link unchanged; same for a dangling link;
+      4. regular file there -> exit 4, file byte-identical (cmp);
+      5. a directory there -> exit 4;
+      6. ~/.local/bin is a regular file -> exit 2;
+      7. --dry-run with nothing present -> prints `+ mkdir -p <dir>` and
+         `+ ln -s <target> <link>`, creates nothing, exit 0;
+      8. --dry-run with a regular file there -> exit 4, nothing written;
+      9. ~/.local/bin absent from PATH -> stderr warning naming it; present
+         (with and without trailing slash) -> no warning;
+      10. another herdr-setup earlier on PATH -> stderr shadowing warning
+          naming it; exit status unchanged;
+      11. installing by running a symlink to the sandbox entrypoint installs
+          the sandbox entrypoint's real path.
+      Run the suite -> rc non-zero.
+  - id: P1.T2.S2
+    text: |
+      GREEN. Implement `cmd_install` in herdr-setup per the spec's install
+      table: target="$HS_ROOT/herdr-setup"; dir="$HOME/.local/bin";
+      link="$dir/herdr-setup". Same-target test: `[ -h "$link" ]` and either
+      `readlink "$link"` = target, or `hs_resolve_root "$link"`/basename
+      equals the target's (reuse the entrypoint's own resolver; no
+      `readlink -f`). Refusals print one stderr line and return 4; mkdir/ln
+      failures return 2. Under HS_DRY_RUN print the `+ ` lines and write
+      nothing. Warnings after the action: PATH membership via
+      `case ":$PATH:" in *":$dir:"*|*":$dir/:"*)`, shadowing via
+      `command -v herdr-setup` compared to the link. Every step's status is
+      checked (`if ! mkdir -p ...`). Run the suite -> rc=0, also under
+      `/bin/bash`.
+  - id: P1.T2.S3
+    text: |
+      REFACTOR. Extract the "does this link point at target" test into a
+      small helper only if cmd_install reads unclearly; otherwise record a
+      no-refactor-because journal note for P1.T2. shellcheck clean. Suite
+      rc=0.
+- number: 3
+  title: Capture external fixtures (never construct them)
+  steps:
+  - id: P1.T3.S1
+    text: |
+      Capture, read-only, from this host into tests/fixtures/, then sanitize
+      values while keeping every key and nesting exactly as captured. Write a
+      README.md in each new directory stating the capture date, the command,
+      what was replaced, and which shapes were NOT seen on the host and are
+      therefore constructions in later tests.
+      - tests/fixtures/gh/: responses of `gh api graphql` for the spec's
+        HsOwnerPullRequests (one owner, 2 repos), HsRepoBranches (one existing
+        ref with a merged PR, one missing ref), HsCompare against an existing
+        ref (`{"data":...compare{status}}`), and the missing-ref compare as
+        three files: compare-missing-ref.stdout (partial data + NOT_FOUND
+        error), .stderr, .exit (captured exit status, 1). Also `gh api user`
+        and `gh api user/orgs` (keys only matter; replace values).
+      - tests/fixtures/claude/transcript.jsonl: one real line each of: a user
+        line carrying cwd, gitBranch, entrypoint, timestamp, sessionId; an
+        assistant line with a Bash tool_use; a custom-title record; an
+        ai-title record. Drop message text to a short placeholder.
+      - tests/fixtures/codex/session-meta-subthread.json: a first line with
+        parent_thread_id set, and session-meta-no-git.json without a git
+        block.
+      - tests/fixtures/herdr/tab-list.json: `herdr tab list` output.
+      Sanitize: session/thread ids to the all-zero placeholder form, paths to
+      /work/<name>, logins/orgs to example-user/example-org, repos to
+      example-repo, oids to 40 zeros, titles and prompts to neutral text,
+      base_instructions elided as in the existing codex fixture. Run
+      `/bin/bash tests/test_public_hygiene.sh` -> pass, and the suite rc=0.
+- number: 4
+  title: Skeleton gates
+  steps:
+  - id: P1.T4.S1
+    text: |
+      Run all gates (see the file header), each exit status read directly;
+      all must be 0. Tick the phase only when they are.
+state:
+  steps:
+    P1.T1.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P1.T1.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P1.T1.S3:
+      state: ' '
+      ticked_at: null
+      note: null
+    P1.T2.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P1.T2.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P1.T2.S3:
+      state: ' '
+      ticked_at: null
+      note: null
+    P1.T3.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P1.T4.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+  completion:
+    at: null
+    note: null
+    observed_prs: []

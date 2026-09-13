@@ -1,0 +1,220 @@
+schema_version: 2
+phase:
+  number: 3
+  title: Audit runner — fakes, GitHub and git layers, merge state
+  tag: agentic
+  tier: hard
+  depends_on:
+  - 2
+  tracking_issue: null
+  acceptance:
+  - audit-merge-state-sees-squash-merges
+  - audit-fails-closed
+tasks:
+- number: 1
+  title: A fake gh and a fake fr that can fail
+  steps:
+  - id: P3.T1.S1
+    text: |
+      RED. tests/test_fake_gh.py driving tests/helpers/fake-gh through the
+      `gh` symlink on PATH, with FAKE_GH_STATE pointing at a temp JSON state
+      ({"user", "orgs", "repos": {"example-org/example-repo": {"default",
+      "archived", "refs": {branch: oid}, "compare": {branch: status},
+      "prs": [...]}}}):
+      - `gh api user --jq .login`, `gh api --paginate user/orgs`, `gh auth
+        status --hostname github.com` answer from state;
+      - each operation (HsOwnerPullRequests, HsRepoOpenPullRequests,
+        HsRepoBranches, HsCompare) is answered by operation name, and its
+        response has exactly the key structure of the tests/fixtures/gh
+        captures (compare key sets recursively);
+      - pagination honours FAKE_GH_PAGE_SIZE with real cursors;
+      - `-F h0=123` is type-inferred to an int and rejected with a
+        GraphQL-style error and exit 1, while `-f h0=123` works;
+      - compare against a ref absent from state reproduces
+        compare-missing-ref.stdout/.stderr/.exit exactly;
+      - FAKE_GH_FAIL=<argv prefix> exits 1 with a plain stderr line;
+        FAKE_GH_UNAUTH=1 fails auth status; FAKE_GH_GRAPHQL_ERRORS=1 returns
+        data plus errors with exit 0; FAKE_GH_LOG records argv; a query text
+        containing `mutation` exits 1.
+      tests/test_fake_fr.py: tests/helpers/fake-fr answers `isolation status
+      --format json --repo <p>` from FAKE_FR_STATUS (a JSON list), and
+      FAKE_FR_FAIL=1 exits 1.
+      Run the suite -> rc non-zero.
+  - id: P3.T1.S2
+    text: |
+      GREEN. Write tests/helpers/fake-gh and tests/helpers/fake-fr as PEP 723
+      uv scripts (header like lib/feed.py), `gh` and `fr` symlinks beside the
+      `herdr` one, chmod +x. Add FAKE_GH_STATE FAKE_GH_LOG FAKE_GH_FAIL
+      FAKE_GH_UNAUTH FAKE_GH_GRAPHQL_ERRORS FAKE_GH_PAGE_SIZE FAKE_FR_STATUS
+      FAKE_FR_FAIL to tests/run.sh's `env -u` list and feedlib.LEAKY_VARS. Put
+      the header comment block in fake-gh the way fake-herdr documents every
+      switch and why it exists. Run the suite -> rc=0.
+  - id: P3.T1.S3
+    text: |
+      REFACTOR. Add a tests/helpers/auditlib.py (load_audit(), state
+      builders, a make_repo() git helper with GIT_AUTHOR/COMMITTER env and
+      `-c init.defaultBranch=main`) so later tests stay short. Suite rc=0.
+- number: 2
+  title: GitHub layer
+  steps:
+  - id: P3.T2.S1
+    text: |
+      RED. tests/test_audit_github.py for lib/audit.py:
+      - require_tools(): git or gh missing (PATH without them), or auth
+        status failing -> ToolError naming which;
+      - owners([]) -> [user, *orgs]; owners(["x","y"]) -> ["x","y"] with no
+        gh call (FAKE_GH_LOG empty);
+      - open_prs(login) returns every open PR across paginated repos
+        (page size 1) and a repo with more open PRs than the page size,
+        skipping archived repos, each with repo, number, title, url, head,
+        head_repo, draft, updated_at, author, bot (__typename Bot or login
+        ending [bot]; author null -> not a bot);
+      - repo_branches(owner, name, names) chunks by 20 (25 names -> 2
+        calls), passes names with -f, and returns default branch, per-name
+        ref existence and OPEN/MERGED PRs; a branch named 123 works;
+      - compare(owner, name, names) returns status per name;
+      - any non-zero gh exit, and FAKE_GH_GRAPHQL_ERRORS=1 with exit 0, raise
+        GhError quoting gh's message; no call ever sends `mutation`.
+      Run the suite -> rc non-zero.
+  - id: P3.T2.S2
+    text: |
+      GREEN. Implement in lib/audit.py: gh(args) -> parsed JSON (stdout and
+      stderr captured separately; exit status first, then `errors`, then
+      parse), graphql(operation, query, strings, ints) building `-f name=v`
+      for strings and `-F name=v` only for ints/cursors-null handling, the
+      four named queries as module constants, and the functions above.
+      Run the suite -> rc=0.
+  - id: P3.T2.S3
+    text: |
+      REFACTOR. One place builds aliases (h0/q0/c0) for both chunked
+      queries. Suite rc=0.
+- number: 3
+  title: git layer
+  steps:
+  - id: P3.T3.S1
+    text: |
+      RED. tests/test_audit_git.py with real repos from make_repo():
+      - repo_for(dir, fallback) returns toplevel, main checkout (for a linked
+        worktree, the main checkout) and github slug for remotes
+        https://github.com/example-org/example-repo(.git),
+        git@github.com:example-org/example-repo.git,
+        ssh://git@github.com/example-org/example-repo.git; None slug for a
+        non-GitHub remote; origin preferred, else the sole remote, else no
+        slug; a missing dir falls back to `fallback`; neither a work tree ->
+        None;
+      - local_ref(repo, name) True/False;
+      - is_ancestor(repo, name, default) -> True/False from exit 0/1, and
+        GitError for any other exit (corrupt a ref file to force it);
+      - local_default(repo) reads refs/remotes/origin/HEAD, else None.
+      - no function runs `git fetch` or writes: for-each-ref and status
+        --porcelain identical before and after the module's calls.
+      Run the suite -> rc non-zero.
+  - id: P3.T3.S2
+    text: |
+      GREEN. Implement with subprocess `git -C <dir> ...`, exit statuses read
+      explicitly, remote URL parsing by regex. Run the suite -> rc=0.
+  - id: P3.T3.S3
+    text: |
+      REFACTOR. Record no-refactor-because if the layer is already one
+      function per git question. Suite rc=0.
+- number: 4
+  title: Merge state
+  steps:
+  - id: P3.T4.S1
+    text: |
+      RED. tests/test_audit_merge_state.py, real repos plus fake gh state,
+      classify() per the spec table (first match wins):
+      - squash-merged: MERGED PR, head repo = repo, commits not ancestors ->
+        merged;
+      - merged by merge commit, no PR -> contained;
+      - fresh branch with no commits of its own -> contained;
+      - local-only unpushed commits -> unmerged;
+      - remote-only ref with compare AHEAD -> unmerged; BEHIND or IDENTICAL
+        -> contained; local contained but remote AHEAD -> unmerged;
+      - OPEN PR -> open-pr with number and draft;
+      - no local ref, no remote ref, only a CLOSED PR or none -> gone;
+      - a MERGED PR whose headRepository is a fork -> not merged;
+        headRepository null -> not used;
+      - a branch named 123 resolves;
+      - dir missing -> resolved via session cwd; no work tree -> unresolved;
+        non-GitHub remote with no origin/HEAD -> unresolved; non-GitHub with
+        origin/HEAD -> ancestry only;
+      - compare is asked only for names whose GitHub ref exists and no PR
+        decided (FAKE_GH_LOG);
+      - one resolution per (repo, branch) however many sessions name it.
+      Run the suite -> rc non-zero.
+  - id: P3.T4.S2
+    text: |
+      GREEN. Implement resolve_branches(entries) -> {(repo_key, name):
+      Resolution(state, pr, repo_slug, reason)} batching GitHub calls per
+      repository. Run the suite -> rc=0.
+  - id: P3.T4.S3
+    text: |
+      REFACTOR. Keep classify() a pure function of already-gathered facts
+      (refs, PRs, ancestry answers) so the table test can also run without
+      git; add that pure-table test. Suite rc=0.
+- number: 5
+  title: REFACTOR + quality gate
+  steps:
+  - id: P3.T5.S1
+    text: |
+      Read lib/audit.py end to end against the spec's "The audit runner"
+      section; fix drift. Run all gates; every exit status 0.
+state:
+  steps:
+    P3.T1.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P3.T1.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P3.T1.S3:
+      state: ' '
+      ticked_at: null
+      note: null
+    P3.T2.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P3.T2.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P3.T2.S3:
+      state: ' '
+      ticked_at: null
+      note: null
+    P3.T3.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P3.T3.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P3.T3.S3:
+      state: ' '
+      ticked_at: null
+      note: null
+    P3.T4.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P3.T4.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P3.T4.S3:
+      state: ' '
+      ticked_at: null
+      note: null
+    P3.T5.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+  completion:
+    at: null
+    note: null
+    observed_prs: []

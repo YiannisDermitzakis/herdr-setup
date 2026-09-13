@@ -1,0 +1,181 @@
+schema_version: 2
+phase:
+  number: 4
+  title: Audit report — join, sections, output, wiring, docs
+  tag: agentic
+  tier: standard
+  depends_on:
+  - 3
+  tracking_issue: null
+  acceptance:
+  - audit-reports-stranded-work
+  - audit-fails-closed
+  - audit-merge-state-sees-squash-merges
+  - adapter-sessions-query
+  - install-adds-never-overwrites
+tasks:
+- number: 1
+  title: Sources and the join
+  steps:
+  - id: P4.T1.S1
+    text: |
+      RED. tests/test_audit_join.py with the fake herdr (captured agent-list
+      and tab-list fixtures), inline shell adapters declaring sessions, and
+      fake fr:
+      - panes() returns pane_id, agent, session value (None when absent),
+        cwd, tab label; a failing herdr call raises HerdrError;
+      - gather_sessions() asks only adapters declaring sessions, passes
+        --since and --include-sdk, and records a failing adapter as an
+        incomplete reason naming it;
+      - a pane cwd inside an fr worktree adds a worktree-path branch;
+      - fr bindings add fr-binding branches by session id, called once per
+        main checkout; FAKE_FR_FAIL=1 or fr absent (inject the lookup) is a
+        warning only;
+      - each section 1 note: no branch evidence; session not reported to
+        Herdr; session not found in history (outside --since, or
+        SDK-driven); no session history (unsupported); no adapter.
+      Run the suite -> rc non-zero.
+  - id: P4.T1.S2
+    text: |
+      GREEN. Implement in lib/audit.py, importing lib/feed.py by
+      `sys.path.insert(0, str(Path(__file__).resolve().parent))` then
+      `import feed`. Run the suite -> rc=0.
+  - id: P4.T1.S3
+    text: |
+      REFACTOR. Suite rc=0; record no-refactor-because if nothing changed.
+- number: 2
+  title: Sections, text and JSON, exit codes
+  steps:
+  - id: P4.T2.S1
+    text: |
+      RED. tests/test_audit_report.py on in-memory joined data:
+      - section 1 one row per (pane, branch), gone hidden and counted;
+      - section 2 lists unmerged and open-pr only, one row per (repo,
+        branch), newest session with +N, excluding branches any open pane's
+        session touched;
+      - section 3 excludes PRs whose head matches a session branch in the
+        base or head repository, hides bots unless include_bots (counted),
+        labels drafts;
+      - footer counts; `incomplete:` line when reasons exist;
+      - text columns match the spec's example shape (header line with pane
+        and session counts and owners);
+      - JSON has exactly the spec's top-level keys and nested keys;
+      - exit_code(): 0 when sections 2 and 3 are empty, 1 otherwise, 2 when
+        incomplete regardless of findings.
+      Run the suite -> rc non-zero.
+  - id: P4.T2.S2
+    text: |
+      GREEN. Implement build_report(), render_text(), render_json(),
+      exit_code(), and run() wiring every stage: require_tools ->
+      owners -> panes -> sessions -> resolve -> open PRs -> report. GhError,
+      ToolError, GitError and HerdrError print one line and return 2 with no
+      table. Replace the phase 1 skeleton's incomplete line. Update
+      tests/test_audit_entrypoint.sh case (b) accordingly. Run the suite ->
+      rc=0.
+  - id: P4.T2.S3
+    text: |
+      REFACTOR. Suite rc=0.
+- number: 3
+  title: End to end through the entrypoint, and nothing written
+  steps:
+  - id: P4.T3.S1
+    text: |
+      RED. Extend tests/test_audit_entrypoint.sh (sandbox checkout with the
+      real adapters, a CLAUDE_CONFIG_DIR and CODEX_HOME store built from the
+      fixtures, make_repo-style git repos, fake gh state, fake fr):
+      - findings present -> exit 1, all three section headings on stdout;
+      - a clean state -> exit 0;
+      - FAKE_GH_FAIL="api graphql" -> exit 2, one stderr line, no section
+        heading on stdout;
+      - FAKE_GH_UNAUTH=1 -> exit 2 before any graphql call (FAKE_GH_LOG);
+      - an adapter made to exit 1 -> exit 2 and an `incomplete:` line;
+      - --json output parses (uv run python -c json.load) and its counts
+        equal the text run's footer;
+      - FAKE_GH_LOG holds no `mutation`; every repo's for-each-ref and
+        status --porcelain, and the session stores' file listings with
+        mtimes, are identical before and after; `--dry-run audit` behaves
+        the same as `audit`.
+      Run the suite -> rc non-zero.
+  - id: P4.T3.S2
+    text: |
+      GREEN. Fix whatever the end-to-end run exposes. Run the suite -> rc=0.
+  - id: P4.T3.S3
+    text: |
+      REFACTOR. Suite rc=0.
+- number: 4
+  title: Documentation and the acceptance matrix
+  steps:
+  - id: P4.T4.S1
+    text: |
+      README.md: Install becomes `git clone ...` then `./herdr-setup
+      install`, with the refusal and PATH-warning behaviour; Prerequisites
+      adds gh (audit only); Commands gains `install` and `audit` sections in
+      the house style (example invocations, what it reads, what it never
+      does, exit codes); the exit-code table gains audit's 1 and install's
+      4. AGENTS.md: the "hs_py is the only sanctioned door" sentence names
+      hs_py, hs_feed and hs_audit and the rule between them. Then move the
+      five 2026-09-13 rows in docs/acceptance/matrix.yaml to `status: ci`
+      with `levels.unit` refs to the test files that verify each and notes
+      naming them; keep the Test Plan's live comparison in
+      audit-reports-stranded-work's notes. Run `fr acceptance report
+      --deterministic` and `fr acceptance check` -> exit 0. Run
+      `/bin/bash tests/test_public_hygiene.sh` -> pass.
+- number: 5
+  title: REFACTOR + quality gate
+  steps:
+  - id: P4.T5.S1
+    text: |
+      Run all gates, each exit status read directly, all 0; `fr journal
+      check --scope plan` clean. Re-read the spec's Commands, contract and
+      runner sections against the implementation one last time and fix any
+      drift before ticking.
+state:
+  steps:
+    P4.T1.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P4.T1.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P4.T1.S3:
+      state: ' '
+      ticked_at: null
+      note: null
+    P4.T2.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P4.T2.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P4.T2.S3:
+      state: ' '
+      ticked_at: null
+      note: null
+    P4.T3.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P4.T3.S2:
+      state: ' '
+      ticked_at: null
+      note: null
+    P4.T3.S3:
+      state: ' '
+      ticked_at: null
+      note: null
+    P4.T4.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+    P4.T5.S1:
+      state: ' '
+      ticked_at: null
+      note: null
+  completion:
+    at: null
+    note: null
+    observed_prs: []
