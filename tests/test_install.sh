@@ -85,20 +85,25 @@ mkdir -p "$home"
 out="$work/out1"; err="$work/err1"
 status="$(run_install "$entry" "$home" "$home/.local/bin:/usr/bin:/bin" "$out" "$err")"
 assert_status "1: no ~/.local/bin: install exits 0" 0 "$status"
-assert_contains "1: install names the created directory" "$(cat "$out")" "$home/.local/bin"
+assert_contains "1: install prints the actual 'created:' message" "$(cat "$out")" "created: $home/.local/bin"
 assert_contains "1: install names the link and target" "$(cat "$out")" "installed: $home/.local/bin/herdr-setup -> $entry"
 link_target="$(readlink "$home/.local/bin/herdr-setup" 2>/dev/null || true)"
 assert_eq "1: the link points at the sandbox entrypoint" "$entry" "$link_target"
+link_inode="$(ls -i "$home/.local/bin/herdr-setup" | awk '{print $1}')"
 
 # ---------------------------------------------------------------------
-# 2. second run -> "already installed:" and exit 0, link unchanged
+# 2. second run -> "already installed:" and exit 0, link unchanged (same
+#    inode, not just the same readlink string -- the inode is what proves
+#    nothing removed and recreated the link behind an unchanged readlink)
 # ---------------------------------------------------------------------
 out="$work/out2"; err="$work/err2"
 status="$(run_install "$entry" "$home" "$home/.local/bin:/usr/bin:/bin" "$out" "$err")"
 assert_status "2: second run exits 0" 0 "$status"
 assert_contains "2: second run says already installed" "$(cat "$out")" "already installed: $home/.local/bin/herdr-setup"
 link_target2="$(readlink "$home/.local/bin/herdr-setup" 2>/dev/null || true)"
-assert_eq "2: the link is unchanged" "$link_target" "$link_target2"
+assert_eq "2: readlink is unchanged" "$link_target" "$link_target2"
+link_inode2="$(ls -i "$home/.local/bin/herdr-setup" | awk '{print $1}')"
+assert_eq "2: the link's inode is unchanged (nothing was removed and recreated)" "$link_inode" "$link_inode2"
 
 # ---------------------------------------------------------------------
 # 3. link to another file -> exit 4, stderr names what it points at, link
@@ -198,6 +203,10 @@ if cmp -s <(printf 'do not touch\n') "$home8/.local/bin/herdr-setup"; then
 else
   fail "8: --dry-run left the regular file changed"
 fi
+case "$(cat "$out")" in
+  *"+ ln"*) fail "8: --dry-run printed a '+ ln' line for a refused install: $(cat "$out")" ;;
+  *) pass ;;
+esac
 
 # ---------------------------------------------------------------------
 # 9. PATH warning: absent -> warning naming it; present, with and without
