@@ -23,7 +23,12 @@ repo_root="$(cd "$test_dir/.." && pwd)"
 # shellcheck source=tests/helpers/assert.sh
 . "$test_dir/helpers/assert.sh"
 
-work="$(mktemp -d)"
+# Resolved with `cd -P`, matching tests/test_install.sh's own fix: HS_ROOT is
+# `cd -P`-resolved from $0, and on macOS /var/folders is itself a symlink to
+# /private/var/folders, so an unresolved $work built the --adapters path
+# cmd_audit is expected to forward one path form off from the one it
+# actually built.
+work="$(cd -P "$(mktemp -d)" && pwd)"
 trap 'rm -rf "$work"' EXIT
 
 sandbox="$work/sandbox"
@@ -69,5 +74,36 @@ HERDR_SOCKET_PATH="$socket" \
 status=$?
 assert_status "--since 0 is out of range and argparse refuses" 2 "$status"
 assert_contains "the refusal names --since" "$(cat "$err")" "--since"
+
+# --- (4) cmd_audit forwards --adapters and --socket BEFORE the operator's
+# own flags, exactly the way cmd_feed builds its own args (herdr-setup's own
+# comment on cmd_audit). Proven against a SANDBOX STUB standing in for
+# lib/audit.py that just echoes its argv -- the real lib/audit.py is never
+# touched for this. ---
+sandbox4="$work/sandbox4"
+mkdir -p "$sandbox4/lib"
+cp "$repo_root/herdr-setup" "$sandbox4/herdr-setup"
+cp "$repo_root/lib/common.sh" "$sandbox4/lib/common.sh"
+chmod +x "$sandbox4/herdr-setup"
+cat > "$sandbox4/lib/audit.py" <<'STUB'
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.13"
+# dependencies = []
+# ///
+# A stand-in for lib/audit.py, used ONLY to prove what argv cmd_audit
+# builds. It never touches the real audit runner.
+import sys
+
+print("argv:" + " ".join(sys.argv[1:]))
+STUB
+chmod +x "$sandbox4/lib/audit.py"
+
+out="$work/out_args"; err="$work/err_args"
+HERDR_SOCKET_PATH="$socket" "$sandbox4/herdr-setup" audit --since 5 >"$out" 2>"$err"
+status=$?
+assert_status "the stub run exits 0" 0 "$status"
+assert_eq "cmd_audit forwards --adapters and --socket before the operator's own flags" \
+  "argv:--adapters $sandbox4/adapters --socket $socket --since 5" "$(cat "$out")"
 
 hs_test_report

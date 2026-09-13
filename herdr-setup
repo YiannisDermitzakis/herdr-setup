@@ -693,11 +693,23 @@ cmd_feed() {
 # cmd_feed's own hs_feed door. Its stdio is inherited: audit prints its
 # report to stdout and warnings to stderr, and -- unlike feed -- never asks a
 # question, since it is read-only and has nothing to confirm.
+#
+# args is built exactly the way cmd_feed builds its own: --adapters and
+# --socket first (this checkout's own adapters directory, and the socket
+# path hs_require_socket itself just probed), so lib/audit.py's `--adapters`/
+# `--socket` defaults are never relied on when running through the
+# entrypoint -- only a direct `uv run lib/audit.py` (a test, or a developer)
+# falls back to those. Every flag the operator actually passed ("$@" --
+# --since, --owner, --include-sdk, --include-bots, --json, --dry-run, --yes)
+# comes AFTER, so it can never be shadowed by these two.
 cmd_audit() {
+  local args
+  args=(--adapters "$HS_ROOT/adapters" --socket "$(hs_socket_path)")
+
   hs_require_socket || return 3
 
   local rc=0
-  hs_audit "$@" || rc=$?
+  hs_audit "${args[@]}" "$@" || rc=$?
   return "$rc"
 }
 
