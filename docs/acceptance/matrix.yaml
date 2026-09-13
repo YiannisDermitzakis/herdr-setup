@@ -434,8 +434,14 @@ rows:
     - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
     levels: {}
     status: not-implemented
-    notes: Born with the spec (not-implemented). The 2026-09-13-session-audit plan adds
-      the verifying tests and moves this row up.
+    notes: Born with the spec (not-implemented). Phase 1 of the 2026-09-13-session-audit
+      plan lands the walking skeleton -- cmd_audit gates on hs_require_socket exactly
+      like cmd_feed (exit 3 under a mismatch, before lib/audit.py ever runs, covered by
+      tests/test_audit_entrypoint.sh), and lib/audit.py itself fails closed with an
+      "incomplete" line and exit 2 rather than an empty report -- but the git/gh-missing
+      and adapter-incomplete clauses this acceptance names have no surface yet (phases
+      2-4). Left not-implemented rather than flipped early on a partial slice; a later
+      phase moves this row to ci once the whole acceptance holds.
   - id: adapter-sessions-query
     capability: Session audit
     acceptance: The adapter contract documents an optional read-only sessions query
@@ -454,7 +460,14 @@ rows:
       with exit 4 to replace any other file or link.
     origin:
     - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
-    levels: {}
-    status: not-implemented
-    notes: Born with the spec (not-implemented). The 2026-09-13-session-audit plan adds
-      the verifying tests and moves this row up.
+    levels:
+      unit:
+      - herdr-setup:tests/test_install.sh
+      - herdr-setup:tests/test_entrypoint.sh
+    status: ci
+    notes: Implemented in the 2026-09-13-session-audit plan, phase 1 (cmd_install,
+      herdr-setup). tests/test_install.sh covers every row of the install table (fresh
+      install, idempotent re-run, a symlink/dangling-symlink/file/directory in the way,
+      --dry-run both clean and refused, PATH and shadowing warnings, installing through
+      a symlink); tests/test_entrypoint.sh proves install is dispatched and needs no
+      Herdr at all.
