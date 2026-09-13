@@ -14,6 +14,25 @@ Four phases, each depending on the one before it.
 4. **The report.** The three sections, text and JSON, exit codes, an end-to-end
    run through the entrypoint, the documentation, and the acceptance matrix.
 
+## Running the suite and the gates
+
+Several steps say "run the suite" or "run all gates". They mean exactly this,
+from the checkout root, with every exit status read directly and never through
+a pipeline or a subshell's `pipestatus`:
+
+```
+LOG="$(mktemp)"; /bin/bash tests/run.sh > "$LOG" 2>&1; rc=$?; tail -3 "$LOG"; echo "rc=$rc"
+```
+
+"All gates" is the suite as above, plus `uv run --group dev pytest`,
+`uv run --group dev ruff check .`, `uv run --group dev ruff format --check .`
+and `shellcheck -s bash -x herdr-setup lib/*.sh tests/*.sh`, each of which must
+exit 0.
+
+A RED step is proven, not asserted. Journal each RED run's exit status and the
+names of the failing tests as a `discovery` entry for that step before writing
+the code that makes it pass.
+
 ## The things that are easy to get wrong
 
 **GitHub answers a missing ref with partial data.** A GraphQL `compare`
