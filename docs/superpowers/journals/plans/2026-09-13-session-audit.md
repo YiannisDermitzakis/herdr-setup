@@ -9,3 +9,8 @@ fr models resolve --harness claude binds standard (claude-sonnet-5) but not hard
 ### b80778f12afd · discovery · no-refactor-because: P1.T2 (phase 1)
 
 cmd_install/cmd_install_warn and hs_resolve_path read clearly at GREEN (each refusal is its own guarded return, one stderr line, matching the design table row for row); shellcheck is clean and ruff needs no changes. No extraction was warranted, so P1.T2.S3 is this note rather than a diff.
+
+<!-- fr:journal kind=discovery scope=plan id=d1cfa5206b74 created=2026-09-14T00:15:29 phase=1 -->
+### d1cfa5206b74 · discovery · RED: tests/test_fixture_owner_hygiene.sh (P1.T3 fixup, item A.7) (phase 1)
+
+Ran against the pre-fix fixtures (664e228): rc=1, 2 passed, 2 failed. FAIL 1: the matrix's own owner ('YiannisDermitzakis') appears in tests/fixtures/gh/README.md:13. FAIL 2: tests/fixtures/gh/owner-pull-requests.json's endCursor ('[a real, since-rotated cursor value]') decodes to more than the sanctioned cursor:v2:placeholder payload -- it embeds a real repository id. The guard-on-the-guard nested cases (2 passed) already proved the checks fire on a poisoned copy. Fixes 1-3 (owner-string prose rewrite, category-only masking prose, synthetic cursor) are what turns this green.
