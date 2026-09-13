@@ -89,6 +89,7 @@ assert_contains "1: install prints the actual 'created:' message" "$(cat "$out")
 assert_contains "1: install names the link and target" "$(cat "$out")" "installed: $home/.local/bin/herdr-setup -> $entry"
 link_target="$(readlink "$home/.local/bin/herdr-setup" 2>/dev/null || true)"
 assert_eq "1: the link points at the sandbox entrypoint" "$entry" "$link_target"
+# shellcheck disable=SC2012
 link_inode="$(ls -i "$home/.local/bin/herdr-setup" | awk '{print $1}')"
 
 # ---------------------------------------------------------------------
@@ -102,6 +103,7 @@ assert_status "2: second run exits 0" 0 "$status"
 assert_contains "2: second run says already installed" "$(cat "$out")" "already installed: $home/.local/bin/herdr-setup"
 link_target2="$(readlink "$home/.local/bin/herdr-setup" 2>/dev/null || true)"
 assert_eq "2: readlink is unchanged" "$link_target" "$link_target2"
+# shellcheck disable=SC2012
 link_inode2="$(ls -i "$home/.local/bin/herdr-setup" | awk '{print $1}')"
 assert_eq "2: the link's inode is unchanged (nothing was removed and recreated)" "$link_inode" "$link_inode2"
 
