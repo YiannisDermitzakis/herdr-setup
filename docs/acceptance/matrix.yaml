@@ -467,7 +467,9 @@ rows:
     status: ci
     notes: Implemented in the 2026-09-13-session-audit plan, phase 1 (cmd_install,
       herdr-setup). tests/test_install.sh covers every row of the install table (fresh
-      install, idempotent re-run, a symlink/dangling-symlink/file/directory in the way,
-      --dry-run both clean and refused, PATH and shadowing warnings, installing through
-      a symlink); tests/test_entrypoint.sh proves install is dispatched and needs no
-      Herdr at all.
+      install, idempotent re-run by inode, a symlink/dangling-symlink/symlink-loop/
+      file/directory in the way, a read-only ~/.local or ~/.local/bin making mkdir/ln
+      itself fail, --dry-run both clean and refused, order-aware PATH and shadowing
+      warnings that compare resolved real paths, an unexpected argument, and installing
+      through an intermediate or relative symlink); tests/test_entrypoint.sh proves
+      install is dispatched and needs no Herdr at all.
