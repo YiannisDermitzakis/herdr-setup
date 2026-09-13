@@ -1548,3 +1548,21 @@ hs_feed() {
   fi
   uv run --quiet --script "$HS_LIB_DIR/feed.py" "$@"
 }
+
+# hs_audit: run lib/audit.py, the audit runner. Its own door beside hs_feed,
+# reached through uv the same way -- Python comes from uv, not from the host
+# (AGENTS.md), and uv runs this tool's own scripts and nothing else.
+#
+# audit.py is its own program, not a batched lib/hs.py subcommand, because it
+# spawns other programs the way feed.py does: adapters, `git`, `gh` and (once
+# phase 3 lands) `fr`. stdio is inherited like hs_feed's -- audit prints its
+# report to stdout and warnings to stderr, and has no prompt of its own to
+# protect from a command substitution the way hs_feed's does, but the
+# contract is the same door for the same reason.
+hs_audit() {
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "herdr-setup: uv is not on PATH; install it from https://docs.astral.sh/uv/ and retry." >&2
+    return 2
+  fi
+  uv run --quiet --script "$HS_LIB_DIR/audit.py" "$@"
+}

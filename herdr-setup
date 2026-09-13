@@ -26,16 +26,49 @@ HS_ROOT="$(hs_resolve_root "$0")"
 # shellcheck source=lib/common.sh
 . "$HS_ROOT/lib/common.sh"
 
+# hs_resolve_path <path>: <path>'s real, symlink-free path (directory AND
+# file name), following the same portable loop hs_resolve_root uses for $0 --
+# no `readlink -f`, which BSD (macOS) lacks. hs_resolve_root only needs, and
+# only returns, the containing directory (all $0 resolution needs, since the
+# entrypoint's own basename never changes along the chain). cmd_install needs
+# the FULL resolved file, to tell whether an existing ~/.local/bin/herdr-setup
+# already points at THIS checkout's entrypoint through some chain of
+# symlinks whose final name might differ.
+#
+# A dangling link (its final target does not exist) returns 1 and prints
+# nothing: it is never "this entrypoint", and cmd_install's caller reads that
+# failure as "not the same", not as an error.
+hs_resolve_path() {
+  local target="$1"
+  local dir
+  while [ -h "$target" ]; do
+    dir="$(cd -P "$(dirname "$target")" && pwd)"
+    target="$(readlink "$target")"
+    case "$target" in
+      /*) ;;
+      *) target="$dir/$target" ;;
+    esac
+  done
+  if [ ! -e "$target" ]; then
+    return 1
+  fi
+  dir="$(cd -P "$(dirname "$target")" && pwd)"
+  printf '%s/%s\n' "$dir" "$(basename "$target")"
+}
+
 hs_usage() {
   cat <<'EOF'
 usage: herdr-setup [--dry-run] [--yes] <command> [args]
 
 commands:
+  install   put this checkout's entrypoint on PATH (~/.local/bin)
   diff      report how this host differs from the checkout (read-only)
   apply     install missing plugins and splice the checkout's config in
   absorb    rewrite the checkout from this host's Herdr configuration
   onboard   detect coding agents and offer their Herdr integration
   feed      report live agent sessions to Herdr so a restart can resume them
+  audit     report open sessions, stranded branches and unmatched pull
+            requests across your GitHub owners (read-only)
 
   --dry-run print what would change, change nothing
   --yes     answer this command's own prompts with yes
@@ -66,7 +99,7 @@ while [ "$#" -gt 0 ]; do
       HS_YES=1
       shift
       ;;
-    diff|apply|absorb|onboard|feed)
+    install|diff|apply|absorb|onboard|feed|audit)
       if [ -z "$HS_COMMAND" ]; then
         HS_COMMAND="$1"
       else
@@ -93,6 +126,128 @@ fi
 export HS_DRY_RUN
 export HS_YES
 
+# cmd_install: puts this checkout's entrypoint on PATH as a symlink at
+# ~/.local/bin/herdr-setup (design doc, Commands > install). It touches no
+# Herdr state and does NOT call hs_require_socket -- install is the one
+# command a fresh clone needs to work before Herdr, or even uv, are anything
+# but a name in a README.
+#
+# "This entrypoint" (the design doc's own phrase) means the link's readlink
+# value equals target, OR both resolve to the same real path -- installing
+# FROM an existing link (one entrypoint symlinked from another location)
+# must still recognise itself, and a bare readlink cannot tell that: an
+# intermediate link's readlink is its own immediate target, not target's
+# real path. hs_resolve_path is what makes the second check possible without
+# `readlink -f`, which BSD lacks.
+#
+# The link path is inspected BEFORE anything is created or written, so a dry
+# run (which creates nothing) sees exactly what a real run would have seen,
+# and the ~/.local/bin-is-not-a-directory refusal runs first and
+# unconditionally, before the link is even looked at, matching its own row
+# in the design doc's table.
+#
+# Every refusal prints exactly one stderr line and returns 4 -- a WRITE was
+# refused, nothing changed (the design doc: "Exit 4 keeps its meaning ... a
+# write was refused"). A failed mkdir/ln is a different failure (2): the
+# write was ATTEMPTED and the environment refused it, not this tool refusing
+# on principle. --dry-run prints the `+ ` lines a real run would run and
+# writes nothing; a refusal still refuses under --dry-run, with the same
+# exit status, because a dry run's whole job is to say what a real run would
+# do, and a run that would have refused cannot say otherwise.
+cmd_install() {
+  local target dir link
+  target="$HS_ROOT/herdr-setup"
+  dir="$HOME/.local/bin"
+  link="$dir/herdr-setup"
+
+  local need_mkdir=0
+  if [ -e "$dir" ] || [ -h "$dir" ]; then
+    if [ ! -d "$dir" ]; then
+      echo "herdr-setup: install: $dir exists and is not a directory." >&2
+      return 2
+    fi
+  else
+    need_mkdir=1
+  fi
+
+  if [ -h "$link" ]; then
+    local link_target same=0
+    link_target="$(readlink "$link")"
+    if [ "$link_target" = "$target" ]; then
+      same=1
+    else
+      local resolved
+      if resolved="$(hs_resolve_path "$link" 2>/dev/null)" && [ "$resolved" = "$target" ]; then
+        same=1
+      fi
+    fi
+
+    if [ "$same" -eq 1 ]; then
+      echo "already installed: $link"
+      cmd_install_warn "$dir" "$link"
+      return 0
+    fi
+
+    echo "herdr-setup: install: $link is a symlink to $link_target, not this checkout; remove it by hand to switch checkouts." >&2
+    return 4
+  fi
+
+  if [ -e "$link" ]; then
+    if [ -d "$link" ]; then
+      echo "herdr-setup: install: $link is a directory." >&2
+    else
+      echo "herdr-setup: install: $link is a regular file." >&2
+    fi
+    return 4
+  fi
+
+  if [ "$HS_DRY_RUN" -eq 1 ]; then
+    if [ "$need_mkdir" -eq 1 ]; then
+      echo "+ mkdir -p $dir"
+    fi
+    echo "+ ln -s $target $link"
+    cmd_install_warn "$dir" "$link"
+    return 0
+  fi
+
+  if [ "$need_mkdir" -eq 1 ]; then
+    if ! mkdir -p "$dir"; then
+      echo "herdr-setup: install: could not create $dir." >&2
+      return 2
+    fi
+    echo "created: $dir"
+  fi
+
+  if ! ln -s "$target" "$link"; then
+    echo "herdr-setup: install: could not create $link." >&2
+    return 2
+  fi
+
+  echo "installed: $link -> $target"
+  cmd_install_warn "$dir" "$link"
+  return 0
+}
+# cmd_install_warn <dir> <link>: the two post-action warnings the design
+# doc's install table describes. Neither changes the exit status -- both run
+# AFTER cmd_install has already decided what happened (installed, already
+# installed, or a dry run standing in for either), because a dry run's job
+# is to say what a real run would do, and a real run would print these too.
+cmd_install_warn() {
+  local dir="$1" link="$2"
+
+  case ":$PATH:" in
+    *":$dir:"*|*":$dir/:"*) ;;
+    *)
+      echo "herdr-setup: install: $dir is not on PATH; add it to your shell profile." >&2
+      ;;
+  esac
+
+  local shadow
+  shadow="$(command -v herdr-setup 2>/dev/null || true)"
+  if [ -n "$shadow" ] && [ "$shadow" != "$link" ]; then
+    echo "herdr-setup: install: $shadow is on PATH ahead of $link and shadows it." >&2
+  fi
+}
 # cmd_diff: read-only. hs_preflight_banner prints first, so a mismatched
 # or serverless host says so up front. Each section below reports its own
 # drift and contributes to the overall exit status; none of them stop
@@ -460,6 +615,28 @@ cmd_feed() {
 
   local rc=0
   hs_feed "${args[@]}" || rc=$?
+  return "$rc"
+}
+
+# cmd_audit: report open agent sessions, stranded branches and unmatched
+# pull requests -- read-only (design doc, Commands > audit).
+#
+# hs_require_socket runs FIRST and unconditionally, exactly like cmd_feed's
+# own gate and for the same reason: audit needs `herdr agent list` (and,
+# once implemented, `herdr tab list`), and a mismatched or unreachable Herdr
+# answers every call with an error object that must not be read as "no
+# panes, nothing to report" -- the design doc's own order-of-work section
+# names this gate as audit's first, unconditional step.
+#
+# The work itself is lib/audit.py's, reached through hs_audit (uv), mirroring
+# cmd_feed's own hs_feed door. Its stdio is inherited: audit prints its
+# report to stdout and warnings to stderr, and -- unlike feed -- never asks a
+# question, since it is read-only and has nothing to confirm.
+cmd_audit() {
+  hs_require_socket || return 3
+
+  local rc=0
+  hs_audit "$@" || rc=$?
   return "$rc"
 }
 
