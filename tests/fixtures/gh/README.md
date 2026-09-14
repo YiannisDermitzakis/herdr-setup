@@ -2,7 +2,7 @@
 
 Same rule as `tests/fixtures/herdr/`, `tests/fixtures/claude/` and
 `tests/fixtures/codex/`: **this is a capture, not a construction.** The fake
-`gh` (`tests/helpers/fake-gh`, a later phase) answers from these shapes, so
+`gh` (`tests/helpers/fake-gh`) answers from these shapes, so
 this is where they come from -- never a guess written alongside the code
 that reads it.
 
@@ -79,5 +79,5 @@ other enum value; `user.json`'s `type`, `user_view_type`, `site_admin`,
   and `FAKE_GH_UNAUTH`/`GH_TOKEN=invalid`'s effect -- outside this task's
   read-only captures (`auth status` prints human-readable text to stderr,
   not JSON, and this task only captured `gh api`/`gh api graphql`
-  responses). A later phase's fake `gh` constructs its own `auth status`
-  behaviour directly.
+  responses). The fake `gh` (`tests/helpers/fake-gh`) constructs its own
+  `auth status` behaviour directly.

@@ -34,7 +34,7 @@
 #
 # What it answers:
 #
-#   gh auth status [--hostname github.com]
+#   gh auth status [--hostname github.com] [--active]
 #   gh api user [--jq .login]
 #   gh api [--paginate] user/orgs      pages printed back to back, as real gh
 #                                      prints each page as its own JSON array
@@ -93,15 +93,19 @@
 #   FAKE_GH_GRAPHQL_ERRORS=1
 #       Every GraphQL answer carries its data PLUS an `errors` entry and exits
 #       0: the shape a caller that checks only the exit status reads as a
-#       success.
+#       success. A construction the spec requires ("Testing", fake gh), not a
+#       capture: the real gh exits 1 whenever an answer carries errors. It is
+#       here so the caller's `errors` check is proven on its own, not only
+#       behind the exit status.
 #   FAKE_GH_PAGE_SIZE=<n>
 #       Page every connection (and user/orgs) at n items instead of the
 #       query's own `first:`, so a test can force pagination with a handful of
 #       items rather than a hundred.
 #
 # Refused outright, whatever the switches say: any query text containing the
-# word `mutation` (exit 1). The audit is read-only, and this is the tripwire
-# that proves no call it makes could write.
+# word `mutation` (exit 1), checked before every switch, FAKE_GH_FAIL
+# included, so no switch can mask it. The audit is read-only, and this is the
+# tripwire that proves no call it makes could write.
 
 from __future__ import annotations
 
@@ -191,6 +195,10 @@ def auth_status(rest: list[str]) -> int:
         elif word.startswith("--hostname="):
             hostname = word.split("=", 1)[1]
             index += 1
+        elif word in ("--active", "-a"):
+            # This fake has one account, so checking only the active one is
+            # the same check; the flag is accepted because the audit sends it.
+            index += 1
         else:
             refuse(f"auth status: flag {word!r} is not faked")
     if os.environ.get("FAKE_GH_UNAUTH") == "1":
@@ -230,7 +238,9 @@ def infer(value: str):
         return False
     if value == "null":
         return None
-    if re.fullmatch(r"[+-]?\d+", value):
+    # ASCII digits only, like Go's strconv: Python's \d also matches other
+    # scripts' digits, which gh would send as a string.
+    if re.fullmatch(r"[+-]?[0-9]+", value):
         return int(value)
     if value.startswith("@") or re.search(r"\{(owner|repo|branch)\}", value):
         refuse(f"-F {value!r}: file and placeholder values are not faked")
@@ -744,9 +754,6 @@ def graphql(call: ApiCall) -> int:
     operation_name = fields.pop("operationName", None)
     if not isinstance(query, str):
         refuse("api graphql: no query field")
-    if re.search(r"\bmutation\b", query):
-        sys.stderr.write("fake gh: refusing a GraphQL mutation; nothing under test may write\n")
-        return 1
     named = re.match(r"\s*query\s+([_A-Za-z]\w*)", query)
     if named is None:
         refuse("api graphql: every query must be a named `query` operation")
@@ -789,8 +796,24 @@ def graphql(call: ApiCall) -> int:
 # --------------------------------------------------------------------------
 
 
+def names_a_mutation(argv: list[str]) -> bool:
+    """Whether any query field of a `gh api graphql` call contains `mutation`."""
+    if argv[:2] != ["api", "graphql"]:
+        return False
+    for word in argv:
+        for prefix in ("query=", "--raw-field=query=", "--field=query="):
+            if word.startswith(prefix) and re.search(r"\bmutation\b", word[len(prefix) :]):
+                return True
+    return False
+
+
 def main(argv: list[str]) -> int:
     log_call(argv)
+    # The tripwire comes before every switch: FAKE_GH_FAIL must not be able
+    # to turn a refused mutation into an ordinary-looking failure.
+    if names_a_mutation(argv):
+        sys.stderr.write("fake gh: refusing a GraphQL mutation; nothing under test may write\n")
+        return 1
     if failing(" ".join(argv)):
         sys.stderr.write(f"gh: {os.environ['FAKE_GH_FAIL']} failed (FAKE_GH_FAIL)\n")
         return 1

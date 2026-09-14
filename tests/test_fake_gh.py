@@ -121,8 +121,6 @@ FAKE_SWITCHES = (
     "FAKE_GH_UNAUTH",
     "FAKE_GH_GRAPHQL_ERRORS",
     "FAKE_GH_PAGE_SIZE",
-    "FAKE_FR_STATUS",
-    "FAKE_FR_FAIL",
 )
 
 
@@ -141,7 +139,7 @@ class FakeGhCase(unittest.TestCase):
         self.state_path.write_text(json.dumps(state), encoding="utf-8")
 
     def gh(self, *args, **extra_env) -> subprocess.CompletedProcess:
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("FAKE_GH_", "FAKE_FR_"))}
+        env = {k: v for k, v in os.environ.items() if not k.startswith("FAKE_GH_")}
         env["FAKE_GH_STATE"] = str(self.state_path)
         env["FAKE_GH_LOG"] = str(self.log_path)
         env.update({k: str(v) for k, v in extra_env.items()})
@@ -176,11 +174,10 @@ class TestItIsTheFakeOnPath(unittest.TestCase):
 
     def test_every_fake_switch_is_cleared_by_the_runner_and_feedlib(self):
         sources = ""
-        for name in ("fake-gh", "fake-fr"):
-            path = HELPERS_DIR / name
-            self.assertTrue(path.is_file(), f"{path} is missing")
-            sources += path.read_text(encoding="utf-8")
-        read = set(re.findall(r"\bFAKE_(?:GH|FR)_[A-Z_]+\b", sources))
+        path = HELPERS_DIR / "fake-gh"
+        self.assertTrue(path.is_file(), f"{path} is missing")
+        sources += path.read_text(encoding="utf-8")
+        read = set(re.findall(r"\bFAKE_GH_[A-Z_]+\b", sources))
         self.assertTrue(set(FAKE_SWITCHES) <= read, sorted(set(FAKE_SWITCHES) - read))
         run_sh = (TESTS_DIR / "run.sh").read_text(encoding="utf-8")
         for name in sorted(read):
@@ -219,6 +216,8 @@ class TestRest(FakeGhCase):
 
     def test_auth_status_succeeds_and_fake_gh_unauth_fails_it(self):
         self.assertEqual(self.gh("auth", "status", "--hostname", "github.com").returncode, 0)
+        active = self.gh("auth", "status", "--hostname", "github.com", "--active")
+        self.assertEqual(active.returncode, 0, active.stderr)
         proc = self.gh("auth", "status", "--hostname", "github.com", FAKE_GH_UNAUTH=1)
         self.assertEqual(proc.returncode, 1)
         self.assertTrue(proc.stderr.strip())
@@ -383,7 +382,7 @@ class TestQuerySemantics(FakeGhCase):
 class TestFieldTyping(FakeGhCase):
     def setUp(self) -> None:
         super().setUp()
-        state = repo(refs={"123": ZERO_OID, "true": ZERO_OID, "feat": ZERO_OID})
+        state = repo(refs={"123": ZERO_OID, "true": ZERO_OID, "feat": ZERO_OID, "١٢٣": ZERO_OID})
         self.write_state({"repos": {"example-org/example-repo": state}})
 
     def branch(self, name, *, typed: bool):
@@ -408,6 +407,11 @@ class TestFieldTyping(FakeGhCase):
 
     def test_dash_capital_f_leaves_a_plain_word_a_string(self):
         answer = self.ok_json(self.branch("feat", typed=True))
+        self.assertEqual(answer["data"]["repository"]["r0"], {"target": {"oid": ZERO_OID}})
+
+    def test_dash_capital_f_infers_only_ascii_digits_like_go_strconv(self):
+        # Arabic-Indic digits are digits to Python's \d, not to strconv.Atoi.
+        answer = self.ok_json(self.branch("١٢٣", typed=True))
         self.assertEqual(answer["data"]["repository"]["r0"], {"target": {"oid": ZERO_OID}})
 
 
@@ -472,6 +476,13 @@ class TestFailureSwitches(FakeGhCase):
                 self.assertEqual(proc.returncode, 1)
                 self.assertIn("mutation", proc.stderr)
                 self.assertEqual(proc.stdout, "")
+
+    def test_the_mutation_tripwire_fires_before_fake_gh_fail(self):
+        text = 'mutation HsStar { addStar(input: {starrableId: "x"}) { clientMutationId } }'
+        proc = self.graphql(text, FAKE_GH_FAIL="api graphql")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("mutation", proc.stderr)
+        self.assertNotIn("FAKE_GH_FAIL", proc.stderr)
 
     def test_graphql_without_a_state_file_is_refused_loudly(self):
         proc = self.graphql(COMPARE_QUERY, raw=self.compare_raw, FAKE_GH_STATE="")
