@@ -54,10 +54,19 @@ from pathlib import Path
 REQUIRED_PROBE_KEYS = ("agent", "source", "available", "confidence")
 VALID_CONFIDENCE = ("exact", "heuristic")
 
+# The four `branches[].evidence` values the `sessions` query may report --
+# docs/adapters.md's own table. A branch whose evidence is anything else is
+# dropped by parse_sessions rather than passed on as something the audit
+# runner (phase 3) would have to recognise on its own.
+EVIDENCE = ("session-meta", "git-branch-field", "command", "worktree-path")
+
 # An adapter is a small local script. These bound a broken one; they are not
-# a performance budget.
+# a performance budget. `sessions` gets the longest budget of the three: it
+# walks a whole session store rather than answering about one process or one
+# batch of panes.
 PROBE_TIMEOUT = 10.0
 RESOLVE_TIMEOUT = 30.0
+SESSIONS_TIMEOUT = 120.0
 
 REPORT_METHOD = "pane.report_agent_session"
 
@@ -99,6 +108,7 @@ class Adapter:
     confidence: str
     command: str
     unverified: bool
+    sessions: bool
     probe: dict
 
     @property
@@ -160,6 +170,8 @@ def validate_probe(obj) -> dict:
         raise AdapterError("probe key 'unverified' must be true or false")
     if "command" in obj and (not isinstance(obj["command"], str) or not obj["command"]):
         raise AdapterError("probe key 'command' must be a non-empty string")
+    if "sessions" in obj and not isinstance(obj["sessions"], bool):
+        raise AdapterError("probe key 'sessions' must be true or false")
     return obj
 
 
@@ -234,6 +246,7 @@ def usable_adapters(adapter_dir, warn=warn, timeout: float = PROBE_TIMEOUT) -> l
                 confidence=obj["confidence"],
                 command=obj.get("command") or obj["agent"],
                 unverified=unverified,
+                sessions=bool(obj.get("sessions", False)),
                 probe=obj,
             )
         )
@@ -553,6 +566,186 @@ def candidates_by_pane(results: list) -> dict[str, list]:
         ]
         by_pane[str(pane_id)] = kept
     return by_pane
+
+
+# --------------------------------------------------------------------------
+# The `sessions` query (docs/adapters.md, "The sessions query")
+# --------------------------------------------------------------------------
+#
+# An adapter that opts in (`probe`'s `sessions: true`) answers a second,
+# unrelated question: not "which session is this pane in", but "what has
+# this agent worked on recently, and on what branches". phase 3's audit
+# runner is the only caller; `feed`'s own run() never touches this.
+
+# Named after docs/adapters.md's own bullet list, one set or literal per
+# rule, so a future change to any one rule touches one line here and one
+# bullet there, never a shared regex neither reads back to the document.
+_UNREAL_EXACT_NAMES = frozenset({"", "main", "master", "HEAD"})
+_UNREAL_PREFIX = "worktree-agent-"
+# git's own ref-name rules: these characters, these substrings, a leading or
+# trailing `/`, a trailing `.` or `.lock`, and a component starting with `.`.
+_GIT_INVALID_CHARS = set("~^:?*[\\")
+_GIT_INVALID_SUBSTRINGS = ("..", "@{", "//")
+# Template placeholders left behind by a shell prompt or documentation, not a
+# git rule -- `<branch>`, `{branch}`, `"$BR"`, a shell-quoted `'a'` -- the
+# trap the plan prose names as "transcripts mention branches that never
+# existed". None of these characters is otherwise valid in a branch name
+# either, so dropping them costs nothing real.
+_TEMPLATE_CHARS = set("<>{}|;&()'\"`")
+
+
+def branch_name_ok(name: str) -> bool:
+    """Whether `name` could plausibly be a real branch, never mind if it exists.
+
+    This is the runner's copy of the rule docs/adapters.md states in full.
+    Every adapter that reports `command` or `worktree-path` evidence keeps
+    its OWN copy too (adapters never import lib/feed.py), and the runner
+    re-applies this one regardless -- an adapter that forgets, or a
+    compromised one, cannot inject noise past it. tests/test_adapter_claude.py
+    and this module's own tests both run the shared name list through their
+    own copy, so the two cannot silently drift apart.
+    """
+    if not isinstance(name, str) or not name:
+        return False
+    if name in _UNREAL_EXACT_NAMES:
+        return False
+    if name.startswith(_UNREAL_PREFIX):
+        return False
+    if "$" in name:
+        return False
+    if name.startswith("-"):
+        return False
+    if any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F for c in name):
+        return False
+    if any(c in _GIT_INVALID_CHARS for c in name):
+        return False
+    if any(sub in name for sub in _GIT_INVALID_SUBSTRINGS):
+        return False
+    if name.startswith("/") or name.endswith("/"):
+        return False
+    if name.endswith(".") or name.endswith(".lock"):
+        return False
+    if any(part.startswith(".") for part in name.split("/")):
+        return False
+    if any(c in _TEMPLATE_CHARS for c in name):
+        return False
+    return True
+
+
+def parse_sessions(obj) -> tuple[list[dict], int]:
+    """Validate and normalise a `sessions` answer into the runner's own shape.
+
+    Returns `(sessions, dropped)`. Raises AdapterError only when there is
+    nothing to salvage at all -- the top-level object is not a dict, or
+    `sessions` is missing or not a list. Below that, the query's own
+    "tolerant" rule (docs/adapters.md) applies: a single broken SESSION is
+    dropped and counted rather than failing the whole answer, and a broken
+    BRANCH within an otherwise-good session is dropped silently -- it is
+    exactly the kind of per-item noise an adapter walking a real session
+    store will occasionally produce.
+
+    `branch_name_ok` is re-applied here even though every adapter is
+    supposed to have applied its own copy already: this function is the one
+    place that can make that promise true regardless of the adapter.
+    """
+    if not isinstance(obj, dict):
+        raise AdapterError(f"sessions must print a JSON object, got {type(obj).__name__}")
+    raw_sessions = obj.get("sessions")
+    if not isinstance(raw_sessions, list):
+        raise AdapterError("sessions is missing the required 'sessions' list")
+
+    dropped = 0
+    result: list[dict] = []
+    for raw in raw_sessions:
+        if not isinstance(raw, dict):
+            dropped += 1
+            continue
+        if not all(isinstance(raw.get(k), str) and raw.get(k) for k in ("id", "cwd", "last_active")):
+            dropped += 1
+            continue
+        raw_branches = raw.get("branches")
+        if not isinstance(raw_branches, list):
+            dropped += 1
+            continue
+
+        branches: list[dict] = []
+        for raw_branch in raw_branches:
+            if not isinstance(raw_branch, dict):
+                continue
+            name = raw_branch.get("name")
+            branch_dir = raw_branch.get("dir")
+            evidence = raw_branch.get("evidence")
+            seen_at = raw_branch.get("seen_at")
+            if not isinstance(name, str) or not name or not branch_name_ok(name):
+                continue
+            if not isinstance(branch_dir, str) or not branch_dir:
+                continue
+            if evidence not in EVIDENCE:
+                continue
+            if not isinstance(seen_at, str) or not seen_at:
+                continue
+            branches.append(
+                {"name": name, "dir": branch_dir, "evidence": evidence, "seen_at": seen_at}
+            )
+
+        session = {
+            "id": raw["id"],
+            "cwd": raw["cwd"],
+            "last_active": raw["last_active"],
+            "branches": branches,
+        }
+        title = raw.get("title")
+        if isinstance(title, str) and title:
+            session["title"] = title
+        result.append(session)
+
+    return result, dropped
+
+
+def sessions(
+    adapter: Adapter,
+    since: int,
+    *,
+    include_sdk: bool = False,
+    timeout: float = SESSIONS_TIMEOUT,
+) -> list[dict]:
+    """Ask `adapter` for its sessions from the last `since` days.
+
+    Runs `<adapter> sessions --since <since>`, adding `--include-sdk` only
+    when asked for it -- an adapter that cannot tell an automated session
+    from a human one is allowed to ignore the flag, but this runner never
+    sends it unless the caller wants it. Raises AdapterError on every way
+    the call can fail: a non-zero exit, no output, output that is not JSON,
+    or a timeout. The list returned has already passed parse_sessions, so a
+    caller gets validated sessions, never a raw blob it must re-check.
+    """
+    args = [str(adapter.path), "sessions", "--since", str(since)]
+    if include_sdk:
+        args.append("--include-sdk")
+    try:
+        proc = subprocess.run(  # noqa: S603
+            args,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AdapterError(f"sessions did not answer within {timeout:g}s") from exc
+    except OSError as exc:
+        raise AdapterError(f"sessions could not be run: {exc}") from exc
+
+    if proc.returncode != 0:
+        detail = flatten(proc.stderr) or flatten(proc.stdout) or "no output"
+        raise AdapterError(f"sessions exited {proc.returncode}: {detail}")
+    if not proc.stdout.strip():
+        raise AdapterError("sessions printed nothing")
+    try:
+        obj = json.loads(proc.stdout)
+    except ValueError as exc:
+        raise AdapterError(f"sessions printed something that is not JSON: {exc}") from exc
+
+    parsed, _dropped = parse_sessions(obj)
+    return parsed
 
 
 # --------------------------------------------------------------------------

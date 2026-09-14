@@ -66,7 +66,14 @@ class TestTheDocumentIsPresent(unittest.TestCase):
     def test_it_carries_every_marked_example(self):
         self.assertEqual(
             sorted(blocks()),
-            ["minimal-adapter", "probe", "resolve-request", "resolve-response"],
+            [
+                "minimal-adapter",
+                "probe",
+                "resolve-request",
+                "resolve-response",
+                "sessions-probe",
+                "sessions-response",
+            ],
         )
 
     def test_it_states_the_rule_that_the_adapter_never_reports(self):
@@ -132,9 +139,25 @@ class TestValidateProbe(unittest.TestCase):
             ("available", "true"),
             ("unverified", "yes"),
             ("command", ""),
+            ("sessions", "yes"),
         ):
             with self.assertRaises(feed.AdapterError, msg=f"{key}={value!r} must be rejected"):
                 feed.validate_probe(dict(self.example, **{key: value}))
+
+
+class TestTheSessionsExamples(unittest.TestCase):
+    """The `sessions` query's own marked examples, run through the real code."""
+
+    def test_the_sessions_probe_example_declares_sessions_true(self):
+        example = json.loads(blocks()["sessions-probe"])
+        self.assertIs(feed.validate_probe(example)["sessions"], True)
+
+    def test_the_sessions_response_example_survives_parse_sessions(self):
+        example = json.loads(blocks()["sessions-response"])
+        sessions, dropped = feed.parse_sessions(example)
+        self.assertEqual(dropped, 0)
+        self.assertGreaterEqual(len(sessions), 1)
+        self.assertGreaterEqual(len(sessions[0]["branches"]), 1)
 
 
 class TestTheDocumentedShapes(unittest.TestCase):

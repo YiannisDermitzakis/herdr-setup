@@ -212,6 +212,157 @@ here", and the difference is the whole reason the runner is careful.
 Neither subcommand may block waiting for input. `probe` is given 10 seconds
 and `resolve` 30; past that the adapter is skipped.
 
+## The `sessions` query
+
+A third, **optional** question, unrelated to `resolve`: not "which session is
+this pane in", but "what has this agent worked on recently, and on what
+branches". `herdr-setup audit` is the only caller. An adapter that has
+nothing to say about it simply does not declare it.
+
+### Opt-in
+
+An adapter declares `"sessions": true` in its `probe` output:
+
+<!-- contract: sessions-probe -->
+```json
+{
+  "agent": "claude",
+  "source": "herdr:claude",
+  "available": true,
+  "confidence": "exact",
+  "sessions": true
+}
+```
+
+Absent means false, and the runner never calls `sessions` on that adapter.
+`validate_probe` rejects a non-boolean value.
+
+### `adapters/<name> sessions --since <days> [--include-sdk]`
+
+Prints one JSON object on stdout and exits 0:
+
+<!-- contract: sessions-response -->
+```json
+{
+  "sessions": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "cwd": "/work/alpha",
+      "last_active": "2026-09-12T18:04:11Z",
+      "title": "add the health endpoint",
+      "branches": [
+        {"name": "feat/health-endpoint", "dir": "/work/alpha",
+         "evidence": "command", "seen_at": "2026-09-12T17:58:02Z"}
+      ]
+    }
+  ]
+}
+```
+
+| Key | Required | Meaning |
+|---|---|---|
+| `id` | yes | The session id Herdr knows the session by, the value `agent_session.value` carries. |
+| `cwd` | yes | The session's working directory, the latest one known. |
+| `last_active` | yes | ISO 8601 UTC with `Z`. |
+| `title` | no | A short human name. |
+| `branches` | yes | May be empty. At most one entry per (`name`, `dir`), keeping the latest `seen_at`. |
+| `branches[].name` | yes | A branch name. |
+| `branches[].dir` | yes | Where the branch lives when known (a worktree path), otherwise the session `cwd`. |
+| `branches[].evidence` | yes | `session-meta`, `git-branch-field`, `command` or `worktree-path`. |
+| `branches[].seen_at` | yes | ISO 8601 UTC with `Z`: when that evidence was recorded. |
+
+Rules:
+
+- **Read-only, and local.** No network, no git, no `gh`, no Herdr socket, no
+  writes. Existence and merge state are the runner's job, so an adapter
+  reports every plausible name and does not try to be clever about which
+  ones are real.
+- **Bounded.** Only history touched within `--since` days, by file
+  modification time.
+- **Tolerant.** A truncated or in-progress file, an unparseable line, or an
+  unreadable file is skipped. It is never fatal to the query.
+- **`--include-sdk`** asks for sessions that an automated caller drove rather
+  than a person. An adapter must accept the flag, and one that cannot tell
+  the difference ignores it.
+- **Branch names that cannot be real work branches are dropped:**
+  - the empty name, `main`, `master`, `HEAD`, and `worktree-agent-*`;
+  - anything containing `$`;
+  - anything starting with `-`;
+  - anything git's ref-name rules reject: whitespace or control characters,
+    any of `~^:?*[\`, `..`, `@{`, `//`, a leading or trailing `/`, a trailing
+    `.`, a trailing `.lock`, or a component starting with `.`;
+  - template text: anything containing `<>{}|;&()'"` or a backquote.
+
+  The runner applies the same filter again (`lib/feed.py`'s `branch_name_ok`),
+  so an adapter that forgets cannot inject noise.
+- **Failing** is as for `resolve`: exit non-zero, or print nothing. An empty
+  `sessions` list means "no sessions in the window", never "could not read".
+  Timeout: 120 seconds.
+
+### Claude Code
+
+- **Store.** `<config>/projects/*/*.jsonl`, where `<config>` is
+  `$CLAUDE_CONFIG_DIR`, else `~/.claude`. That glob covers top-level
+  transcripts only: subagent transcripts live one level deeper, in
+  `<session-id>/subagents/`. A line with `isSidechain: true` is skipped as
+  well.
+- **Identity.** The id is the file stem, which is what `claude --resume`
+  takes. `cwd` is the last `cwd` field in the file. `last_active` is the
+  last `timestamp`, falling back to the file's modification time.
+- **Title.** The latest `customTitle` (a `custom-title` record), else the
+  latest `aiTitle` (an `ai-title` record), else omitted.
+- **SDK sessions.** A transcript whose `entrypoint` starts with `sdk-`
+  (`sdk-cli`, `sdk-py`) is skipped unless `--include-sdk`.
+- **Evidence `git-branch-field`.** Each line's `gitBranch`, with that line's
+  `cwd` as `dir`. It mostly reads `main` and is filtered out. It is kept for
+  the sessions that did start on a branch.
+- **Evidence `command`.** Every `tool_use` block named `Bash`, from its
+  `input.command`.
+  - **Parsing.** Each line is tokenised with `shlex` in POSIX mode with
+    punctuation characters, then split into segments at `&&`, `||`, `;` and
+    `|`. A line `shlex` cannot parse falls back to whitespace splitting.
+  - **Directory.** `cd <dir>` sets `dir` for the segments after it in the
+    same command, and `git -C <dir>` sets it for its own segment. A relative
+    path is resolved against the line's `cwd`, and `~` against `$HOME`, as
+    text only.
+  - **Shapes read:**
+    - `fr isolation up|attach ... --branch <b>` (or `--branch=<b>`), with
+      `--repo <path>` as `dir` when present;
+    - `git checkout|switch -b|-c|-B <b>`;
+    - `git worktree add <path> ... -b|-B <b>`, flags in any order, with
+      `<path>` as `dir`;
+    - `git push ... -u|--set-upstream <remote> <refspec>`: the source side of
+      the refspec, minus a leading `+`;
+    - `gh pr create ... --head|-H <b>`, minus an `owner:` prefix.
+- **Evidence `worktree-path`.** An fr worktree path,
+  `.../.cache/fr/worktrees/<repo>/<slug>`. The branch is the slug with `__`
+  turned back into `/`, and `dir` is the worktree path up to and including
+  the slug.
+  - **Where it is read.** Only in `cwd` fields and in Bash command text,
+    never in tool output. `fr isolation status` output lists every worktree
+    on the host and would attribute all of them to whichever session ran it.
+
+### Codex
+
+- **Store.** `<config>/sessions/*/*/*/rollout-*.jsonl`, where `<config>` is
+  `$CODEX_HOME`, else `~/.codex`. Only files modified within the window are
+  read, and only their first line.
+- **The first line** must be a `session_meta` record. The id is
+  `payload.id`, `cwd` is `payload.cwd`, and `last_active` is the file's
+  modification time.
+- **Evidence `session-meta`.** `payload.git.branch`, with `seen_at` set to
+  `payload.timestamp`. A rollout with no `git` block, or a null or empty
+  branch (a detached HEAD), yields a session with no branches.
+- **Sub-threads.** A rollout whose `payload.parent_thread_id` is set
+  (subagent and guardian threads) is skipped. It is Codex's counterpart of a
+  Claude subagent transcript.
+- **Version 1 limits.** No command parsing. `--include-sdk` is accepted and
+  ignored.
+
+### opencode and Copilot CLI
+
+No `sessions` key in `probe`. Unchanged otherwise.
+
 ## A worked minimal adapter
 
 A complete, working adapter in POSIX shell. It matches sessions by directory,
@@ -287,3 +438,6 @@ Drop that in `adapters/`, `chmod +x` it, and `herdr-setup feed` picks it up.
 6. Add a test beside the others in `tests/`, driving it against a fixture
    session store in a temporary directory. No test may touch a real home
    directory.
+7. If the adapter opts into `sessions`, its own branch-name filter agrees
+   with `lib/feed.py`'s `branch_name_ok` (the runner re-applies it
+   regardless), and a test proves the two never drift apart.
