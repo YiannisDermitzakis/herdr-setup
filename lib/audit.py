@@ -33,7 +33,7 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # Mirrors the design doc's own table (Commands > audit): a positive integer
 # up to 3650 (ten years), which is generous enough that no real session
@@ -753,6 +753,215 @@ def local_default(repo: Repo) -> str | None:
     if not target.startswith(prefix) or target == prefix:
         raise GitError(f"git in {repo.toplevel}: refs/remotes/origin/HEAD points at {target!r}")
     return target[len(prefix) :]
+
+
+# --------------------------------------------------------------------------
+# Merge state (spec: "Resolving a branch", "Merge state")
+# --------------------------------------------------------------------------
+#
+# First match wins:
+#
+#   merged     a MERGED pull request whose head is the branch and whose head
+#              repository is this repository
+#   open-pr    an OPEN pull request by the same rule
+#   contained  at least one ref exists, and every ref that exists is
+#              reachable from the default branch
+#   unmerged   a local or GitHub ref exists that is not contained
+#   gone       no local ref, no GitHub ref, no open or merged pull request
+#
+# The pull request check comes first because a squash merge is never an
+# ancestor of anything. The head repository check stops a fork's same-named
+# branch counting as this repository's, and a pull request whose head
+# repository is null (its fork was deleted) cannot show that, so it is not
+# used. `unresolved` is the branch this cannot decide at all: no work tree,
+# or no default branch to measure against, which is never guessed.
+
+MERGED = "merged"
+OPEN_PR = "open-pr"
+CONTAINED = "contained"
+UNMERGED = "unmerged"
+GONE = "gone"
+UNRESOLVED = "unresolved"
+
+# GitHub's compare of the default branch against a branch: the branch has
+# nothing the default branch lacks.
+CONTAINED_COMPARE = frozenset({"IDENTICAL", "BEHIND"})
+
+
+@dataclass(frozen=True)
+class Facts:
+    """Everything one branch's merge state is decided from, already gathered.
+
+    None means "not asked". resolve_branches asks only what the table still
+    needs -- nothing about refs once a pull request has decided, nothing at
+    all without a default branch -- and classify() refuses to decide from a
+    fact that was needed and never gathered.
+    """
+
+    repo_slug: str | None  # `owner/name` on github.com, or None
+    default: str | None  # GitHub's default branch, else origin/HEAD's, else None
+    prs: tuple[dict, ...] = ()  # OPEN/MERGED pull requests by head name (RepoBranches.prs)
+    local_ref: bool | None = None  # refs/heads/<b> exists locally
+    local_contained: bool | None = None  # is_ancestor(), asked only when local_ref
+    remote_ref: bool | None = None  # refs/heads/<b> exists on GitHub
+    remote_status: str | None = None  # compare() status, asked only when remote_ref
+
+
+@dataclass(frozen=True)
+class Resolution:
+    """One branch's merge state."""
+
+    state: str
+    pr: dict | None = None  # {number, draft, url} for merged and open-pr
+    repo_slug: str | None = None
+    reason: str | None = None  # why, for unresolved
+    # The distinct (dir, cwd) pairs that named this branch: how a caller maps
+    # its own entries back to the one resolution they share.
+    sources: tuple[tuple[str | None, str | None], ...] = ()
+
+
+def pr_decision(repo_slug: str | None, prs) -> tuple[str, dict] | None:
+    """(merged|open-pr, pr) when a pull request of THIS repository decides, else None."""
+    if repo_slug is None:
+        return None
+    own = [
+        pr
+        for pr in prs
+        if isinstance(pr.get("head_repo"), str) and pr["head_repo"].lower() == repo_slug.lower()
+    ]
+    for state, wanted in ((MERGED, "MERGED"), (OPEN_PR, "OPEN")):
+        matching = [pr for pr in own if pr.get("state") == wanted]
+        if matching:
+            chosen = max(matching, key=lambda pr: pr["number"])
+            return state, {
+                "number": chosen["number"],
+                "draft": chosen["draft"],
+                "url": chosen["url"],
+            }
+    return None
+
+
+def classify(facts: Facts) -> Resolution:
+    """The merge state table, as a pure function of already-gathered facts."""
+    decided = pr_decision(facts.repo_slug, facts.prs)
+    if decided is not None:
+        return Resolution(decided[0], decided[1], facts.repo_slug)
+    if facts.default is None:
+        if facts.repo_slug is not None:
+            reason = f"GitHub reports no default branch for {facts.repo_slug}"
+        else:
+            reason = "no GitHub remote, and no refs/remotes/origin/HEAD to name a default branch"
+        return Resolution(UNRESOLVED, None, facts.repo_slug, reason)
+
+    contained: list[bool] = []
+    if facts.local_ref is None:
+        raise ValueError("classify: whether the local ref exists was never asked")
+    if facts.local_ref:
+        if facts.local_contained is None:
+            raise ValueError("classify: local ancestry was never asked")
+        contained.append(facts.local_contained)
+    if facts.repo_slug is not None:
+        if facts.remote_ref is None:
+            raise ValueError("classify: whether the GitHub ref exists was never asked")
+        if facts.remote_ref:
+            if facts.remote_status is None:
+                raise ValueError("classify: GitHub's compare was never asked")
+            contained.append(facts.remote_status in CONTAINED_COMPARE)
+    if not contained:
+        return Resolution(GONE, None, facts.repo_slug)
+    return Resolution(CONTAINED if all(contained) else UNMERGED, None, facts.repo_slug)
+
+
+def _resolve_repository(repo: Repo, names: list[str]) -> dict[str, Resolution]:
+    """Gather the facts for every branch of one repository, batched, and classify.
+
+    GitHub first (one HsRepoBranches per chunk): the pull requests may decide
+    a branch outright. Then, for the undecided only, local ancestry, and
+    GitHub's compare for those whose GitHub ref exists -- compare is never
+    asked about a ref not known to exist.
+    """
+    github: RepoBranches | None = None
+    if repo.slug is not None:
+        owner, name = repo.slug.split("/", 1)
+        github = repo_branches(owner, name, names)
+        default = github.default
+    else:
+        default = local_default(repo)
+
+    prs = {branch: tuple(github.prs[branch]) if github else () for branch in names}
+    undecided = []
+    if default is not None:
+        undecided = [branch for branch in names if pr_decision(repo.slug, prs[branch]) is None]
+    local = {branch: local_ref(repo, branch) for branch in undecided}
+    contained = {
+        branch: is_ancestor(repo, branch, default) for branch in undecided if local[branch]
+    }
+    statuses: dict[str, str] = {}
+    if github is not None:
+        asked = [branch for branch in undecided if github.refs[branch]]
+        if asked:
+            statuses = compare(owner, name, asked)
+
+    return {
+        branch: classify(
+            Facts(
+                repo_slug=repo.slug,
+                default=default,
+                prs=prs[branch],
+                local_ref=local.get(branch),
+                local_contained=contained.get(branch),
+                remote_ref=github.refs[branch] if github else None,
+                remote_status=statuses.get(branch),
+            )
+        )
+        for branch in names
+    }
+
+
+def resolve_branches(entries) -> dict[tuple[str, str], Resolution]:
+    """Merge state for each distinct (repository, branch) the entries name.
+
+    Each entry is a mapping with `name`, `dir` and `cwd` (the session's
+    working directory, the fallback when `dir` is not a work tree). The key
+    is (repo_key, name), where repo_key is the repository's main checkout, so
+    a branch named from several sessions, subdirectories and linked
+    worktrees of one repository resolves once. An entry whose `dir` and
+    `cwd` are both outside any work tree has no repository to key it by: it
+    is `unresolved` under its own `dir`. Every Resolution lists the (dir,
+    cwd) pairs that named it in `sources`.
+
+    GhError and GitError propagate: a failed call stops the run, it never
+    becomes a state.
+    """
+    located: dict[tuple, Repo | None] = {}
+    repositories: dict[str, tuple[Repo, list[str]]] = {}
+    sources: dict[tuple[str, str], list] = {}
+    results: dict[tuple[str, str], Resolution] = {}
+
+    for item in entries:
+        name, directory, cwd = item["name"], item.get("dir"), item.get("cwd")
+        spot = (directory, cwd)
+        if spot not in located:
+            located[spot] = repo_for(directory, cwd)
+        repo = located[spot]
+        if repo is None:
+            key = (str(directory if directory else cwd), name)
+            reason = f"neither {directory} nor the session cwd {cwd} is in a git work tree"
+            results.setdefault(key, Resolution(UNRESOLVED, reason=reason))
+        else:
+            key = (repo.main_checkout, name)
+            _, names = repositories.setdefault(repo.main_checkout, (repo, []))
+            if name not in names:
+                names.append(name)
+        named_by = sources.setdefault(key, [])
+        if spot not in named_by:
+            named_by.append(spot)
+
+    for repo_key, (repo, names) in repositories.items():
+        for name, resolution in _resolve_repository(repo, names).items():
+            results[(repo_key, name)] = resolution
+
+    return {key: replace(value, sources=tuple(sources[key])) for key, value in results.items()}
 
 
 # --------------------------------------------------------------------------

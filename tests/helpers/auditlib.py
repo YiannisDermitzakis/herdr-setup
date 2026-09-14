@@ -151,6 +151,7 @@ class FakeGh:
     """fake-gh's state file and call log for one test."""
 
     def __init__(self, directory: Path, state: dict | None = None):
+        Path(directory).mkdir(parents=True, exist_ok=True)
         self.state_path = Path(directory) / "gh-state.json"
         self.log_path = Path(directory) / "gh.log"
         self.write(state if state is not None else gh_state())
