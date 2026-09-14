@@ -272,6 +272,42 @@ class TestTimestampNormalization(TempConfigCase):
         for branch in session["branches"]:
             self.assertRegex(branch["seen_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
+    def test_an_out_of_range_offset_timestamp_does_not_crash_the_whole_query(self):
+        """review re-round item 2: astimezone() raises OverflowError on an
+        out-of-range instant (a year-1 date at a positive UTC offset moves
+        before datetime.min) -- the Tolerant rule forbids that crashing the
+        whole query. Falls back to the file's own mtime, same as any other
+        unusable timestamp."""
+        path = self.write_transcript([line(timestamp="0001-01-01T00:30:00+01:00")])
+        expected = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(path.stat().st_mtime))
+        proc = run_sessions(self.config_dir, "--since", "30")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        sessions = json.loads(proc.stdout)["sessions"]
+        self.assertEqual(sessions[0]["last_active"], expected)
+
+
+class TestNormalizeTimestampDirectly(unittest.TestCase):
+    """normalize_timestamp's own rules, called directly rather than through
+    a transcript -- review re-round item 2."""
+
+    def setUp(self) -> None:
+        self.adapter_module = load_adapter_module("claude")
+
+    def test_no_zone_is_read_as_utc(self):
+        self.assertEqual(
+            self.adapter_module.normalize_timestamp("2026-09-12T18:04:11"),
+            "2026-09-12T18:04:11Z",
+        )
+
+    def test_a_date_only_value_is_not_a_timestamp(self):
+        self.assertIsNone(self.adapter_module.normalize_timestamp("2026-09-12"))
+
+    def test_an_out_of_range_offset_returns_none_rather_than_raising(self):
+        self.assertIsNone(self.adapter_module.normalize_timestamp("0001-01-01T00:30:00+01:00"))
+
+    def test_garbage_returns_none(self):
+        self.assertIsNone(self.adapter_module.normalize_timestamp("not-a-timestamp"))
+
 
 class TestSubagentsAndSidechains(TempConfigCase):
     def test_a_subagent_directory_is_never_walked(self):

@@ -268,6 +268,13 @@ Rules:
 - **`--include-sdk`** asks for sessions that an automated caller drove rather
   than a person. An adapter must accept the flag, and one that cannot tell the
   difference ignores it.
+- **Timestamps.** An adapter converts its own recorded time into the exact
+  shape the key table names -- second-precision UTC, `Z` -- itself, before
+  printing it: a numeric offset is converted to UTC and a fractional-second
+  suffix is dropped. A recorded time with NO zone marker at all is read as
+  UTC. A date with no time component is not a timestamp at all and is
+  treated the same as anything else unusable (see Tolerant). The runner
+  drops anything that does not already match exactly.
 - **Branch names that cannot be real work branches are dropped:**
   - the empty name, `main`, `master`, `HEAD`, and `worktree-agent-*`;
   - anything containing `$`;

@@ -376,5 +376,52 @@ class TestBranchNameFilterAgreesWithTheRunner(unittest.TestCase):
             self.assertTrue(self.adapter_module.branch_name_ok(name), name)
 
 
+class TestNormalizeTimestampDirectly(unittest.TestCase):
+    """normalize_timestamp's own rules -- review re-round item 2."""
+
+    def setUp(self) -> None:
+        self.adapter_module = load_adapter_module("codex")
+
+    def test_no_zone_is_read_as_utc(self):
+        self.assertEqual(
+            self.adapter_module.normalize_timestamp("2026-09-06T19:29:39"),
+            "2026-09-06T19:29:39Z",
+        )
+
+    def test_a_date_only_value_is_not_a_timestamp(self):
+        self.assertIsNone(self.adapter_module.normalize_timestamp("2026-09-06"))
+
+    def test_an_out_of_range_offset_returns_none_rather_than_raising(self):
+        self.assertIsNone(self.adapter_module.normalize_timestamp("0001-01-01T00:30:00+01:00"))
+
+    def test_garbage_returns_none(self):
+        self.assertIsNone(self.adapter_module.normalize_timestamp("not-a-timestamp"))
+
+
+class TestOutOfRangeSeenAtDoesNotCrash(TempHomeCase):
+    def test_an_out_of_range_offset_timestamp_does_not_crash_the_whole_query(self):
+        """review re-round item 2: an OverflowError from astimezone() must not
+        crash the whole query (the Tolerant rule) -- the branch is dropped,
+        the session still answers."""
+        write_codex_rollout(
+            self.config_dir,
+            2026,
+            9,
+            6,
+            "rollout-2026-09-06T19-29-39-a.jsonl",
+            cwd="/work/alpha",
+            timestamp="0001-01-01T00:30:00+01:00",
+            git={
+                "commit_hash": "0" * 40,
+                "branch": "feat/health-endpoint",
+                "repository_url": "https://github.com/example-org/example-repo.git",
+            },
+        )
+        proc = run_sessions(self.config_dir, "--since", "30")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        sessions = json.loads(proc.stdout)["sessions"]
+        self.assertEqual(sessions[0]["branches"], [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

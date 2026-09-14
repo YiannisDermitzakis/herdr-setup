@@ -653,16 +653,32 @@ def normalize_timestamp(text: str) -> str | None:
     already be exactly this shape -- the runner's own `TIMESTAMP_RE`
     (lib/feed.py) drops anything that is not, rather than doing this
     conversion on an adapter's behalf. A numeric offset (`+02:00`) is
-    converted to UTC and a fractional-second suffix (`.987`) is dropped.
-    Returns None if `text` cannot be parsed as a timestamp at all.
+    converted to UTC and a fractional-second suffix (`.987`) is dropped. A
+    timestamp with NO zone is read as UTC (docs/adapters.md states this
+    rule explicitly). A date-only value (`2026-09-12`, no time component)
+    is NOT a timestamp and returns None, the same as anything else that
+    cannot be parsed at all -- `fromisoformat` would otherwise happily read
+    it as midnight, inventing a time nothing recorded.
+
+    Also returns None, rather than raising, for an instant so far outside
+    the representable range that converting it to UTC overflows (a very
+    early date at a positive offset can move before `datetime.min`) -- the
+    query's own Tolerant rule forbids one unusable timestamp crashing the
+    whole answer.
     """
+    if "T" not in text:
+        return None
     try:
         parsed = datetime.fromisoformat(text)
     except (TypeError, ValueError):
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        parsed = parsed.astimezone(UTC)
+    except OverflowError:
+        return None
+    return parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _file_mtime_z(path: Path) -> str | None:

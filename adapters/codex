@@ -285,16 +285,24 @@ def normalize_timestamp(text: str) -> str | None:
     """A timestamp normalised to second-precision UTC, `Z`-suffixed.
 
     This adapter's own copy of adapters/claude's normalize_timestamp -- see
-    its docstring. `payload.timestamp` is the only field here that needs it;
-    `last_active` always comes from the file's own mtime, already exact.
+    its docstring (a no-zone value is read as UTC; a date-only value is not
+    a timestamp; an out-of-range offset returns None rather than raising).
+    `payload.timestamp` is the only field here that needs it; `last_active`
+    always comes from the file's own mtime, already exact.
     """
+    if "T" not in text:
+        return None
     try:
         parsed = datetime.fromisoformat(text)
     except (TypeError, ValueError):
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        parsed = parsed.astimezone(UTC)
+    except OverflowError:
+        return None
+    return parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _file_mtime_z(path: Path) -> str | None:
