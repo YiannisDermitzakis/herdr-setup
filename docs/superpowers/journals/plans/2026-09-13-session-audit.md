@@ -775,3 +775,73 @@ Re-read the spec's Commands (install, audit: order of work, text, JSON, exit cod
 ### p4-after-timing-under-load · discovery · Phase 4 after-timings were taken on a loaded host and overstate its cost (phase 4)
 
 Final gates at 2f37422, each rc read directly, all 0: /bin/bash tests/run.sh 38/38; uv run --group dev pytest 528 passed; ruff check; ruff format --check; uv run --group dev shellcheck -s bash -x herdr-setup lib/*.sh tests/*.sh; fr acceptance check (13 rows: 12 ci, 1 skipped); fr journal check; git merge-base --is-ancestor origin/feat/session-audit HEAD. Timings, each run alone as far as this run goes: BEFORE at 6b02f55 pytest real 214.82 s, tests/run.sh real 326.62 s; AFTER at 2f37422 pytest real 707.29 s, tests/run.sh real 675.73 s. The after numbers are not phase 4's cost: during them uptime showed load averages 23.01 32.88 28.22 on 16 cores, with a VS Code plugin helper at 167% CPU (up 5 days), XprotectService at 68% and a Homebrew Python 3.14 process (not this suite's uv 3.13) at 98%. The same 528-test pytest took 204.85 s in the P4.T2 gate run about 30 minutes earlier. Per-file cost phase 4 actually added, from solo runs of the files: tests/test_audit_join.py about 5 s (20 tests; fake herdr and inline /bin/sh adapters, one uv start), tests/test_audit_report.py under 1 s plus its uv start (24 in-memory tests), and tests/test_audit_entrypoint.sh 36.4 s real (50 assertions) against a few seconds for its phase 1 form -- seven herdr-setup audit runs, each a chain of uv cold starts (audit.py, the claude and codex adapter probes and sessions queries, and fake gh through PATH for auth status, user, user/orgs and GraphQL), plus audit_e2e.py setup and check. Estimated additions: pytest about +6 s, tests/run.sh about +40 s, both under the 60 s budget. The end-to-end runs could only be cheaper by dropping cases the step requires, or by using in-process gh and non-real adapters, which would stop them being end to end. Open: the orchestrator should re-take both after-timings on a quiet host.
+
+<!-- fr:journal kind=discovery scope=plan id=p4r-minor1-probe-note created=2026-09-14T14:51:49 phase=4 -->
+### p4r-minor1-probe-note · discovery · Review minor 1: a pane whose adapter failed its probe no longer reads no adapter (phase 4)
+
+load_adapters returns (adapters, incomplete reasons, failed adapter names) and join(..., failed_probes=) gives such a pane 'session history unavailable (adapter failed)', matched by adapter name, which is the agent it covers. RED: tests/test_audit_join.py rc=1 (TypeError join() failed_probes; 2x ValueError unpacking 3). GREEN rc=0, 22 tests. Commit 4d2540a.
+
+<!-- fr:journal kind=discovery scope=plan id=p4r-minor2-cwd-order created=2026-09-14T14:51:50 phase=4 -->
+### p4r-minor2-cwd-order · discovery · Review minor 2: a pane's directory is foreground_cwd, then cwd (phase 4)
+
+panes() now uses lib/feed.py's order; the spec's Sources > Panes bullet says so. RED: test_the_agent_processs_own_directory_wins_over_the_panes rc=1 ('/work/shell' != '/work/agent'). GREEN rc=0 (also falls back to cwd when foreground_cwd is empty or null). Commit 4d2540a.
+
+<!-- fr:journal kind=discovery scope=plan id=p4r-minor3-pane-dir-branches created=2026-09-14T14:51:52 phase=4 -->
+### p4r-minor3-pane-dir-branches · discovery · Review minor 3: spec sections 2 and 3 say pane-directory branches count (phase 4)
+
+The code already counted branches from a pane's own directory in section 2's exclusion and section 3's match; the spec text for both now says so, citing Sources item 3. No code change. Commit 4d2540a.
+
+<!-- fr:journal kind=discovery scope=plan id=p4r-minor4-readme-notes created=2026-09-14T14:51:54 phase=4 -->
+### p4r-minor4-readme-notes · discovery · Review minor 4: README lists every section 1 note and a failed probe under exit 2 (phase 4)
+
+The audit section names no adapter, no session history (unsupported), session history unavailable (adapter failed), session not reported to Herdr, session not found in history, no branch evidence and only gone branches (counted); exit 2 covers a failed adapter probe; section 2 says clones count as one repository and section 3 that pane directories count. Commit abb95e5.
+
+<!-- fr:journal kind=discovery scope=plan id=p4r-minor5-stale-comments created=2026-09-14T14:51:56 phase=4 -->
+### p4r-minor5-stale-comments · discovery · Review minor 5: stale cmd_audit comment and entrypoint test header fixed (phase 4)
+
+herdr-setup's cmd_audit comment no longer calls herdr tab list future work; tests/test_audit_entrypoint.sh's header lists case 5, the end-to-end block. Commits abb95e5 and 4d2540a.
+
+<!-- fr:journal kind=discovery scope=plan id=p4r-minor6-agents-doors created=2026-09-14T14:51:57 phase=4 -->
+### p4r-minor6-agents-doors · discovery · Review minor 6: AGENTS.md's doors sentence narrowed (phase 4)
+
+'Nothing reaches the interpreter any other way' became 'The entrypoint reaches the Python in lib/ only through these three doors', which is true: adapters and tests are uv scripts run by shebang or uv run --script. Commit abb95e5.
+
+<!-- fr:journal kind=discovery scope=plan id=p4r-minor7-gh-allowlist created=2026-09-14T14:51:59 phase=4 -->
+### p4r-minor7-gh-allowlist · discovery · Review minor 7: the end-to-end gh allowlist is anchored and proven to reject (phase 4)
+
+gh_disallowed() anchors each allowed form with its closing quote and the next bracket or comma (auth status, api graphql, api user, api --paginate user/orgs), reads gh.log and gh-clean.log, and a negative check feeds it ['api', 'user/repos'] plus an allowed line and requires exactly the user/repos line back. Commit 4d2540a.
+
+<!-- fr:journal kind=discovery scope=plan id=p4r-minor8-findings-label created=2026-09-14T14:52:01 phase=4 -->
+### p4r-minor8-findings-label · discovery · Review minor 8: the findings-run exit assertion names stderr (phase 4)
+
+The 'findings in section 2 or 3 exit 1' label carries $(cat err_findings), so a probe timeout on CI shows its cause. No timing change. Commit 4d2540a.
+
+<!-- fr:journal kind=discovery scope=plan id=p4r-minor9-absorb-paragraph created=2026-09-14T14:52:03 phase=4 -->
+### p4r-minor9-absorb-paragraph · discovery · Review minor 9: README's absorb paragraph rejoined (phase 4)
+
+Pre-existing: 'Rewrites ... straight from the' was cut by the 'A line may name a ref' paragraph. The sentence is whole again, and that paragraph now follows '...touching only the checkout.'. Commit abb95e5.
+
+<!-- fr:journal kind=discovery scope=plan id=p4r-minor10-absorb-if created=2026-09-14T14:52:04 phase=4 -->
+### p4r-minor10-absorb-if · discovery · Review minor 10: tests/test_absorb.sh guard is an explicit if (phase 4)
+
+Pre-existing line 505, [ -s err ] && fail_check=0 || fail_check=1, is now an if/else; the file's pass || fail idiom and SC2015 disable are unchanged. Pinned shellcheck rc=0. Commit abb95e5.
+
+<!-- fr:journal kind=discovery scope=plan id=p4r-minor11-archived-spec-refs created=2026-09-14T14:52:06 phase=4 -->
+### p4r-minor11-archived-spec-refs · discovery · Review minor 11: matrix rows cite the archived 2026-09-08 spec at its implemented path (phase 4)
+
+All nine references (eight origins plus one notes link in the same rows) now read herdr-setup:docs/superpowers/implemented/specs/2026-09-08-herdr-setup-design.md, which exists. fr acceptance report --deterministic rc=0; fr acceptance check rc=0, 13 rows (12 ci, 1 skipped), and the moved-spec warnings are gone; the one warning left is feed-reports-live-sessions being skipped, pre-existing. No colon-space wording added. Commit 4d2736d.
+
+<!-- fr:journal kind=discovery scope=plan id=p4r-important1-flags created=2026-09-14T14:55:34 phase=4 -->
+### p4r-important1-flags · discovery · Review important 1: the flags are proven to reach their consumers through run() (phase 4)
+
+TestRun's stage stubs now record args and kwargs. test_the_command_line_reaches_every_consumer passes --since 7 --include-sdk --include-bots --owner example-org --owner example-user and asserts owners got that list, gather_sessions got 7 and include_sdk True, join got the failed probe names, open_prs ran per returned owner, and the bot PR is listed with 0 hidden; test_without_flags_the_defaults_reach_them asserts owners([]), 30, include_sdk False and bots hidden. End to end: case 5c has its own FAKE_GH_LOG with no api user and no user/orgs call under --owner; 5d adds --include-bots and the clean gh state now carries the bot PR, which 5c hides and counts and 5d lists. RED: tests/test_audit_report.py rc=1 (the new tests errored on the 3-tuple stub and join kwargs). Proof on an archive of 4d2736d, reviewer's exact replacements: M16 include_sdk=False -> test_audit_report rc=1 (test_the_command_line_reaches_every_consumer); M17 include_bots=False -> report rc=1 (same test) and test_audit_entrypoint.sh rc=1, 54/1 (--include-bots lists the bot pull request); M18 since 30 -> report rc=1 (same test); M19 owners([]) -> report rc=1 (same test) and entrypoint rc=1, 53/2 (--owner: no api user call; no user/orgs call). Unmutated copy: report 34 OK, entrypoint 55/0.
+
+<!-- fr:journal kind=discovery scope=plan id=p4r-important2-read-only-git created=2026-09-14T14:55:36 phase=4 -->
+### p4r-important2-read-only-git · discovery · Review important 2: no git fetch or other writing git subcommand on the audit path (phase 4)
+
+READ_ONLY_SUBCOMMANDS moved from tests/test_audit_git.py to tests/helpers/auditlib.py with git_subcommand() and writing_git_calls(), shared by three checks. tests/test_audit_merge_state.py test_resolution_runs_only_read_only_git_subcommands runs a real resolve_branches (local-only, fresh, merged, GitHub-only, gone, a non-GitHub repository, a removed directory) under recording_git and requires more than five calls and none outside the set. tests/test_audit_entrypoint.sh puts a logging git shim first on PATH for the findings run, and audit_e2e.py check fails when the log is empty or holds any other subcommand. Proof on an archive of 4d2736d, the reviewer's M20 (a git fetch inserted into _resolve_repository): test_audit_merge_state.py rc=1 (test_resolution_runs_only_read_only_git_subcommands) and test_audit_entrypoint.sh rc=1, 54/1 ('git ran a subcommand outside the read-only set: -C <repo> fetch --quiet ...'). Unmutated: merge_state 26 OK, entrypoint 55/0.
+
+<!-- fr:journal kind=discovery scope=plan id=p4r-important3-clones created=2026-09-14T14:55:37 phase=4 -->
+### p4r-important3-clones · discovery · Review important 3: clones of one GitHub repository are one repository in the report (phase 4)
+
+Wrong, as the reviewer's probe showed: resolutions are keyed by main checkout, so feat/x worked in clone-a (open pane), clone-b and clone-c gave two identical section 2 rows, no +N, despite the open pane, exit 1. Fixed in build_report: _identity is (slug lowercased, branch) when the branch resolved on github.com, else (checkout, branch); _reconcile keeps one resolution per identity, the most actionable of STATE_PRIORITY (unmerged, open-pr, unresolved, contained, merged, gone); section 1 branches, the open-pane exclusion, section 2 rows and touched sessions, section 3's session branches and the gone and unresolved counts all use it. Section 3 already matched on the lowercased slug, so its behaviour is unchanged. The spec's Section 2 and Section 3 bullets say so, including the order. Tests in tests/test_audit_report.py TestClonesOfOneRepository: the reviewer's probe with three clones (no rows, no unmatched PR, exit 0); the open pane in a clone no closed session used; two and three clones as one row with +1 and +2, newest session; disagreeing clones (contained, unmerged, gone -> unmerged everywhere, gone count 0); the pairwise state order; slug case; checkouts without a GitHub remote staying apart. RED rc=1, 13 failures and 3 errors across the new and TestRun tests. Proof on an archive of 4d2736d, _identity reverted to the checkout path: test_audit_report rc=1, 12 failures (every clone test above but checkouts-apart, plus the two section 3 slug-case tests).
