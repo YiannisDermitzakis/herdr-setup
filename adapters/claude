@@ -270,17 +270,37 @@ def _record_branch(
         hits[key] = {"name": name, "dir": branch_dir, "evidence": evidence, "seen_at": seen_at}
 
 
-# An fr worktree path: .../.cache/fr/worktrees/<repo>/<slug>. Group 1 is the
-# whole path up to and including the slug (the evidence's own `dir`); group 2
-# is the slug alone, whose `__` becomes `/` to recover the branch name.
-# docs/adapters.md's own wording, verbatim: "Only in cwd fields and in Bash
-# command text, never in tool output" -- see _bash_commands below, which
-# only ever looks at a `tool_use` Bash block, never a `tool_result`.
-WORKTREE_PATH_RE = re.compile(r"(/[^\s\"']*?/\.cache/fr/worktrees/[^/\s\"']+/([^/\s\"']+))")
+# An fr worktree path: .../.cache/fr/worktrees/<repo>/<slug>, or the same
+# shape under `~/`. Group 1 is the whole path up to and including the slug
+# (the evidence's own `dir`, `~` expanded separately below); group 2 is the
+# slug alone, whose `__` becomes `/` to recover the branch name. The repo and
+# slug components exclude `;&|()` as well as `/`, whitespace and quotes, so a
+# slug directly followed by a separator or a closing paren
+# (`cd .../feat__x; ls`, `cd .../feat__x&&ls`) does not swallow it into the
+# branch name. docs/adapters.md's own wording, verbatim: "Only in cwd fields
+# and in Bash command text, never in tool output" -- see _bash_commands
+# below, which only ever looks at a `tool_use` Bash block, never a
+# `tool_result`.
+WORKTREE_PATH_RE = re.compile(
+    r"((?:~|/[^\s\"';&|()]*?)/\.cache/fr/worktrees/"
+    r"[^/\s\"';&|()]+/([^/\s\"';&|()]+))"
+)
 
-# && || ; | end one pipeline segment and start the next; `cd` and `git -C`
-# directory tracking apply across (`cd`) or within (`git -C`) these.
-_SEGMENT_SEPARATORS = frozenset({"&&", "||", ";", "|"})
+# && || ; | end one pipeline segment and start the next; `(` and `)` do too,
+# for a subshell (`(git checkout -b x)`). `cd` and `git -C` directory
+# tracking apply across (`cd`) or within (`git -C`) these.
+_SEGMENT_SEPARATORS = frozenset({"&&", "||", ";", "|", "(", ")"})
+
+# `git worktree add` options that consume a value and are therefore never
+# themselves the path (from `git worktree add -h`; `-b`/`-B` are handled
+# separately since they also name the branch).
+_WORKTREE_ADD_VALUE_FLAGS = frozenset({"--reason"})
+
+# `git push` options that consume a value, so the token after them is never
+# mistaken for <remote> or <refspec> (from `git push -h`).
+_PUSH_VALUE_FLAGS = frozenset(
+    {"--repo", "--recurse-submodules", "--receive-pack", "--exec", "-o", "--push-option"}
+)
 
 
 def tokenize_command(text: str) -> list[str]:
@@ -302,6 +322,11 @@ def tokenize_command(text: str) -> list[str]:
 
 
 def _segments(tokens: list[str]) -> list[list[str]]:
+    """One physical line's tokens, split at `_SEGMENT_SEPARATORS`.
+
+    A separator token itself (`&&`, `;`, `(`, ...) is dropped, never kept as
+    part of either neighbouring segment.
+    """
     segments: list[list[str]] = [[]]
     for token in tokens:
         if token in _SEGMENT_SEPARATORS:
@@ -311,25 +336,43 @@ def _segments(tokens: list[str]) -> list[list[str]]:
     return [segment for segment in segments if segment]
 
 
-def _resolve_dir(raw: str | None, base_cwd: str | None) -> str | None:
+def _physical_lines(command_text: str) -> list[str]:
+    """A Bash command's own physical lines, backslash-newline joined first.
+
+    `shlex` treats a bare newline as ordinary whitespace, so tokenising a
+    whole multi-line command in one pass fuses two independent lines into
+    one nonsensical segment -- `git fetch` then `git checkout -b x` on the
+    next line becomes a single `['git','fetch','git','checkout','-b','x']`
+    segment that matches no shape at all, and `cd <dir>` on its own line
+    swallows every token after it, including the next line's real command.
+    Each physical line is tokenised on its own instead (_process_bash_command
+    carries `cd` state across them, since they are still one command).
+    """
+    joined = command_text.replace("\\\n", "")
+    return [physical_line for physical_line in joined.split("\n") if physical_line.strip()]
+
+
+def _resolve_dir(raw: str | None, current_dir: str | None) -> str | None:
     """A `cd`/`-C`/`--repo`/`worktree add` path argument, resolved as TEXT only.
 
-    No filesystem access: a relative path joins the line's own `cwd`, and a
-    leading `~` joins `$HOME` -- exactly docs/adapters.md's own wording, "as
-    text only". `base_cwd` missing (no `cwd` on this line at all) leaves a
-    relative path unresolved rather than guessing at one.
+    No filesystem access: a relative path joins `current_dir` -- the
+    directory a `cd` earlier in this SAME command has already resolved to,
+    or the line's own `cwd` if there has been none yet -- and a leading `~`
+    joins `$HOME`, exactly docs/adapters.md's own wording, "as text only".
+    `current_dir` missing leaves a relative path unresolved rather than
+    guessing at one.
     """
     if not raw:
-        return base_cwd
+        return current_dir
     if raw.startswith("~"):
         home = os.environ.get("HOME")
         if home:
             raw = home + raw[1:]
     if raw.startswith("/"):
         return os.path.normpath(raw)
-    if not base_cwd:
+    if not current_dir:
         return raw
-    return os.path.normpath(os.path.join(base_cwd, raw))
+    return os.path.normpath(os.path.join(current_dir, raw))
 
 
 def _flag_value(tokens: list[str], *names: str) -> str | None:
@@ -343,13 +386,41 @@ def _flag_value(tokens: list[str], *names: str) -> str | None:
     return None
 
 
-def _match_command_shape(segment: list[str], *, segment_dir, base_cwd) -> tuple[str, str] | None:
-    """One (name, dir) pair out of a single pipeline segment, or None.
+def _strip_git_global_options(segment: list[str]) -> tuple[list[str], str | None]:
+    """Consume `git`'s own global options before the subcommand.
 
-    One check per shape docs/adapters.md lists, in the order it lists them.
-    Each shape names its OWN dir when it carries one (`--repo`, the
-    `worktree add` path); everything else falls back to `segment_dir`,
-    which the caller has already worked out from `cd`/`-C`.
+    `git -c k=v checkout -b x` and `git -C <dir> switch -c x` both name
+    `checkout`/`switch` as their real subcommand, not `-c`/`-C` -- without
+    this, the shape checks below never see past the global option. Returns
+    the remaining tokens (starting with the subcommand, `git` itself
+    dropped) and the value of a `-C <dir>` option if one was present, else
+    None. `segment[0]` is assumed to already be `git`.
+    """
+    index = 1
+    dir_override: str | None = None
+    while index < len(segment):
+        token = segment[index]
+        if token == "-C" and index + 1 < len(segment):
+            dir_override = segment[index + 1]
+            index += 2
+            continue
+        if token == "-c" and index + 1 < len(segment):
+            index += 2
+            continue
+        break
+    return segment[index:], dir_override
+
+
+def _match_command_shape(segment: list[str], *, segment_dir, current_dir) -> tuple[str, str] | None:
+    """One (name, dir) pair out of a single `git` or `fr` command, or None.
+
+    `gh` has its own _match_gh_shape, since it needs no global-option
+    stripping. A `git` segment has already had ITS global options stripped
+    by the caller (docs/adapters.md's shape names, e.g. "git checkout",
+    start right after them). One check per shape docs/adapters.md lists, in
+    the order it lists them. Each shape names its OWN dir when it carries
+    one (`--repo`, the `worktree add` path); everything else falls back to
+    `segment_dir`, which the caller has already worked out from `cd`/`-C`.
     """
     if not segment:
         return None
@@ -358,35 +429,29 @@ def _match_command_shape(segment: list[str], *, segment_dir, base_cwd) -> tuple[
         segment[0] == "fr"
         and len(segment) >= 3
         and segment[1] == "isolation"
-        and segment[2]
-        in (
-            "up",
-            "attach",
-        )
+        and segment[2] in ("up", "attach")
     ):
         branch = _flag_value(segment, "--branch")
         if not branch:
             return None
         repo = _flag_value(segment, "--repo")
-        return branch, (_resolve_dir(repo, base_cwd) if repo else segment_dir)
+        return branch, (_resolve_dir(repo, current_dir) if repo else segment_dir)
 
-    if (
-        segment[0] == "git"
-        and len(segment) >= 4
-        and segment[1] in ("checkout", "switch")
-        and segment[2] in ("-b", "-c", "-B")
-    ):
-        return segment[3], segment_dir
+    if segment[0] == "checkout" or segment[0] == "switch":
+        rest = segment[1:]
+        branch = None
+        for index, token in enumerate(rest):
+            if token in ("-b", "-c", "-B") and index + 1 < len(rest):
+                branch = rest[index + 1]
+                break
+        if branch is None:
+            return None
+        return branch, segment_dir
 
-    if (
-        segment[0] == "git"
-        and len(segment) >= 4
-        and segment[1] == "worktree"
-        and segment[2] == "add"
-    ):
+    if segment[0] == "worktree" and len(segment) >= 2 and segment[1] == "add":
         branch = None
         positionals: list[str] = []
-        rest = segment[3:]
+        rest = segment[2:]
         index = 0
         while index < len(rest):
             token = rest[index]
@@ -394,32 +459,52 @@ def _match_command_shape(segment: list[str], *, segment_dir, base_cwd) -> tuple[
                 branch = rest[index + 1]
                 index += 2
                 continue
+            if token in _WORKTREE_ADD_VALUE_FLAGS and index + 1 < len(rest):
+                index += 2
+                continue
             if not token.startswith("-"):
                 positionals.append(token)
             index += 1
         if branch and positionals:
-            return branch, _resolve_dir(positionals[0], base_cwd)
+            return branch, _resolve_dir(positionals[0], current_dir)
         return None
 
-    if segment[0] == "git" and len(segment) >= 2 and segment[1] == "push":
+    if segment[0] == "push":
+        rest = segment[1:]
         flag_index = next(
-            (i for i, tok in enumerate(segment) if tok in ("-u", "--set-upstream")), None
+            (i for i, tok in enumerate(rest) if tok in ("-u", "--set-upstream")), None
         )
-        if flag_index is None or flag_index + 2 >= len(segment):
+        if flag_index is None:
             return None
-        refspec = segment[flag_index + 2]
+        positionals: list[str] = []
+        index = flag_index + 1
+        while index < len(rest) and len(positionals) < 2:
+            token = rest[index]
+            if token.startswith("-"):
+                index += 2 if token in _PUSH_VALUE_FLAGS else 1
+                continue
+            positionals.append(token)
+            index += 1
+        if len(positionals) < 2:
+            return None
+        refspec = positionals[1]
         source = refspec[1:] if refspec.startswith("+") else refspec
         source = source.split(":", 1)[0]
+        if source.startswith("refs/heads/"):
+            source = source[len("refs/heads/") :]
         return source, segment_dir
 
-    if segment[0] == "gh" and len(segment) >= 3 and segment[1] == "pr" and segment[2] == "create":
-        value = _flag_value(segment, "--head", "-H")
-        if not value:
-            return None
-        branch = value.split(":", 1)[1] if ":" in value else value
-        return branch, segment_dir
-
     return None
+
+
+def _match_gh_shape(segment: list[str], *, segment_dir) -> tuple[str, str] | None:
+    if segment[:2] != ["pr", "create"]:
+        return None
+    value = _flag_value(segment, "--head", "-H")
+    if not value:
+        return None
+    branch = value.split(":", 1)[1] if ":" in value else value
+    return branch, segment_dir
 
 
 def _process_bash_command(
@@ -430,21 +515,44 @@ def _process_bash_command(
     branch_hits: dict[tuple[str, str], dict],
 ) -> None:
     current_dir = base_cwd
-    for segment in _segments(tokenize_command(command_text)):
-        if segment[0] == "cd" and len(segment) >= 2:
-            current_dir = _resolve_dir(segment[1], base_cwd)
-            continue
-        segment_dir = current_dir
-        working_segment = segment
-        if len(segment) >= 3 and segment[0] == "git" and segment[1] == "-C":
-            segment_dir = _resolve_dir(segment[2], base_cwd)
-            working_segment = ["git", *segment[3:]]
-        hit = _match_command_shape(working_segment, segment_dir=segment_dir, base_cwd=base_cwd)
-        if hit is not None:
-            name, branch_dir = hit
-            _record_branch(
-                branch_hits, name=name, branch_dir=branch_dir, evidence="command", seen_at=seen_at
-            )
+    for physical_line in _physical_lines(command_text):
+        for segment in _segments(tokenize_command(physical_line)):
+            if not segment:
+                continue
+            if segment[0] == "cd":
+                # `cd -` (the previous directory) and a bare `cd` (home) are
+                # both directories this adapter cannot know without a real
+                # shell -- falling back to the line's own cwd is honest
+                # uncertainty, not a guess at a specific path.
+                if len(segment) >= 2 and segment[1] != "-":
+                    current_dir = _resolve_dir(segment[1], current_dir)
+                else:
+                    current_dir = base_cwd
+                continue
+
+            segment_dir = current_dir
+            hit = None
+            if segment[0] == "git" and len(segment) >= 2:
+                rest, dir_override = _strip_git_global_options(segment)
+                if dir_override is not None:
+                    segment_dir = _resolve_dir(dir_override, current_dir)
+                hit = _match_command_shape(rest, segment_dir=segment_dir, current_dir=current_dir)
+            elif segment[0] == "fr":
+                hit = _match_command_shape(
+                    segment, segment_dir=segment_dir, current_dir=current_dir
+                )
+            elif segment[0] == "gh" and len(segment) >= 2:
+                hit = _match_gh_shape(segment[1:], segment_dir=segment_dir)
+
+            if hit is not None:
+                name, branch_dir = hit
+                _record_branch(
+                    branch_hits,
+                    name=name,
+                    branch_dir=branch_dir,
+                    evidence="command",
+                    seen_at=seen_at,
+                )
 
 
 def _bash_commands(line: dict) -> list[str]:
@@ -500,6 +608,11 @@ def extract_worktree_path_evidence(line: dict, branch_hits: dict[tuple[str, str]
     texts.extend(_bash_commands(line))
     for text in texts:
         for path, slug in WORKTREE_PATH_RE.findall(text):
+            if path.startswith("~"):
+                home = os.environ.get("HOME")
+                if not home:
+                    continue
+                path = home + path[1:]
             branch = slug.replace("__", "/")
             _record_branch(
                 branch_hits, name=branch, branch_dir=path, evidence="worktree-path", seen_at=seen_at

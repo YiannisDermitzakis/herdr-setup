@@ -514,6 +514,78 @@ class TestCommandEvidence(TempConfigCase):
         )
         self.assertEqual(one_branch(sessions)["dir"], "/work/sibling")
 
+    # -- item 1: shlex treats "\n" as ordinary whitespace, so a multi-line
+    # Bash command must be split into physical lines (joining backslash-
+    # newline continuations first) before tokenising, or two independent
+    # lines fuse into one segment that matches no shape at all. --
+
+    def test_a_second_line_is_still_read_as_its_own_command(self):
+        sessions = self.sessions_for("git fetch\ngit checkout -b feat/nl")
+        self.assertEqual(one_branch(sessions)["name"], "feat/nl")
+
+    def test_a_cd_line_does_not_swallow_the_next_lines_command(self):
+        sessions = self.sessions_for("cd /work/other\ngit checkout -b feat/nl2")
+        branch = one_branch(sessions)
+        self.assertEqual(branch["name"], "feat/nl2")
+        self.assertEqual(branch["dir"], "/work/other")
+
+    def test_a_backslash_newline_continuation_is_joined(self):
+        sessions = self.sessions_for("git checkout \\\n-b feat/cont")
+        self.assertEqual(one_branch(sessions)["name"], "feat/cont")
+
+    # -- item 3: ~ expansion, both for `cd` and for `git -C`. --
+
+    def test_cd_tilde_expands_to_home(self):
+        home = os.environ.get("HOME", "")
+        sessions = self.sessions_for("cd ~/x && git checkout -b b")
+        self.assertEqual(one_branch(sessions)["dir"], f"{home}/x")
+
+    def test_git_dash_cap_c_tilde_expands_to_home(self):
+        home = os.environ.get("HOME", "")
+        sessions = self.sessions_for("git -C ~/x switch -c b")
+        self.assertEqual(one_branch(sessions)["dir"], f"{home}/x")
+
+    # -- item 4: a relative `cd` resolves against the CURRENT directory (the
+    # latest `cd` in this command), not always the line's own `cwd`. --
+
+    def test_a_second_relative_cd_resolves_against_the_first_cds_result(self):
+        sessions = self.sessions_for("cd /work/x && cd y && git checkout -b b", cwd="/work/alpha")
+        self.assertEqual(one_branch(sessions)["dir"], "/work/x/y")
+
+    # -- item 6: further command-parsing gaps. --
+
+    def test_git_push_dash_u_dash_f_skips_the_option_before_remote(self):
+        sessions = self.sessions_for("git push -u -f origin feat/f")
+        self.assertEqual(one_branch(sessions)["name"], "feat/f")
+
+    def test_git_push_refspec_strips_a_leading_refs_heads(self):
+        sessions = self.sessions_for("git push -u origin refs/heads/x:x")
+        self.assertEqual(one_branch(sessions)["name"], "x")
+
+    def test_git_worktree_add_reason_value_is_not_mistaken_for_the_path(self):
+        sessions = self.sessions_for("git worktree add --lock --reason why ../wt -b b")
+        self.assertEqual(one_branch(sessions)["dir"], "/work/wt")
+
+    def test_git_checkout_flags_before_dash_b_are_skipped(self):
+        sessions = self.sessions_for("git checkout -q -b x")
+        self.assertEqual(one_branch(sessions)["name"], "x")
+
+    def test_git_dash_lowercase_c_global_option_before_the_subcommand(self):
+        sessions = self.sessions_for("git -c k=v checkout -b x")
+        self.assertEqual(one_branch(sessions)["name"], "x")
+
+    def test_a_subshell_is_its_own_segment(self):
+        sessions = self.sessions_for("(git checkout -b x)")
+        self.assertEqual(one_branch(sessions)["name"], "x")
+
+    def test_cd_dash_falls_back_to_the_lines_cwd(self):
+        sessions = self.sessions_for("cd - && git checkout -b b", cwd="/work/alpha")
+        self.assertEqual(one_branch(sessions)["dir"], "/work/alpha")
+
+    def test_bare_cd_falls_back_to_the_lines_cwd(self):
+        sessions = self.sessions_for("cd /work/other && cd && git checkout -b b", cwd="/work/alpha")
+        self.assertEqual(one_branch(sessions)["dir"], "/work/alpha")
+
 
 class TestBranchNameFilterAgreesWithTheRunner(unittest.TestCase):
     """checklist item 7: this adapter's own copy must not drift from lib/feed.py's.
@@ -569,6 +641,29 @@ class TestWorktreePathEvidence(TempConfigCase):
         )
         sessions = sessions_of(self.config_dir, "--since", "30")
         self.assertEqual(branch_names(sessions), [])
+
+    def test_a_tilde_prefixed_worktree_path_expands_to_home(self):
+        home = os.environ.get("HOME", "")
+        tilde_path = "~/.cache/fr/worktrees/example-repo/feat__q"
+        self.write_transcript([line(cwd=f"{tilde_path}/src")])
+        sessions = sessions_of(self.config_dir, "--since", "30")
+        branch = one_branch(sessions)
+        self.assertEqual(branch["name"], "feat/q")
+        self.assertEqual(branch["dir"], f"{home}/.cache/fr/worktrees/example-repo/feat__q")
+
+    def test_a_slug_followed_by_a_semicolon_does_not_swallow_it(self):
+        self.write_transcript([bash_line(f"(cd {self.WT_PATH}; ls)", cwd="/work/alpha")])
+        sessions = sessions_of(self.config_dir, "--since", "30")
+        branch = one_branch(sessions)
+        self.assertEqual(branch["name"], "feat/q")
+        self.assertEqual(branch["dir"], self.WT_PATH)
+
+    def test_a_slug_followed_by_and_and_does_not_swallow_it(self):
+        self.write_transcript([bash_line(f"cd {self.WT_PATH}&&ls", cwd="/work/alpha")])
+        sessions = sessions_of(self.config_dir, "--since", "30")
+        branch = one_branch(sessions)
+        self.assertEqual(branch["name"], "feat/q")
+        self.assertEqual(branch["dir"], self.WT_PATH)
 
 
 if __name__ == "__main__":
