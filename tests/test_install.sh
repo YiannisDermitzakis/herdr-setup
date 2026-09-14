@@ -446,8 +446,7 @@ assert_status "15 (mutated): a broken hs_resolve_path refuses the relative-link 
 # success and reporting nothing wrong.
 # ---------------------------------------------------------------------
 if [ "$(id -u)" -eq 0 ]; then
-  pass
-  pass
+  echo "SKIP: 16/17 (mkdir/ln permission failures): running as root, which ignores permission bits" >&2
 else
   # --- 16: ~/.local mode 555 -> mkdir -p ~/.local/bin fails -> exit 2 ---
   entry16="$(hs_test_sandbox)"
