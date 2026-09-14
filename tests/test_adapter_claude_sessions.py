@@ -578,6 +578,24 @@ class TestCommandEvidence(TempConfigCase):
         sessions = self.sessions_for("git push -u origin HEAD")
         self.assertEqual(branch_names(sessions), [])
 
+    def test_git_push_delete_yields_nothing(self):
+        """review re-round item 3: deleting a branch is not evidence of work on it."""
+        sessions = self.sessions_for("git push -u origin --delete feat/x")
+        self.assertEqual(branch_names(sessions), [])
+
+    def test_git_push_set_upstream_delete_yields_nothing(self):
+        sessions = self.sessions_for("git push --set-upstream origin --delete feat/x")
+        self.assertEqual(branch_names(sessions), [])
+
+    def test_git_push_dash_lowercase_d_delete_yields_nothing(self):
+        sessions = self.sessions_for("git push -u origin -d feat/x")
+        self.assertEqual(branch_names(sessions), [])
+
+    def test_git_push_dash_o_value_flag_is_skipped(self):
+        """A no-op mutation of _PUSH_VALUE_FLAGS must fail this."""
+        sessions = self.sessions_for("git push -u -o ci.skip origin feat/x")
+        self.assertEqual(one_branch(sessions)["name"], "feat/x")
+
     def test_gh_pr_create_head(self):
         sessions = self.sessions_for("gh pr create --head feat/k")
         self.assertEqual(one_branch(sessions)["name"], "feat/k")

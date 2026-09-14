@@ -487,6 +487,10 @@ def _match_command_shape(segment: list[str], *, segment_dir, current_dir) -> tup
 
     if segment[0] == "push":
         rest = segment[1:]
+        if any(tok in ("-d", "--delete") for tok in rest):
+            # Deleting a branch is the opposite of evidence someone is
+            # working on it.
+            return None
         flag_index = next(
             (i for i, tok in enumerate(rest) if tok in ("-u", "--set-upstream")), None
         )

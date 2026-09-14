@@ -324,3 +324,13 @@ git archive HEAD (967c76c) into a temp copy, then removed every 'dropped_branche
 ### a66a1d0861b2 · discovery · RED: normalize_timestamp crashes on out-of-range offsets, accepts date-only values (re-review item 2) (phase 2)
 
 Before catching OverflowError and rejecting date-only text in both adapters' normalize_timestamp: uv run --quiet --script tests/test_adapter_claude_sessions.py -> rc=1, 79 tests, 2 failures + 1 error (test_a_date_only_value_is_not_a_timestamp, test_an_out_of_range_offset_timestamp_does_not_crash_the_whole_query, test_an_out_of_range_offset_returns_none_rather_than_raising -- the last one an uncaught OverflowError from astimezone() on 0001-01-01T00:30:00+01:00, which also crashed the end-to-end query with a traceback and non-zero exit, violating the Tolerant rule). tests/test_adapter_codex_sessions.py -> rc=1, 28 tests, same three failures. No-zone timestamps already normalised correctly (read as UTC); only newly tested, not newly fixed.
+
+<!-- fr:journal kind=discovery scope=plan id=ab458ed107f8 created=2026-09-14T05:31:54 phase=2 -->
+### ab458ed107f8 · discovery · Mutation evidence: normalize_timestamp OverflowError/date-only guards (re-review item 2) (phase 2)
+
+git archive HEAD (198921b) into a temp copy, reverted adapters/claude's normalize_timestamp to its pre-fix body (no 'T not in text' check, no try/except around astimezone). Ran tests/test_adapter_claude_sessions.py from the temp copy directly: rc=1, 2 failures + 1 error (test_a_date_only_value_is_not_a_timestamp, test_an_out_of_range_offset_timestamp_does_not_crash_the_whole_query, test_an_out_of_range_offset_returns_none_rather_than_raising -- the last an uncaught OverflowError). Temp copy removed afterward; real worktree untouched.
+
+<!-- fr:journal kind=discovery scope=plan id=2364b5242ace created=2026-09-14T05:33:19 phase=2 -->
+### 2364b5242ace · discovery · RED: git push --delete/-d reported the branch being deleted (re-review item 3) (phase 2)
+
+Before the push extractor rejected --delete/-d: uv run --quiet --script tests/test_adapter_claude_sessions.py -> rc=1, 83 tests, 3 failures (test_git_push_delete_yields_nothing, test_git_push_set_upstream_delete_yields_nothing, test_git_push_dash_lowercase_d_delete_yields_nothing). git push -u origin --delete feat/x reported feat/x as work-in-progress evidence when it is the opposite -- the branch is being removed. test_git_push_dash_o_value_flag_is_skipped (a coverage gap for the already-correct _PUSH_VALUE_FLAGS handling of -o) passed immediately, confirming it was untested rather than broken.

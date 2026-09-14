@@ -346,7 +346,9 @@ Rules:
     - `git push ... -u|--set-upstream <remote> <refspec>`, with other option
       tokens (and the value of one that takes one) skipped before
       `<remote>`/`<refspec>`: the source side of the refspec, minus a
-      leading `+` and a leading `refs/heads/`;
+      leading `+` and a leading `refs/heads/`. A push carrying `-d` or
+      `--delete` yields nothing -- deleting a branch is not evidence of
+      work on it;
     - `gh pr create ... --head|-H <b>`, minus an `owner:` prefix.
 - **Evidence `worktree-path`.** An fr worktree path,
   `.../.cache/fr/worktrees/<repo>/<slug>`, or the same shape under `~/`
