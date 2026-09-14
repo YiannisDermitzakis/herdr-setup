@@ -31,7 +31,7 @@ rows:
     acceptance: diff reports plugins, config and integration state in full even when
       the Herdr command line and the running server speak different protocol versions.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-08-herdr-setup-design.md
     levels:
       unit:
       - herdr-setup:tests/test_diff_plugins.sh
@@ -58,7 +58,7 @@ rows:
       mismatch and the restart needed, instead of parsing a JSON error object as an
       empty result.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-08-herdr-setup-design.md
     levels:
       unit:
       - herdr-setup:tests/test_preflight.sh
@@ -136,7 +136,7 @@ rows:
     acceptance: diff reports each manifest plugin as missing, matching its pinned ref,
       or moved, and lists host plugins the manifest does not name as unmanaged.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-08-herdr-setup-design.md
     levels:
       unit:
       - herdr-setup:tests/test_diff_plugins.sh
@@ -162,7 +162,7 @@ rows:
     acceptance: On a host missing every manifest plugin, apply installs them at their
       pinned refs and a following diff reports a match.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-08-herdr-setup-design.md
     levels:
       unit:
       - herdr-setup:tests/test_apply_plugins.sh
@@ -194,7 +194,7 @@ rows:
     acceptance: apply updates the operator's own config lines while leaving plugin-written
       marked blocks exactly where they were.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-08-herdr-setup-design.md
     levels:
       unit:
       - herdr-setup:tests/test_blocks.sh
@@ -242,7 +242,7 @@ rows:
     acceptance: absorb followed by apply against an unchanged host makes no further
       change, and absorb refuses to run when the manifest has uncommitted edits.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-08-herdr-setup-design.md
     levels:
       unit:
       - herdr-setup:tests/test_absorb.sh
@@ -286,7 +286,7 @@ rows:
     acceptance: onboard lists the agents present on the host, reports an integration
       Herdr calls outdated with both versions, and installs a refresh only when accepted.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-08-herdr-setup-design.md
     levels:
       unit:
       - herdr-setup:tests/test_onboard_detect.sh
@@ -348,7 +348,7 @@ rows:
       a record per pane; a following server restart brings each pane back running its
       agent's resume command rather than a bare shell.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-08-herdr-setup-design.md
     levels:
       unit:
       - herdr-setup:tests/test_feed_probe.py
@@ -385,7 +385,7 @@ rows:
       each pane back" are not something a fake herdr and fixture session stores can
       prove, and Copilot stays unverified until a host with the real CLI confirms a
       resume. That live half is the spec's post-merge test plan
-      (herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md#test-plan),
+      (herdr-setup:docs/superpowers/implemented/specs/2026-09-08-herdr-setup-design.md#test-plan),
       run once by the operator, not automated here -- `skipped` records that the
       verification exists and does not run in CI, which is the honest status per this
       file's own schema, not a debt phase 10 left behind.
