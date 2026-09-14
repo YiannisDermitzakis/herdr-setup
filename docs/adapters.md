@@ -333,7 +333,10 @@ Rules:
 - **Title.** The latest `customTitle` (a `custom-title` record), else the
   latest `aiTitle` (an `ai-title` record), else omitted.
 - **SDK sessions.** A transcript whose `entrypoint` starts with `sdk-`
-  (`sdk-cli`, `sdk-py`) is skipped unless `--include-sdk`.
+  (`sdk-cli`, `sdk-py`) is skipped unless `--include-sdk`. The decision uses
+  the FIRST line that carries an `entrypoint` at all, not the last -- it
+  records how the session started, and a later line changing it (a resumed
+  or forked session) does not retroactively include or exclude it.
 - **Evidence `git-branch-field`.** Each line's `gitBranch`, with that line's
   `cwd` as `dir`. It mostly reads `main` and is filtered out. It is kept for
   the sessions that did start on a branch.

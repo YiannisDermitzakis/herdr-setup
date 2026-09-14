@@ -400,6 +400,30 @@ class TestSdkFiltering(TempConfigCase):
         self.write_transcript([line(entrypoint="claude-desktop")])
         self.assertEqual(len(sessions_of(self.config_dir, "--since", "30")), 1)
 
+    def test_a_mid_file_change_from_cli_to_sdk_keeps_the_first_entrypoint(self):
+        """review re-round item 7: the FIRST entrypoint decides, not the last.
+
+        It records how the session STARTED. A session that began as `cli`
+        and later carries an `sdk-cli` line (e.g. a resumed or forked
+        session) is still included.
+        """
+        self.write_transcript(
+            [
+                line(entrypoint="cli", timestamp="2026-09-12T18:00:00.000Z"),
+                line(entrypoint="sdk-cli", timestamp="2026-09-12T18:01:00.000Z"),
+            ]
+        )
+        self.assertEqual(len(sessions_of(self.config_dir, "--since", "30")), 1)
+
+    def test_a_mid_file_change_from_sdk_to_cli_keeps_the_first_entrypoint(self):
+        self.write_transcript(
+            [
+                line(entrypoint="sdk-cli", timestamp="2026-09-12T18:00:00.000Z"),
+                line(entrypoint="cli", timestamp="2026-09-12T18:01:00.000Z"),
+            ]
+        )
+        self.assertEqual(sessions_of(self.config_dir, "--since", "30"), [])
+
     def test_a_skipped_sdk_transcript_with_invalid_later_lines_is_still_skipped_cleanly(self):
         """review item 11: the SDK skip decides on the FIRST line carrying
         `entrypoint` and stops reading -- proven here by making every later
