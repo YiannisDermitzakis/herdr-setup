@@ -13,7 +13,7 @@ cmd_install/cmd_install_warn and hs_resolve_path read clearly at GREEN (each ref
 <!-- fr:journal kind=discovery scope=plan id=d1cfa5206b74 created=2026-09-14T00:15:29 phase=1 -->
 ### d1cfa5206b74 · discovery · RED: tests/test_fixture_owner_hygiene.sh (P1.T3 fixup, item A.7) (phase 1)
 
-Ran against the pre-fix fixtures (664e228): rc=1, 2 passed, 2 failed. FAIL 1: the matrix's own owner ('YiannisDermitzakis') appears in tests/fixtures/gh/README.md:13. FAIL 2: tests/fixtures/gh/owner-pull-requests.json's endCursor ('[a real, since-rotated cursor value]') decodes to more than the sanctioned cursor:v2:placeholder payload -- it embeds a real repository id. The guard-on-the-guard nested cases (2 passed) already proved the checks fire on a poisoned copy. Fixes 1-3 (owner-string prose rewrite, category-only masking prose, synthetic cursor) are what turns this green.
+Ran against the pre-fix fixtures (the fixture commit): rc=1, 2 passed, 2 failed. FAIL 1: the matrix's own owner appears in tests/fixtures/gh/README.md:13. FAIL 2: tests/fixtures/gh/owner-pull-requests.json's endCursor decodes to more than the sanctioned cursor:v2:placeholder payload -- it embeds a real repository id (the leaked cursor value itself is not repeated here, on purpose: this journal is committed history too). The guard-on-the-guard nested cases (2 passed) already proved the checks fire on a poisoned copy. Fixes 1-3 (owner-string prose rewrite, category-only masking prose, synthetic cursor) are what turns this green.
 
 <!-- fr:journal kind=discovery scope=plan id=9b71ab4dc742 created=2026-09-14T00:18:50 phase=1 -->
 ### 9b71ab4dc742 · discovery · RED: hs_resolve_path symlink-loop hang (P1 fixup, item B.8) (phase 1)
