@@ -47,6 +47,7 @@ from auditlib import (  # noqa: E402
     load_audit,
     make_repo,
     recording_git,
+    use_in_process_gh,
 )
 
 isolate_audit_environment()
@@ -67,6 +68,7 @@ class MergeStateCase(unittest.TestCase):
         self.root = Path(self._tmp.name).resolve()
         self.fake = FakeGh(self.root / "gh")
         self.enterContext(self.fake.active())
+        use_in_process_gh(self, audit)
         self.repo = make_repo(self.root)
 
     def tearDown(self) -> None:

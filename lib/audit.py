@@ -247,6 +247,27 @@ def _error_messages(errors) -> str:
     return flatten(errors)
 
 
+def _gh_env() -> dict[str, str]:
+    return {**os.environ, "GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
+
+
+def run_gh_process(argv: list[str], env: dict[str, str]) -> subprocess.CompletedProcess:
+    """Run `gh <argv>` as found on PATH, stdout and stderr captured apart.
+
+    Raises OSError or subprocess.TimeoutExpired exactly as subprocess.run does;
+    the callers turn those into their own errors.
+    """
+    return subprocess.run(  # noqa: S603
+        ["gh", *argv], capture_output=True, text=True, timeout=GH_TIMEOUT, env=env
+    )
+
+
+# The one door to gh: every gh call in this module goes through whatever this
+# names. Only tests replace it -- with tests/helpers/fake-gh run in-process,
+# after they have already refused to run unless `gh` on PATH is that fake.
+gh_runner = run_gh_process
+
+
 def _run_gh(args: list[str]) -> subprocess.CompletedProcess:
     """Run `gh <args>`; raise GhError on a non-zero exit, quoting what gh said.
 
@@ -255,11 +276,8 @@ def _run_gh(args: list[str]) -> subprocess.CompletedProcess:
     the quote; only when it is empty is anything read from stdout.
     """
     label = _gh_label(args)
-    env = {**os.environ, "GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
     try:
-        proc = subprocess.run(  # noqa: S603
-            ["gh", *args], capture_output=True, text=True, timeout=GH_TIMEOUT, env=env
-        )
+        proc = gh_runner(list(args), _gh_env())
     except subprocess.TimeoutExpired as exc:
         raise GhError(f"{label}: did not answer within {GH_TIMEOUT:g}s") from exc
     except OSError as exc:
@@ -367,13 +385,7 @@ def require_tools() -> None:
         verb = "is" if len(missing) == 1 else "are"
         raise ToolError(f"{' and '.join(missing)} {verb} not on PATH")
     try:
-        proc = subprocess.run(  # noqa: S603
-            ["gh", "auth", "status", "--hostname", GITHUB_HOST, "--active"],
-            capture_output=True,
-            text=True,
-            timeout=GH_TIMEOUT,
-            env={**os.environ, "GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"},
-        )
+        proc = gh_runner(["auth", "status", "--hostname", GITHUB_HOST, "--active"], _gh_env())
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ToolError(f"gh auth status could not be run: {exc}") from exc
     if proc.returncode != 0:

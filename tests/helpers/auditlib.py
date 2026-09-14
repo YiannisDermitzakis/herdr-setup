@@ -23,17 +23,20 @@ own case:
 
 from __future__ import annotations
 
+import atexit
+import importlib.machinery
 import importlib.util
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
-from feedlib import REPO_ROOT, TESTS_DIR, isolate_environment
+from feedlib import HELPERS_DIR, REPO_ROOT, TESTS_DIR, isolate_environment, require_fakes
 
 AUDIT_PATH = REPO_ROOT / "lib" / "audit.py"
 GH_CAPTURES = TESTS_DIR / "fixtures" / "gh"
@@ -71,6 +74,51 @@ def load_audit():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+# --------------------------------------------------------------------------
+# The fake gh, in-process
+# --------------------------------------------------------------------------
+#
+# Every fake-gh call through PATH cold-starts uv, Python and fake-gh's parser
+# (about a second each), which made the audit tests the slowest in the suite.
+# Unit tests that are about lib/audit.py's logic, not about the PATH seam, run
+# fake-gh's own handle() in this process instead: the same code the CLI runs,
+# with the same environment, so the answers are identical -- which
+# tests/test_audit_github.py proves by sending one query both ways.
+
+FAKE_GH_PATH = HELPERS_DIR / "fake-gh"
+_fake_gh = None
+
+
+def load_fake_gh():
+    """Import tests/helpers/fake-gh (no suffix) as a module, once per process."""
+    global _fake_gh
+    if _fake_gh is None:
+        loader = importlib.machinery.SourceFileLoader("hs_fake_gh", str(FAKE_GH_PATH))
+        spec = importlib.util.spec_from_loader("hs_fake_gh", loader)
+        module = importlib.util.module_from_spec(spec)
+        # Registered before exec_module: @dataclass looks the module up by name.
+        sys.modules["hs_fake_gh"] = module
+        loader.exec_module(module)
+        _fake_gh = module
+    return _fake_gh
+
+
+def in_process_gh(argv, env) -> subprocess.CompletedProcess:
+    """A gh runner with lib/audit.py's run_gh_process signature, answered in-process."""
+    stdout, stderr, code = load_fake_gh().handle(list(argv), dict(env), "")
+    return subprocess.CompletedProcess(["gh", *argv], code, stdout, stderr)
+
+
+def use_in_process_gh(testcase, audit) -> None:
+    """For the rest of `testcase`, `audit`'s gh calls run fake-gh in-process.
+
+    Refuses exactly as the import-time guard does: only when `gh` on PATH is
+    the fake is running that fake in-process the same thing.
+    """
+    require_fakes()
+    testcase.enterContext(mock.patch.object(audit, "gh_runner", in_process_gh))
 
 
 # --------------------------------------------------------------------------
@@ -213,19 +261,44 @@ def git(repo, *args, check: bool = True, env: dict | None = None) -> subprocess.
     return proc
 
 
+_template_repo: Path | None = None
+
+
+def _template() -> Path:
+    """One repository with one commit on main, built once per process.
+
+    Every make_repo() copies it rather than running init, add, commit and
+    rev-parse again: on a host where starting a process is slow, that setup
+    was most of a git test's time. Each test still gets its own copy to
+    change as it likes; the template itself is never handed out.
+    """
+    global _template_repo
+    if _template_repo is None:
+        holder = Path(tempfile.mkdtemp(prefix="hs-template-repo-"))
+        atexit.register(shutil.rmtree, holder, True)
+        path = holder / "repo"
+        path.mkdir()
+        proc = subprocess.run(  # noqa: S603
+            ["git", "-c", "init.defaultBranch=main", "init", "-q", str(path)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, **GIT_ENV},
+        )
+        if proc.returncode != 0:
+            raise AssertionError(
+                f"test setup: git init failed (rc={proc.returncode}): {proc.stderr}"
+            )
+        commit(path, "initial")
+        _template_repo = path
+    return _template_repo
+
+
 def make_repo(root, name: str = "repo", *, remote: str | None = GITHUB_REMOTE) -> Path:
     """A new repository at root/name with one commit on main, and origin set."""
     path = Path(root) / name
-    path.mkdir(parents=True)
-    proc = subprocess.run(  # noqa: S603
-        ["git", "-c", "init.defaultBranch=main", "init", "-q", str(path)],
-        capture_output=True,
-        text=True,
-        env={**os.environ, **GIT_ENV},
-    )
-    if proc.returncode != 0:
-        raise AssertionError(f"test setup: git init failed (rc={proc.returncode}): {proc.stderr}")
-    commit(path, "initial")
+    if path.exists():
+        raise FileExistsError(path)
+    shutil.copytree(_template(), path, symlinks=True)
     if remote is not None:
         git(path, "remote", "add", "origin", remote)
     return path.resolve()

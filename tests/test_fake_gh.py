@@ -35,6 +35,7 @@ from auditlib import (  # noqa: E402
     GH_CAPTURES,
     ZERO_OID,
     capture,
+    in_process_gh,
     isolate_audit_environment,
     shape,
 )
@@ -125,6 +126,12 @@ FAKE_SWITCHES = (
 
 
 class FakeGhCase(unittest.TestCase):
+    # The CLI contract -- argv parsing, -F inference, exit codes, the
+    # stdout/stderr split, the missing-ref bytes -- is tested through PATH.
+    # Classes that pin the handler's answers (shapes, query semantics) run the
+    # same handler in-process (auditlib.in_process_gh), which is much faster.
+    in_process = False
+
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
@@ -143,6 +150,8 @@ class FakeGhCase(unittest.TestCase):
         env["FAKE_GH_STATE"] = str(self.state_path)
         env["FAKE_GH_LOG"] = str(self.log_path)
         env.update({k: str(v) for k, v in extra_env.items()})
+        if self.in_process:
+            return in_process_gh(list(args), env)
         return subprocess.run(  # noqa: S603
             ["gh", *args], capture_output=True, text=True, env=env, timeout=120
         )
@@ -229,6 +238,8 @@ class TestRest(FakeGhCase):
 
 
 class TestCapturedShapes(FakeGhCase):
+    in_process = True
+
     def test_owner_pull_requests(self):
         repos = {f"example-user/example-repo-{i}": repo() for i in (1, 2, 3)}
         self.write_state({"user": "example-user", "orgs": [], "repos": repos})
@@ -285,6 +296,8 @@ class TestCapturedShapes(FakeGhCase):
         self.assertEqual(answer, capture("compare.json"))
 
     def test_compare_against_a_missing_ref_reproduces_the_capture_exactly(self):
+        # Byte-for-byte stdout/stderr/exit: the CLI contract, through PATH.
+        self.in_process = False
         self.write_state({"repos": {"example-user/example-repo": repo()}})
         proc = self.graphql(
             COMPARE_QUERY, raw=["owner=example-user", "name=example-repo", "h0=example-branch"]
@@ -296,6 +309,8 @@ class TestCapturedShapes(FakeGhCase):
 
 
 class TestQuerySemantics(FakeGhCase):
+    in_process = True
+
     def test_pagination_follows_real_cursors_at_the_page_size(self):
         repos = {f"example-org/example-repo-{i}": repo() for i in (1, 2, 3)}
         self.write_state({"user": "example-user", "orgs": ["example-org"], "repos": repos})

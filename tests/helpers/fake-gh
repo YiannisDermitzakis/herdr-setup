@@ -112,6 +112,8 @@ from __future__ import annotations
 import base64
 import binascii
 import bisect
+import contextlib
+import io
 import json
 import os
 import re
@@ -122,6 +124,11 @@ from pathlib import Path
 CAPTURES = Path(__file__).resolve().parent.parent / "fixtures" / "gh"
 HOST = "github.com"
 USER_ORGS_PER_PAGE = 30
+
+# The environment the switches are read from. The CLI runs with the process
+# environment; handle() swaps in the mapping it is given, so a test can run
+# the fake in-process against exactly the environment a subprocess would see.
+ENV = os.environ
 
 
 class Refused(Exception):
@@ -146,19 +153,19 @@ def refuse(message: str):
 
 
 def log_call(argv: list[str]) -> None:
-    path = os.environ.get("FAKE_GH_LOG", "")
+    path = ENV.get("FAKE_GH_LOG", "")
     if path:
         with open(path, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(argv) + "\n")
 
 
 def failing(words: str) -> bool:
-    prefix = os.environ.get("FAKE_GH_FAIL", "")
+    prefix = ENV.get("FAKE_GH_FAIL", "")
     return bool(prefix) and (words + " ").startswith(prefix + " ")
 
 
 def page_size(default: int) -> int:
-    raw = os.environ.get("FAKE_GH_PAGE_SIZE", "")
+    raw = ENV.get("FAKE_GH_PAGE_SIZE", "")
     if not raw:
         return default
     if not raw.isdigit() or int(raw) < 1:
@@ -167,7 +174,7 @@ def page_size(default: int) -> int:
 
 
 def load_state() -> dict:
-    path = os.environ.get("FAKE_GH_STATE", "")
+    path = ENV.get("FAKE_GH_STATE", "")
     if not path:
         refuse("FAKE_GH_STATE is not set; this fake answers from a state file and has none")
     try:
@@ -201,7 +208,7 @@ def auth_status(rest: list[str]) -> int:
             index += 1
         else:
             refuse(f"auth status: flag {word!r} is not faked")
-    if os.environ.get("FAKE_GH_UNAUTH") == "1":
+    if ENV.get("FAKE_GH_UNAUTH") == "1":
         sys.stderr.write(
             f"{HOST}\n"
             f"  X Failed to log in to {HOST} account example-user (keyring)\n"
@@ -771,7 +778,7 @@ def graphql(call: ApiCall) -> int:
         root = query_root(load_state())
         data = select(root, operation.selections, variables, [], errors)
         body = {"data": data}
-        if os.environ.get("FAKE_GH_GRAPHQL_ERRORS") == "1":
+        if ENV.get("FAKE_GH_GRAPHQL_ERRORS") == "1":
             errors.append(
                 {
                     "type": "FORBIDDEN",
@@ -807,7 +814,7 @@ def names_a_mutation(argv: list[str]) -> bool:
     return False
 
 
-def main(argv: list[str]) -> int:
+def dispatch(argv: list[str]) -> int:
     log_call(argv)
     # The tripwire comes before every switch: FAKE_GH_FAIL must not be able
     # to turn a refused mutation into an ordinary-looking failure.
@@ -815,7 +822,7 @@ def main(argv: list[str]) -> int:
         sys.stderr.write("fake gh: refusing a GraphQL mutation; nothing under test may write\n")
         return 1
     if failing(" ".join(argv)):
-        sys.stderr.write(f"gh: {os.environ['FAKE_GH_FAIL']} failed (FAKE_GH_FAIL)\n")
+        sys.stderr.write(f"gh: {ENV['FAKE_GH_FAIL']} failed (FAKE_GH_FAIL)\n")
         return 1
     if argv[:2] == ["auth", "status"]:
         return auth_status(argv[2:])
@@ -832,9 +839,31 @@ def main(argv: list[str]) -> int:
     return 2
 
 
-if __name__ == "__main__":
+def handle(argv: list[str], env, stdin: str = "") -> tuple[str, str, int]:
+    """The whole fake as one call: (stdout, stderr, exit status).
+
+    The CLI below is exactly this plus writing the result out, so a test that
+    runs the fake in-process (tests/helpers/auditlib.in_process_gh) gets the
+    same text and the same status as one that finds `gh` on PATH. `stdin` is
+    there for the shape of a process call; nothing this fake answers reads it.
+    """
+    global ENV
+    out, err = io.StringIO(), io.StringIO()
+    previous, ENV = ENV, env
     try:
-        sys.exit(main(sys.argv[1:]))
-    except Refused as exc:
-        sys.stderr.write(f"fake gh: {exc}\n")
-        sys.exit(2)
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = dispatch(list(argv))
+            except Refused as exc:
+                sys.stderr.write(f"fake gh: {exc}\n")
+                code = 2
+    finally:
+        ENV = previous
+    return out.getvalue(), err.getvalue(), code
+
+
+if __name__ == "__main__":
+    stdout, stderr, code = handle(sys.argv[1:], os.environ)
+    sys.stdout.write(stdout)
+    sys.stderr.write(stderr)
+    sys.exit(code)

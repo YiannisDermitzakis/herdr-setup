@@ -40,10 +40,12 @@ from auditlib import (  # noqa: E402
     gh_pr,
     gh_repo,
     gh_state,
+    in_process_gh,
     isolate_audit_environment,
     load_audit,
     restricted_path,
     shape,
+    use_in_process_gh,
 )
 
 isolate_audit_environment()
@@ -54,10 +56,16 @@ ORG = "example-org"
 
 
 class GhCase(unittest.TestCase):
+    # The fake answers in-process (auditlib.use_in_process_gh) unless a class
+    # is about the PATH seam itself; TestRequireTools keeps the real runner.
+    in_process = True
+
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
         self.fake = FakeGh(self.tmp)
+        if self.in_process:
+            use_in_process_gh(self, audit)
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -68,10 +76,7 @@ class GhCase(unittest.TestCase):
 
     def rerun(self, argv: list[str], **switches) -> subprocess.CompletedProcess:
         """Send a logged gh call again, exactly, and return the raw answer."""
-        env = {**os.environ, **self.fake.env(**switches)}
-        return subprocess.run(  # noqa: S603
-            ["gh", *argv], capture_output=True, text=True, env=env, timeout=120
-        )
+        return in_process_gh(argv, {**os.environ, **self.fake.env(**switches)})
 
     def assert_no_typed_fields(self) -> None:
         for call in self.fake.graphql_calls():
@@ -98,6 +103,37 @@ def without_nested_page_info(answer, connection_path):
 
 
 class TestRequireTools(GhCase):
+    # The PATH seam itself: lib/audit.py's own subprocess runner reaches the
+    # fake gh through PATH, and the in-process runner answers identically.
+    in_process = False
+
+    def test_the_in_process_runner_answers_exactly_as_the_subprocess_runner(self):
+        self.assertIs(audit.gh_runner, audit.run_gh_process)
+        merged = gh_pr(2, "example-branch", state="MERGED")
+        repo = gh_repo(refs={"feat/kept": ZERO_OID}, prs=[merged])
+        self.use(gh_state(repos={f"{ORG}/example-repo": repo}))
+        query, variables = audit.chunk_query(
+            audit.QUERY_REPO_BRANCHES,
+            audit.FIELDS_REPO_BRANCHES,
+            ("h", "q"),
+            ["example-branch", "feat/kept"],
+        )
+        fields = [f"owner={ORG}", "name=example-repo"] + [f"{k}={v}" for k, v in variables.items()]
+        answered = ["api", "graphql", "--hostname", "github.com", "-f", f"query={query}"]
+        for pair in fields:
+            answered += ["-f", pair]
+        refused = ["api", "graphql", "-f", "query=query HsX($n: String!) { viewer { login } }"]
+        for argv in (answered, refused):
+            with self.subTest(argv=argv[:3]):
+                env = audit._gh_env()
+                by_process = audit.run_gh_process(argv, env)
+                in_process = in_process_gh(argv, env)
+                self.assertEqual(
+                    (by_process.stdout, by_process.stderr, by_process.returncode),
+                    (in_process.stdout, in_process.stderr, in_process.returncode),
+                )
+        self.assertEqual(audit.run_gh_process(answered, audit._gh_env()).returncode, 0)
+
     def test_it_passes_and_checks_auth_for_github_com_only(self):
         self.use(gh_state())
         self.assertIsNone(audit.require_tools())
