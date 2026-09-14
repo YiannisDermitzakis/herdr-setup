@@ -22,7 +22,7 @@ What exists so far is the evidence machinery, layer by layer:
   gathered facts, and `resolve_branches`, which gathers them once per
   (repository, branch).
 
-The sources (Herdr panes, adapter session history, fr bindings), the join
+The sources (Herdr panes, adapter session history, pane directories), the join
 and the report are phase 4, and `main()` calls none of this yet. Until the
 report arrives
 (phase 4) it FAILS CLOSED -- AGENTS.md's own rule -- rather than printing an
@@ -43,6 +43,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 # Mirrors the design doc's own table (Commands > audit): a positive integer
 # up to 3650 (ten years), which is generous enough that no real session
@@ -164,8 +165,24 @@ query HsRepoBranches($owner: String!, $name: String!@VARIABLES@) {
 FIELDS_REPO_BRANCHES = """\
     r@I@: ref(qualifiedName: $q@I@) { target { oid } }
     p@I@: pullRequests(headRefName: $h@I@, states: [OPEN, MERGED], first: 20) {
+      pageInfo { hasNextPage endCursor }
       nodes { number state isDraft url headRepository { nameWithOwner } }
     }
+"""
+
+# The follow-up for one branch whose pull requests do not fit in HsRepoBranches'
+# page of 20 -- a name like `patch-1` shared by many forks' pull requests can
+# otherwise push this repository's own off the list. Paged to the end, so the
+# merge state is never decided from a truncated list.
+QUERY_BRANCH_PULL_REQUESTS = """
+query HsBranchPullRequests($owner: String!, $name: String!, $head: String!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(headRefName: $head, states: [OPEN, MERGED], first: 20, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes { number state isDraft url headRepository { nameWithOwner } }
+    }
+  }
+}
 """
 
 QUERY_COMPARE = """
@@ -342,6 +359,8 @@ def require_tools() -> None:
 
     `--hostname github.com` matters: the unscoped `gh auth status` checks
     every configured host, so a stale login somewhere else fails it.
+    `--active` matters for the same reason within github.com: it checks only
+    the account gh would use, so a stale, inactive second account does not.
     """
     missing = [tool for tool in ("git", "gh") if shutil.which(tool) is None]
     if missing:
@@ -349,7 +368,7 @@ def require_tools() -> None:
         raise ToolError(f"{' and '.join(missing)} {verb} not on PATH")
     try:
         proc = subprocess.run(  # noqa: S603
-            ["gh", "auth", "status", "--hostname", GITHUB_HOST],
+            ["gh", "auth", "status", "--hostname", GITHUB_HOST, "--active"],
             capture_output=True,
             text=True,
             timeout=GH_TIMEOUT,
@@ -537,7 +556,8 @@ def repo_branches(owner: str, name: str, branches: list[str]) -> RepoBranches:
     """Default branch, per-branch ref existence and OPEN/MERGED pull requests.
 
     Asked in chunks of BRANCH_CHUNK branches per request. With no branches at
-    all it still asks once, for the default branch.
+    all it still asks once, for the default branch. A branch whose pull
+    requests run past one page is paged to the end with HsBranchPullRequests.
     """
     label = f"gh api graphql HsRepoBranches {owner}/{name}"
     branches = list(dict.fromkeys(branches))
@@ -563,9 +583,23 @@ def repo_branches(owner: str, name: str, branches: list[str]) -> RepoBranches:
             if ref is not None and not isinstance(ref, dict):
                 raise GhError(f"{label}: answer carries an unreadable ref for {branch!r}")
             refs[branch] = ref is not None
-            nodes, _, _ = _connection(
-                {"pageInfo": {"hasNextPage": False}, **(repository[f"p{index}"] or {})}, label
-            )
+            nodes, more, cursor = _connection(repository[f"p{index}"], label)
+            nodes = list(nodes)
+            while more:
+                page_label = f"gh api graphql HsBranchPullRequests {owner}/{name}"
+                page = _repository(
+                    graphql(
+                        "HsBranchPullRequests",
+                        QUERY_BRANCH_PULL_REQUESTS,
+                        {"owner": owner, "name": name, "head": branch, "after": cursor},
+                    ),
+                    page_label,
+                )
+                previous = cursor
+                more_nodes, more, cursor = _connection(page.get("pullRequests"), page_label)
+                if more and cursor == previous:
+                    raise GhError(f"{page_label}: pagination did not advance")
+                nodes.extend(more_nodes)
             prs[branch] = [_branch_pr(node, label) for node in nodes]
     return RepoBranches(default=default, refs=refs, prs=prs)
 
@@ -608,18 +642,29 @@ def compare(owner: str, name: str, branches: list[str]) -> dict[str, str]:
 
 GIT_TIMEOUT = 60.0
 
-# `owner/name` from a remote URL whose host is github.com: https (with or
-# without credentials and `.git`), scp-like `git@github.com:`, and ssh://.
-# Matched whole, so a lookalike host such as github.com.example.invalid is not
-# GitHub.
+# `owner/name` from a remote URL whose host is github.com, in any letter case:
+# https (with or without credentials), ssh:// (with or without a user and a
+# port), and scp-like `[user@]github.com:`, each with or without `.git` and a
+# trailing slash. Matched whole, so a lookalike host such as
+# github.com.example.invalid is not GitHub. An SSH host alias
+# (`git@github-work:o/r`, which ~/.ssh/config maps to github.com) is NOT
+# recognised: knowing would mean reading ssh configuration, so such a remote
+# resolves by ancestry only -- a known limit.
 _GITHUB_REMOTE_RES = tuple(
     re.compile(prefix + r"(?P<owner>[A-Za-z0-9-]+)/(?P<name>[A-Za-z0-9._-]+?)(?:\.git)?/?", re.I)
     for prefix in (
         r"https://(?:[^@/]+@)?github\.com/",
-        r"git@github\.com:",
-        r"ssh://git@github\.com(?::\d+)?/",
+        r"ssh://(?:[^@/]+@)?github\.com(?::\d+)?/",
+        r"(?:[^@/:]+@)?github\.com:",
     )
 )
+
+# What git says about a directory that simply is not in a work tree: in no
+# repository at all, or in a bare one. Any other failure in a directory that
+# exists -- a safe.directory refusal, a repository this git cannot read -- is
+# an error, never "not a work tree". _git runs with LC_ALL=C so these stay
+# the words git prints.
+_NOT_A_WORK_TREE = ("not a git repository", "must be run in a work tree")
 
 
 @dataclass(frozen=True)
@@ -636,7 +681,7 @@ class Repo:
 
 
 def _git(directory: str, args: tuple[str, ...]) -> subprocess.CompletedProcess:
-    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"}
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
     try:
         return subprocess.run(  # noqa: S603
             ["git", "-C", directory, *args],
@@ -670,13 +715,20 @@ def _toplevel(directory: str | None) -> str | None:
     """The work tree `directory` is in, or None when it is not in one.
 
     A directory that no longer exists is simply not a work tree: that is the
-    ordinary fate of a removed worktree, not an error.
+    ordinary fate of a removed worktree, not an error. Nor is one git reports
+    as outside any repository, or inside a bare one. Any other git failure in
+    a directory that exists raises GitError naming it.
     """
     if not directory or not os.path.isdir(directory):
         return None
-    proc = _git(directory, ("rev-parse", "--show-toplevel"))
+    args = ("rev-parse", "--show-toplevel")
+    proc = _git(directory, args)
     toplevel = proc.stdout.strip()
-    return toplevel if proc.returncode == 0 and toplevel else None
+    if proc.returncode == 0 and toplevel:
+        return toplevel
+    if proc.returncode == 128 and any(text in proc.stderr for text in _NOT_A_WORK_TREE):
+        return None
+    raise _git_failure(directory, args, proc)
 
 
 def _main_checkout(toplevel: str) -> str:
@@ -964,17 +1016,42 @@ def _resolve_repository(repo: Repo, names: list[str]) -> dict[str, Resolution]:
     }
 
 
-def resolve_branches(entries) -> dict[tuple[str, str], Resolution]:
+def _path_text(value) -> str | None:
+    """A dir or cwd as path text, so a `Path` and a `str` naming it compare equal."""
+    if value is None or value == "":
+        return None
+    return str(Path(value))
+
+
+class Resolutions(dict):
+    """{(repo_key, name): Resolution}, plus the way back from every entry.
+
+    `index` maps each entry's (name, dir, cwd) -- dir and cwd as path text,
+    so `Path("/work/a")`, `"/work/a"` and `"/work/a/"` are one entry -- to its
+    key, and `key_for()` normalises its arguments the same way. A caller
+    looks a session's branch up directly instead of searching `sources`.
+    """
+
+    def __init__(self, results, index: dict):
+        super().__init__(results)
+        self.index = index
+
+    def key_for(self, name: str, directory, cwd) -> tuple[str, str]:
+        return self.index[(name, _path_text(directory), _path_text(cwd))]
+
+
+def resolve_branches(entries) -> Resolutions:
     """Merge state for each distinct (repository, branch) the entries name.
 
     Each entry is a mapping with `name`, `dir` and `cwd` (the session's
-    working directory, the fallback when `dir` is not a work tree). The key
-    is (repo_key, name), where repo_key is the repository's main checkout, so
-    a branch named from several sessions, subdirectories and linked
-    worktrees of one repository resolves once. An entry whose `dir` and
-    `cwd` are both outside any work tree has no repository to key it by: it
-    is `unresolved` under its own `dir`. Every Resolution lists the (dir,
-    cwd) pairs that named it in `sources`.
+    working directory, the fallback when `dir` is not a work tree); `dir` and
+    `cwd` may be `str` or `Path`. The key is (repo_key, name), where repo_key
+    is the repository's main checkout, so a branch named from several
+    sessions, subdirectories and linked worktrees of one repository resolves
+    once. An entry whose `dir` and `cwd` are both outside any work tree has no
+    repository to key it by: it is `unresolved` under its own `dir`. Every
+    Resolution lists the (dir, cwd) pairs that named it in `sources`, and the
+    returned mapping's `index` maps every entry back to its key.
 
     GhError and GitError propagate: a failed call stops the run, it never
     becomes a state.
@@ -983,9 +1060,11 @@ def resolve_branches(entries) -> dict[tuple[str, str], Resolution]:
     repositories: dict[str, tuple[Repo, list[str]]] = {}
     sources: dict[tuple[str, str], list] = {}
     results: dict[tuple[str, str], Resolution] = {}
+    index: dict[tuple[str, str | None, str | None], tuple[str, str]] = {}
 
     for item in entries:
-        name, directory, cwd = item["name"], item.get("dir"), item.get("cwd")
+        name = item["name"]
+        directory, cwd = _path_text(item.get("dir")), _path_text(item.get("cwd"))
         spot = (directory, cwd)
         if spot not in located:
             located[spot] = repo_for(directory, cwd)
@@ -1002,12 +1081,14 @@ def resolve_branches(entries) -> dict[tuple[str, str], Resolution]:
         named_by = sources.setdefault(key, [])
         if spot not in named_by:
             named_by.append(spot)
+        index[(name, directory, cwd)] = key
 
     for repo_key, (repo, names) in repositories.items():
         for name, resolution in _resolve_repository(repo, names).items():
             results[(repo_key, name)] = resolution
 
-    return {key: replace(value, sources=tuple(sources[key])) for key, value in results.items()}
+    resolved = {key: replace(value, sources=tuple(sources[key])) for key, value in results.items()}
+    return Resolutions(resolved, index)
 
 
 # --------------------------------------------------------------------------

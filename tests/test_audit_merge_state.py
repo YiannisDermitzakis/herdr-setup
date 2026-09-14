@@ -175,6 +175,18 @@ class TestTheTable(MergeStateCase):
         self.github(prs=[gh_pr(30, "123", state="MERGED")])
         self.assertEqual(self.state(self.resolve("123"), "123"), "merged")
 
+    def test_a_forks_merged_pull_request_on_page_one_does_not_hide_ours_on_page_two(self):
+        self.branch_with_commit("patch-1")
+        self.github(
+            prs=[
+                gh_pr(1, "patch-1", state="MERGED", head_repo=FORK),
+                gh_pr(2, "patch-1", state="MERGED"),
+            ]
+        )
+        with mock.patch.dict(os.environ, {"FAKE_GH_PAGE_SIZE": "1"}):
+            resolution = self.resolve("patch-1")[(str(self.repo), "patch-1")]
+        self.assertEqual((resolution.state, resolution.pr["number"]), ("merged", 2))
+
 
 class TestFindingTheRepository(MergeStateCase):
     def test_a_missing_directory_resolves_through_the_session_cwd(self):
@@ -315,6 +327,24 @@ class TestWhatIsAsked(MergeStateCase):
         self.assertEqual((fingerprint(self.repo), fingerprint(worktree)), before)
         for argv in self.fake.calls():
             self.assertFalse(any("mutation" in word for word in argv))
+
+    def test_every_entry_maps_back_to_its_key_whatever_path_type_it_used(self):
+        git(self.repo, "branch", "feat/fresh")
+        self.github()
+        missing = self.root / "never-a-work-tree"
+        entries = [
+            {"name": "feat/fresh", "dir": self.repo, "cwd": self.repo},
+            {"name": "feat/fresh", "dir": str(self.repo) + "/", "cwd": str(self.repo)},
+            {"name": "feat/x", "dir": missing, "cwd": None},
+        ]
+        results = audit.resolve_branches(entries)
+        key = (str(self.repo), "feat/fresh")
+        self.assertEqual(results.index[("feat/fresh", str(self.repo), str(self.repo))], key)
+        self.assertEqual(results.key_for("feat/fresh", self.repo, str(self.repo) + "/"), key)
+        self.assertEqual(results.key_for("feat/fresh", str(self.repo) + "/", self.repo), key)
+        # the Path and the trailing-slash str spell one entry
+        self.assertEqual(len(results.index), 2)
+        self.assertEqual(results[results.key_for("feat/x", missing, None)].state, "unresolved")
 
     def test_a_git_failure_inside_the_repository_raises(self):
         broken = self.repo / ".git" / "refs" / "heads" / "feat" / "broken"

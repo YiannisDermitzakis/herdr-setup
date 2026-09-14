@@ -101,7 +101,9 @@ class TestRequireTools(GhCase):
     def test_it_passes_and_checks_auth_for_github_com_only(self):
         self.use(gh_state())
         self.assertIsNone(audit.require_tools())
-        self.assertEqual(self.fake.calls(), [["auth", "status", "--hostname", "github.com"]])
+        self.assertEqual(
+            self.fake.calls(), [["auth", "status", "--hostname", "github.com", "--active"]]
+        )
 
     def test_git_missing_is_named(self):
         self.use(gh_state())
@@ -311,6 +313,23 @@ class TestRepoBranches(GhCase):
         self.assertIsNone(audit.repo_branches(ORG, "example-repo", ["feat/x"]).default)
 
 
+class TestBranchPullRequestPages(GhCase):
+    def test_a_branchs_pull_requests_are_paged_to_the_end(self):
+        forks = [
+            gh_pr(n, "patch-1", state="MERGED", head_repo=f"example-fork-{n}/example-repo")
+            for n in (1, 2)
+        ]
+        ours = gh_pr(3, "patch-1", state="MERGED")
+        self.use(
+            gh_state(repos={f"{ORG}/example-repo": gh_repo(prs=[*forks, ours])}),
+            FAKE_GH_PAGE_SIZE=1,
+        )
+        result = audit.repo_branches(ORG, "example-repo", ["patch-1"])
+        self.assertEqual([pr["number"] for pr in result.prs["patch-1"]], [1, 2, 3])
+        self.assertEqual(len(self.fake.graphql_calls("HsBranchPullRequests")), 2)
+        self.assert_no_typed_fields()
+
+
 class TestCompare(GhCase):
     def test_returns_the_status_per_name_in_chunks(self):
         names = [f"feat/c{i}" for i in range(21)]
@@ -434,7 +453,13 @@ class TestTheQueriesAreTheCapturedOnes(GhCase):
         audit.repo_branches("example-user", "example-repo", ["example-branch", "feat/kept"])
         proc = self.rerun(self.logged("HsRepoBranches"))
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(shape(json.loads(proc.stdout)), shape(capture("repo-branches.json")))
+        answer = json.loads(proc.stdout)
+        # The one construction added to the captured selection: each branch's
+        # pull requests also select pageInfo, so a truncated list is paged.
+        for alias in ("p0", "p1"):
+            info = answer["data"]["repository"][alias].pop("pageInfo")
+            self.assertEqual(set(info), {"hasNextPage", "endCursor"})
+        self.assertEqual(shape(answer), shape(capture("repo-branches.json")))
 
     def test_hs_compare_and_its_missing_ref_error_byte_for_byte(self):
         repo = gh_repo(refs={"main": ZERO_OID}, compare={"main": "IDENTICAL"})

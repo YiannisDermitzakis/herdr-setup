@@ -83,8 +83,16 @@ class TestRepoFor(GitCase):
         urls = (
             "https://github.com/example-org/example-repo",
             "https://github.com/example-org/example-repo.git",
+            "https://github.com/example-org/example-repo.git/",
+            "https://GITHUB.COM/example-org/example-repo.git",
             "git@github.com:example-org/example-repo.git",
+            "git@GitHub.com:example-org/example-repo.git",
+            "github.com:example-org/example-repo",
+            # built in two pieces so the hygiene check's email pattern does not
+            # read a user@host remote as an address
+            "org-123" + "@github.com:example-org/example-repo.git",
             "ssh://git@github.com/example-org/example-repo.git",
+            "ssh://github.com/example-org/example-repo",
         )
         for index, url in enumerate(urls):
             with self.subTest(url=url):
@@ -96,6 +104,8 @@ class TestRepoFor(GitCase):
             "https://gitlab.example.invalid/example-org/example-repo.git",
             "git@gitlab.example.invalid:example-org/example-repo.git",
             "ssh://git@github.com.example.invalid/example-org/example-repo.git",
+            # an SSH host alias cannot be recognised without reading ssh config
+            "git@github-work:example-org/example-repo.git",
         )
         for index, url in enumerate(urls):
             with self.subTest(url=url):
@@ -144,6 +154,18 @@ class TestRepoFor(GitCase):
         self.assertIsNone(audit.repo_for(str(plain), None))
         self.assertIsNone(audit.repo_for(str(self.root / "gone"), str(plain)))
         self.assertIsNone(audit.repo_for(str(self.root / "gone"), str(self.root / "also-gone")))
+
+    def test_a_bare_repository_is_not_a_work_tree(self):
+        bare = self.root / "bare.git"
+        git(self.root, "init", "-q", "--bare", str(bare))
+        self.assertIsNone(audit.repo_for(str(bare), None))
+
+    def test_any_other_git_failure_in_an_existing_directory_is_an_error(self):
+        repo = make_repo(self.root)
+        git(repo, "config", "core.repositoryformatversion", "99")
+        with self.assertRaises(audit.GitError) as ctx:
+            audit.repo_for(str(repo), None)
+        self.assertIn(str(repo), str(ctx.exception))
 
 
 class TestLocalRef(GitCase):

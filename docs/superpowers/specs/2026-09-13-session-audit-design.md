@@ -114,9 +114,11 @@ Order of work, each step fail-closed:
 1. `hs_require_socket`, first and unconditionally. `audit` needs `herdr agent
    list`, so a mismatched, missing or unreachable server stops the run with the
    existing one-line messages, exit 3.
-2. `git` and `gh` on `PATH`, and `gh auth status --hostname github.com`
+2. `git` and `gh` on `PATH`, and `gh auth status --hostname github.com --active`
    succeeding. The hostname matters: the unscoped form checks every configured
-   host, so a stale login somewhere else fails it. Otherwise one line naming
+   host, so a stale login somewhere else fails it. `--active` matters for the
+   same reason within github.com: it checks only the account `gh` would use, so
+   a stale, inactive second account does not fail it. Otherwise one line naming
    which, exit 2.
 3. Gather, join and resolve (see "The audit runner").
 4. Print the report.
@@ -435,11 +437,18 @@ For each distinct (`dir`, `name`):
    - If neither is a work tree, the branch is `unresolved`: counted, with the
      reason in JSON.
    - A directory that no longer exists counts as "not a work tree". That is
-     the ordinary fate of a removed worktree.
+     the ordinary fate of a removed worktree. So does one where git says it is
+     not a git repository, or is a bare one. Any other git failure in a
+     directory that exists -- a `safe.directory` refusal, a repository this git
+     cannot read -- is an error: exit 2, naming the directory.
 2. **Name it.** The chosen remote is `origin`, else the only remote. Its URL
-   (https, `git@host:`, or `ssh://`) names `owner/name` when the host is
-   `github.com`. With no such remote the branch still resolves, by ancestry
-   only, and has no pull request data. Every remote-tracking ref below is the
+   names `owner/name` when the host is `github.com`, in any letter case:
+   https (with or without credentials), `ssh://` (with or without a user and
+   a port), or scp-like `[user@]github.com:`, each with or without `.git` and
+   a trailing slash. With no such remote the branch still resolves, by
+   ancestry only, and has no pull request data. Known limit: an SSH host alias
+   such as `git@github-work:owner/name`, which only `~/.ssh/config` maps to
+   `github.com`, is not recognised, so such a remote resolves by ancestry only. Every remote-tracking ref below is the
    chosen remote's, `refs/remotes/<remote>/...`, so a clone whose only remote
    is `upstream` is read the same way as one with `origin`.
 3. **Deduplicate.** The resolution key is (repository, branch). Several sessions
@@ -513,7 +522,13 @@ the query and never with `-F`, which type-infers: a branch named `123` or
    - It asks for `defaultBranchRef { name }`.
    - For each branch it asks for `ref(qualifiedName: $qI) { target { oid } }`,
      and for `pullRequests(headRefName: $hI, states: [OPEN, MERGED], first: 20)
-     { nodes { number state isDraft url headRepository { nameWithOwner } } }`.
+     { pageInfo { hasNextPage endCursor } nodes { number state isDraft url
+     headRepository { nameWithOwner } } }`.
+   - A branch whose pull requests run past that page -- a name like `patch-1`
+     shared by many forks' pull requests -- is paged to the end with
+     **`HsBranchPullRequests($owner, $name, $head, $after)`**, the same
+     selection for that one branch, so its merge state is never decided from a
+     truncated list.
 4. **`HsCompare($owner, $name, $h0..$hN)`**, per repository, in chunks.
    - It asks `defaultBranchRef { cI: compare(headRef: $hI) { status } }`.
    - Only branches whose GitHub ref exists and whose state no pull request
