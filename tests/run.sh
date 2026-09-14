@@ -74,10 +74,10 @@ repo_state() {
 # tests/helpers under the PATH every test gets. A missing fake does not fail
 # on its own: PATH falls through to the host's real command.
 for c in herdr gh; do
-  [ "$(PATH="$helpers_dir:$PATH" command -v "$c")" = "$helpers_dir/$c" ] && [ -x "$helpers_dir/$c" ] || {
+  if [ "$(PATH="$helpers_dir:$PATH" command -v "$c")" != "$helpers_dir/$c" ] || [ ! -x "$helpers_dir/$c" ]; then
     echo "tests/run.sh: refusing to run: $c does not resolve to the fake in tests/helpers" >&2
     exit 2
-  }
+  fi
 done
 
 state_before_suite="$(repo_state)"
