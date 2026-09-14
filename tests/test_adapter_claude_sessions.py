@@ -819,8 +819,13 @@ class TestCommandEvidence(TempConfigCase):
     # same command, for every shape that carries one, not just `cd` itself. --
 
     def test_worktree_add_relative_path_resolves_against_a_prior_cd(self):
-        sessions = self.sessions_for("cd /work/x && git worktree add ../wt -b b", cwd="/work/alpha")
-        self.assertEqual(one_branch(sessions)["dir"], "/work/wt")
+        # cwd and the `cd` target deliberately have DIFFERENT parents
+        # ("/work" vs "/work/deep"), so resolving "../wt" against the wrong
+        # base produces a different, distinguishable path.
+        sessions = self.sessions_for(
+            "cd /work/deep/x && git worktree add ../wt -b b", cwd="/work/alpha"
+        )
+        self.assertEqual(one_branch(sessions)["dir"], "/work/deep/wt")
 
     def test_git_dash_cap_c_relative_dir_resolves_against_a_prior_cd(self):
         sessions = self.sessions_for("cd /work/x && git -C sub checkout -b b", cwd="/work/alpha")
