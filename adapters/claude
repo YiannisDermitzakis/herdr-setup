@@ -63,6 +63,12 @@ SLUG_RE = re.compile(r"[^A-Za-z0-9]")
 # cmd_sessions and docs/adapters.md's "sessions" section, "SDK sessions".
 SDK_ENTRYPOINT_PREFIX = "sdk-"
 
+# `--since <days>` is by file MODIFICATION TIME (docs/adapters.md's own
+# "Bounded" rule), not by any timestamp recorded inside the file. Named and
+# shaped identically in adapters/codex, by convention -- adapters never
+# import each other, any more than they import lib/feed.py.
+SECONDS_PER_DAY = 86400
+
 # The runner's own copy of this rule lives in lib/feed.py's branch_name_ok,
 # and re-applies it regardless of what this adapter does. This copy exists
 # because adapters never import lib/feed.py (docs/adapters.md, checklist
@@ -193,6 +199,11 @@ def branch_name_ok(name: str) -> bool:
 
 def projects_dir() -> Path:
     return config_dir() / "projects"
+
+
+def since_cutoff(days: int) -> float:
+    """The epoch-seconds mtime cutoff `--since <days>` names: now minus `days`."""
+    return time.time() - days * SECONDS_PER_DAY
 
 
 def top_level_transcripts() -> list[Path]:
@@ -578,7 +589,7 @@ def cmd_sessions(argv: list[str]) -> int:
     parser.add_argument("--include-sdk", action="store_true")
     args = parser.parse_args(argv)
 
-    cutoff = time.time() - args.since * 86400
+    cutoff = since_cutoff(args.since)
     sessions: list[dict] = []
     for path in top_level_transcripts():
         try:

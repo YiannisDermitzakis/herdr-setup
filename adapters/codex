@@ -35,15 +35,35 @@ Never opens the Herdr socket. The runner decides; this adapter only answers.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 AGENT = "codex"
 SOURCE = "herdr:codex"
 
 MAX_DAY_DIRS = 30
+
+# `--since <days>` is by file MODIFICATION TIME (docs/adapters.md's own
+# "Bounded" rule), not by any timestamp recorded inside the file. Named and
+# shaped identically in adapters/claude, by convention -- adapters never
+# import each other, any more than they import lib/feed.py.
+SECONDS_PER_DAY = 86400
+
+# This adapter's own copy of lib/feed.py's branch_name_ok -- see
+# adapters/claude's identical comment. Kept in sync by
+# tests/test_adapter_codex_sessions.py running both filters over the same
+# shared name list (tests/helpers/feedlib.py's UNREAL_BRANCH_NAMES /
+# REAL_BRANCH_NAMES).
+_UNREAL_EXACT_NAMES = frozenset({"", "main", "master", "HEAD"})
+_UNREAL_PREFIX = "worktree-agent-"
+_GIT_INVALID_CHARS = set("~^:?*[\\")
+_GIT_INVALID_SUBSTRINGS = ("..", "@{", "//")
+_TEMPLATE_CHARS = set("<>{}|;&()'\"`")
 
 
 def config_dir() -> Path:
@@ -148,6 +168,33 @@ def candidates_for(cwd) -> list[dict]:
     return candidates
 
 
+def branch_name_ok(name: str) -> bool:
+    """This adapter's own copy of lib/feed.py's branch_name_ok -- see above."""
+    if not isinstance(name, str) or not name:
+        return False
+    if name in _UNREAL_EXACT_NAMES:
+        return False
+    if name.startswith(_UNREAL_PREFIX):
+        return False
+    if "$" in name:
+        return False
+    if name.startswith("-"):
+        return False
+    if any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F for c in name):
+        return False
+    if any(c in _GIT_INVALID_CHARS for c in name):
+        return False
+    if any(sub in name for sub in _GIT_INVALID_SUBSTRINGS):
+        return False
+    if name.startswith("/") or name.endswith("/"):
+        return False
+    if name.endswith(".") or name.endswith(".lock"):
+        return False
+    if any(part.startswith(".") for part in name.split("/")):
+        return False
+    return not any(c in _TEMPLATE_CHARS for c in name)
+
+
 def cmd_probe() -> int:
     available = sessions_dir().is_dir()
     print(
@@ -157,6 +204,7 @@ def cmd_probe() -> int:
                 "source": SOURCE,
                 "available": available,
                 "confidence": "heuristic",
+                "sessions": True,
             }
         )
     )
@@ -174,12 +222,147 @@ def cmd_resolve() -> int:
     return 0
 
 
+# --------------------------------------------------------------------------
+# The `sessions` query (docs/adapters.md, "The sessions query" > "Codex")
+# --------------------------------------------------------------------------
+#
+# Version 1 limits, stated in the contract: no command parsing at all (the
+# only evidence this adapter can ever report is `session-meta`, straight off
+# the rollout's own first line), and `--include-sdk` is accepted so the
+# argument parser never rejects it, then simply ignored -- a rollout carries
+# nothing this adapter can use to tell an automated caller from a person.
+
+
+def since_cutoff(days: int) -> float:
+    """The epoch-seconds mtime cutoff `--since <days>` names: now minus `days`."""
+    return time.time() - days * SECONDS_PER_DAY
+
+
+def rollout_files() -> list[Path]:
+    """Every rollout file: `<config>/sessions/*/*/*/rollout-*.jsonl`.
+
+    Unlike candidates_for()'s own newest_day_dirs() (bounded to 30 day
+    directories, a resolve()-specific performance limit the phase brief
+    scopes to that function alone), this walks every day directory --
+    `--since` and the per-file mtime check below are this query's own bound.
+    """
+    root = sessions_dir()
+    if not root.is_dir():
+        return []
+    return sorted(root.glob("*/*/*/rollout-*.jsonl"))
+
+
+def read_first_record(path: Path) -> dict | None:
+    """The first line of a rollout, parsed, or None if it is not usable.
+
+    Bytes are read and decoded with errors="replace" (matching
+    adapters/claude's own tolerance), so one bad byte on the SECOND line of
+    a rollout -- which this never reads at all -- or in the first line
+    itself downgrades to "unparseable", never an exception.
+    """
+    try:
+        with path.open("rb") as handle:
+            first_line = handle.readline()
+    except OSError:
+        return None
+    if not first_line.strip():
+        return None
+    try:
+        record = json.loads(first_line.decode("utf-8", errors="replace"))
+    except ValueError:
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def _file_mtime_z(path: Path) -> str | None:
+    try:
+        epoch = path.stat().st_mtime
+    except OSError:
+        return None
+    return datetime.fromtimestamp(epoch, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def derive_session(path: Path) -> dict | None:
+    """One session record out of one rollout file, or None to report nothing.
+
+    None covers: the first line is not a `session_meta` record, it has no
+    usable `id`/`cwd`, or `payload.parent_thread_id` is set -- a sub-thread
+    (subagent or guardian), Codex's counterpart of a Claude subagent
+    transcript, which is skipped entirely rather than reported as its own
+    session.
+    """
+    record = read_first_record(path)
+    if record is None or record.get("type") != "session_meta":
+        return None
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("parent_thread_id"):
+        return None
+
+    session_id = payload.get("id")
+    cwd = payload.get("cwd")
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    if not isinstance(cwd, str) or not cwd:
+        return None
+
+    last_active = _file_mtime_z(path)
+    if last_active is None:
+        return None
+
+    branches: list[dict] = []
+    git = payload.get("git")
+    if isinstance(git, dict):
+        branch = git.get("branch")
+        seen_at = payload.get("timestamp")
+        if (
+            isinstance(branch, str)
+            and branch
+            and isinstance(seen_at, str)
+            and seen_at
+            and branch_name_ok(branch)
+        ):
+            branches.append(
+                {"name": branch, "dir": cwd, "evidence": "session-meta", "seen_at": seen_at}
+            )
+
+    return {"id": session_id, "cwd": cwd, "last_active": last_active, "branches": branches}
+
+
+def cmd_sessions(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="adapters/codex sessions", add_help=False)
+    parser.add_argument("--since", type=int, required=True)
+    parser.add_argument("--include-sdk", action="store_true")
+    args = parser.parse_args(argv)
+
+    cutoff = since_cutoff(args.since)
+    sessions: list[dict] = []
+    for path in rollout_files():
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < cutoff:
+            continue
+        session = derive_session(path)
+        if session is not None:
+            sessions.append(session)
+
+    print(json.dumps({"sessions": sessions}))
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if len(argv) == 1 and argv[0] == "probe":
         return cmd_probe()
     if len(argv) == 1 and argv[0] == "resolve":
         return cmd_resolve()
-    sys.stderr.write("usage: adapters/codex probe|resolve\n")
+    if argv and argv[0] == "sessions":
+        return cmd_sessions(argv[1:])
+    sys.stderr.write(
+        "usage: adapters/codex probe|resolve|sessions --since <days> [--include-sdk]\n"
+    )
     return 2
 
 
