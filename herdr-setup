@@ -733,9 +733,18 @@ cmd_feed() {
 # path hs_require_socket itself just probed), so lib/audit.py's `--adapters`/
 # `--socket` defaults are never relied on when running through the
 # entrypoint -- only a direct `uv run lib/audit.py` (a test, or a developer)
-# falls back to those. Every flag the operator actually passed ("$@" --
-# --since, --owner, --include-sdk, --include-bots, --json, --dry-run, --yes)
-# comes AFTER, so it can never be shadowed by these two.
+# falls back to those. Every flag the operator actually passed on the
+# command line for audit itself (--since, --owner, --include-sdk,
+# --include-bots, --json) arrives after these two, in "$@", so it can never
+# be shadowed by them.
+#
+# --dry-run and --yes are NOT in that "$@": the global parser above consumes
+# both into HS_DRY_RUN/HS_YES before HS_COMMAND is even dispatched, and
+# never puts either into HS_ARGS. cmd_feed reads those two variables back
+# out and re-adds them to ITS OWN args, because feed's behaviour depends on
+# them; cmd_audit does not, because audit is read-only and asks nothing --
+# the design doc's own words, "accepted and change nothing" -- so there is
+# nothing for lib/audit.py to do differently under either flag.
 cmd_audit() {
   local args
   args=(--adapters "$HS_ROOT/adapters" --socket "$(hs_socket_path)")
