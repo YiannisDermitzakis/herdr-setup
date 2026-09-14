@@ -184,3 +184,58 @@ r2-m5-fr-components-kept (_session_repositories ignores the fr path, fr_path = N
 ### r2-disc-spec-drift-and-limits · discovery · Spec corrected (review Minors 6 and 8) and one wording kept to the code
 
 Change 1 now states the three per-checkout reads (refs with object names, one --merged, one cat-file batch check), the missing-parent limit, and that each clone is its own checkout read once, not once for all clones. The review asked to say GitHub facts are shared per repository; resolve_branches groups by main checkout, so repo_branches and compare run once per checkout and the report reconciles clones afterwards, and the spec says that instead. Change 2 says the archived 120 s is superseded and left as written. Change 4 names the session's repository, both command rules, gh --repo, the HOME expansion, and two known limits: cd .. from a subdirectory cwd is dropped, and a generic component such as work still matches.
+
+<!-- fr:journal kind=finding scope=spec id=fx-nonrepo-cwd-credits-fr-worktrees created=2026-09-14T23:25:26 state=fixed -->
+### fx-nonrepo-cwd-credits-fr-worktrees · finding [fixed] · A non-repository cwd still credited fr worktrees beneath it
+
+A session started in the home directory or a projects folder was credited with branches created in other repositories' fr worktrees, because they were beneath its cwd. Any directory inside an fr worktree now has to pass the same-repository component rule even when it is beneath cwd. A branch-creating command in an ordinary checkout beneath a non-repository cwd still counts, as real work by that session; the adapter cannot see repository boundaries without git, and the spec says so.
+
+<!-- fr:journal kind=finding scope=spec id=fx-corrupt-tip-reads-unmerged created=2026-09-14T23:25:28 state=fixed -->
+### fx-corrupt-tip-reads-unmerged · finding [fixed] · A corrupt branch tip was classified unmerged instead of failing closed
+
+Batching ancestry into one --merged read made a branch ref naming a missing object or a blob silently unmerged, where merge-base used to exit 128 and stop the run. Tips the --merged read excluded are now checked with one cat-file batch check per repository, and a broken tip raises for that branch only. A commit whose parent object is missing is not detected (git fsck territory); the docstring and spec state the limit, and the journal entry that claimed broken refs still raised is corrected.
+
+<!-- fr:journal kind=finding scope=spec id=fx-c-reach-untested created=2026-09-14T23:25:30 state=fixed -->
+### fx-c-reach-untested · finding [fixed] · git -C reach into the session's own fr worktree was never tested on its own
+
+The only -C test reached the same worktree as a preceding cd, so the two hits deduplicated. A test whose only reference is git -C into the own worktree now fails when -C reach is removed.
+
+<!-- fr:journal kind=finding scope=spec id=fx-component-substring-untested created=2026-09-14T23:25:32 state=fixed -->
+### fx-component-substring-untested · finding [fixed] · The exact path-component match was unguarded
+
+A substring match survived mutation. A cwd named like the repository plus a suffix now credits nothing for that repository's worktrees.
+
+<!-- fr:journal kind=finding scope=spec id=fx-home-prefix-untested created=2026-09-14T23:25:34 state=fixed -->
+### fx-home-prefix-untested · finding [fixed] · The HOME expansion prefix rule was unguarded
+
+A loose startswith survived mutation. Directories beginning $HOMEX or ${HOME_DIR} are now tested to stay dropped.
+
+<!-- fr:journal kind=finding scope=spec id=fx-case-insensitive-dedup-untested created=2026-09-14T23:25:36 state=fixed -->
+### fx-case-insensitive-dedup-untested · finding [fixed] · Case-insensitive open-PR deduplication was unguarded
+
+A case-sensitive mutation survived. Two owners' copies of one PR differing only in letter case are now reported once.
+
+<!-- fr:journal kind=finding scope=spec id=fx-component-rule-fr-prefix-names created=2026-09-14T23:25:38 state=fixed -->
+### fx-component-rule-fr-prefix-names · finding [fixed] · The component rule matched the fr worktree path's own components
+
+A repository named like a component of an fr worktree path (fr, for example) matched any cwd inside an fr worktree. Those path components are now ignored, and a cwd inside an fr worktree takes that worktree's repository as its own.
+
+<!-- fr:journal kind=finding scope=spec id=fx-component-rule-ancestor-folder-names created=2026-09-14T23:25:41 state=refuted -->
+### fx-component-rule-ancestor-folder-names · finding [refuted] · A repository named like an ancestor folder of cwd still matches
+
+Verified on the fixed code: an fr worktree of a repository named work is credited to a session whose cwd is /work/a. Closing it means matching only cwd's last component, which drops real fr-worktree evidence for every session started in a subdirectory of its repository. Missing real work is worse for an audit than this over-credit, which needs a repository named exactly like an ancestor folder of the session. Kept as a documented limit in the spec and docs/adapters.md.
+
+<!-- fr:journal kind=finding scope=spec id=fx-subdir-cwd-parent-cd created=2026-09-14T23:25:43 state=refuted -->
+### fx-subdir-cwd-parent-cd · finding [refuted] · A subdirectory cwd loses a branch created after cd ..
+
+Conforms to the spec's rule (the command's directory must be cwd or beneath it) and is rare, since sessions start at a repository root. Widening it would need repository boundaries the git-free adapter cannot see. Documented in the spec as a known limit rather than changed.
+
+<!-- fr:journal kind=finding scope=spec id=fx-gh-pr-create-repo-escape created=2026-09-14T23:25:45 state=fixed -->
+### fx-gh-pr-create-repo-escape · finding [fixed] · gh pr create --repo other/repo escaped the own-repository rule
+
+gh's --repo was ignored, so a PR opened for another repository still credited its head branch. --repo and -R must now name the session's own repository by the component rule, or the evidence is dropped.
+
+<!-- fr:journal kind=finding scope=spec id=fx-spec-drift created=2026-09-14T23:25:47 state=fixed -->
+### fx-spec-drift · finding [fixed] · The spec understated the per-checkout reads and misdescribed clones and the timeout
+
+It now names one refs read with object names, one --merged read and one cat-file batch check per checkout; says each clone is its own checkout, resolved and asked of GitHub once per checkout, with the report reconciling clones by repository afterwards (the review suggested sharing GitHub facts per repository, but the spec describes what the code does, and changing that is a separate optimisation); and says the archived spec's 120 s is superseded by this amendment, left as written because archived specs are a historical record.
