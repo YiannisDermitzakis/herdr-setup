@@ -156,8 +156,8 @@ not listed: 12 branches gone, 2 unresolved, 4 bot PRs hidden.
   - `no session history (unsupported)`, when the agent's adapter has no
     `sessions` query;
   - `session history unavailable (adapter failed)`, when the agent's adapter
-    declared `sessions` but could not answer this run (the report is then
-    incomplete);
+    declared `sessions` but could not answer this run, or when an adapter of
+    that name failed its `probe` (the report is then incomplete);
   - `no adapter`, when no adapter declares that agent.
 
   Every state is shown except `gone`, which is counted. A pane whose every
@@ -165,14 +165,24 @@ not listed: 12 branches gone, 2 unresolved, 4 bot PRs hidden.
   (counted)`, so no pane Herdr lists is missing. `TAB` is the tab label from
   `herdr tab list`. Section 1 is informational.
 - **Section 2** has one row per (repository, branch) in state `unmerged` or
-  `open-pr`. The session is the newest one that touched the branch, and `+N`
-  counts older ones. A branch any open pane's session also touched is excluded,
-  because it is not stranded.
+  `open-pr`. The repository is the GitHub repository (`owner/name`, compared
+  ignoring case) when the branch resolved on github.com, and the main checkout
+  only when it did not, so several clones of one GitHub repository are one
+  repository. The session is the newest one that touched the branch in any
+  clone, and `+N` counts older ones. A branch any open pane touched -- through
+  its session's history or its own directory (Sources item 3), in any clone --
+  is excluded, because it is not stranded.
+  - Merge state is per (repository, branch), but clones can disagree on its
+    local half (one holds a commit the other lacks). The report then uses the
+    most actionable state among them: `unmerged`, then `open-pr`,
+    `unresolved`, `contained`, `merged`, `gone`. Section 1 and the footer
+    counts use that same one state, so clones never disagree in the report.
 - **Section 3** lists open pull requests in non-archived repositories of the
   owner list. It leaves out any pull request whose head branch equals a
   resolved session branch in the same repository. "Same repository" means the
   base repository or the head repository, so fork pull requests match too. The
-  comparison uses every session in the window, open or closed, in any state.
+  comparison uses every session in the window, open or closed, in any state,
+  and every branch an open pane's own directory names (Sources item 3).
   Bot-authored pull requests are hidden and counted unless `--include-bots`.
   Drafts are listed and labelled.
 - The footer counts what was deliberately not listed:
@@ -419,7 +429,9 @@ implementation.
 ### Sources
 
 1. **Panes.** `herdr agent list` gives, per entry, `pane_id`, `agent`,
-   `agent_session.value` (possibly absent), `cwd` and `tab_id`. `herdr tab
+   `agent_session.value` (possibly absent), `foreground_cwd`, `cwd` and
+   `tab_id`. A pane's directory is `foreground_cwd`, the agent process's own,
+   falling back to `cwd` -- `lib/feed.py`'s order. `herdr tab
    list` gives tab labels. Both go through `feed.herdr_json`, so a failure after
    the preflight is exit 2.
 2. **Session history.** Every usable adapter declaring `sessions: true` is

@@ -126,6 +126,16 @@ class TestPanes(HerdrCase):
         )
         self.assertEqual(self.herdr_calls(), ["agent list", "tab list"])
 
+    def test_the_agent_processs_own_directory_wins_over_the_panes(self):
+        entry = agent_entry(0, cwd="/work/shell", foreground_cwd="/work/agent")
+        self.herdr_answers(agent_list([entry]), captured("tab-list"))
+        self.assertEqual(audit.panes()[0]["cwd"], "/work/agent")
+        for missing in ("", None):
+            with self.subTest(foreground_cwd=missing):
+                entry = agent_entry(0, cwd="/work/shell", foreground_cwd=missing)
+                self.herdr_answers(agent_list([entry]), captured("tab-list"))
+                self.assertEqual(audit.panes()[0]["cwd"], "/work/shell")
+
     def test_a_pane_herdr_has_no_session_for_has_none(self):
         self.herdr_answers(agent_list([agent_entry(0, agent_session=None)]), captured("tab-list"))
         self.assertIsNone(audit.panes()[0]["session"])
@@ -235,8 +245,10 @@ class TestGatherSessions(AdapterCase):
                 "confidence": "heuristic",
             },
         )
-        adapters, incomplete = audit.load_adapters(self.adapter_dir, warn=self.warnings.append)
-        self.assertEqual(incomplete, [])
+        adapters, incomplete, failed = audit.load_adapters(
+            self.adapter_dir, warn=self.warnings.append
+        )
+        self.assertEqual((incomplete, failed), ([], set()))
         gathered = audit.gather_sessions(adapters, 7, warn=self.warnings.append)
         self.assertEqual(
             [c for c in self.adapter_calls() if " sessions" in c], ["claude sessions --since 7"]
@@ -251,7 +263,7 @@ class TestGatherSessions(AdapterCase):
         sessions_adapter(
             self.adapter_dir, "claude", "claude", {"sessions": []}, log=self.adapter_log
         )
-        adapters, _ = audit.load_adapters(self.adapter_dir, warn=self.warnings.append)
+        adapters, *_ = audit.load_adapters(self.adapter_dir, warn=self.warnings.append)
         audit.gather_sessions(adapters, 30, include_sdk=True, warn=self.warnings.append)
         self.assertIn("claude sessions --since 30 --include-sdk", self.adapter_calls())
 
@@ -264,7 +276,7 @@ class TestGatherSessions(AdapterCase):
             log=self.adapter_log,
         )
         sessions_adapter(self.adapter_dir, "codex", "codex", "boom", log=self.adapter_log, code=1)
-        adapters, _ = audit.load_adapters(self.adapter_dir, warn=self.warnings.append)
+        adapters, *_ = audit.load_adapters(self.adapter_dir, warn=self.warnings.append)
         gathered = audit.gather_sessions(adapters, 30, warn=self.warnings.append)
         self.assertEqual([s["agent"] for s in gathered.sessions], ["claude"])
         self.assertEqual(list(gathered.failed), ["codex"])
@@ -280,7 +292,7 @@ class TestGatherSessions(AdapterCase):
             {"sessions": [{"id": "x"}]},
             log=self.adapter_log,
         )
-        adapters, _ = audit.load_adapters(self.adapter_dir, warn=self.warnings.append)
+        adapters, *_ = audit.load_adapters(self.adapter_dir, warn=self.warnings.append)
         gathered = audit.gather_sessions(adapters, 30, warn=self.warnings.append)
         self.assertEqual(gathered.sessions, [])
         self.assertEqual(list(gathered.failed), ["claude"])
@@ -288,10 +300,13 @@ class TestGatherSessions(AdapterCase):
 
     def test_an_adapter_whose_probe_fails_makes_the_run_incomplete(self):
         write_adapter(self.adapter_dir, "codex", 'echo "probe broke" >&2\nexit 3\n')
-        adapters, incomplete = audit.load_adapters(self.adapter_dir, warn=self.warnings.append)
+        adapters, incomplete, failed = audit.load_adapters(
+            self.adapter_dir, warn=self.warnings.append
+        )
         self.assertEqual(adapters, [])
         self.assertEqual(len(incomplete), 1)
         self.assertIn("codex", incomplete[0])
+        self.assertEqual(failed, {"codex"})
 
 
 def adapter(agent: str, *, sessions: bool = True):
@@ -432,6 +447,18 @@ class TestJoin(HerdrCase):
         found = gathered(failed={"claude": "adapter claude: sessions exited 1"})
         record = self.one([pane("w2:p1")], [adapter("claude")], found)
         self.assertEqual(record["note"], "session history unavailable (adapter failed)")
+
+    def test_a_pane_whose_adapter_failed_its_probe_says_so_rather_than_no_adapter(self):
+        joined = audit.join(
+            [pane("w2:p1", agent="codex"), pane("w2:p2", agent="aider")],
+            [adapter("claude")],
+            gathered(),
+            failed_probes={"codex"},
+        )
+        self.assertEqual(
+            [record["note"] for record in joined],
+            ["session history unavailable (adapter failed)", "no adapter"],
+        )
 
     def test_entries_for_resolution_cover_every_session_and_every_pane_worktree(self):
         found = gathered(

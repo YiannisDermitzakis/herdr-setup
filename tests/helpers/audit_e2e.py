@@ -9,8 +9,9 @@ Not a test file: tests/run.sh's `test_*` glob and pytest's `test_*.py` never
 pick it up. The shell test calls it twice, so the whole end-to-end setup costs
 one uv start rather than one per file it writes:
 
-    audit_e2e.py setup <work>          build everything under <work>
-    audit_e2e.py check <text> <json>   the JSON run agrees with the text run
+    audit_e2e.py setup <work>                   build everything under <work>
+    audit_e2e.py check <text> <json> <git-log>  the JSON run agrees with the text
+                                                run, and git ran read-only
 
 `setup` writes, from the captures with values edited and never keys:
 
@@ -25,7 +26,7 @@ one uv start rather than one per file it writes:
     <work>/stores/clean/codex         an empty store
     <work>/gh-findings.json           feat/squashed MERGED as #7, an open draft #31,
                                       an open bot pull request #40
-    <work>/gh-clean.json              only the merged #7
+    <work>/gh-clean.json              the merged #7 and the open bot pull request #40
     <work>/herdr/                     agent list (three panes in the repository:
                                       the open session, an unknown session, and a
                                       codex pane with none) and the captured tab list
@@ -40,7 +41,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from auditlib import commit, gh_pr, gh_repo, gh_state, git, make_repo  # noqa: E402
+from auditlib import (  # noqa: E402
+    commit,
+    gh_pr,
+    gh_repo,
+    gh_state,
+    git,
+    make_repo,
+    writing_git_calls,
+)
 from feedlib import TESTS_DIR, agent_entry, agent_list, captured, write_codex_rollout  # noqa: E402
 
 SLUG = "example-org/example-repo"
@@ -132,14 +141,10 @@ def setup(work: Path) -> None:
     write_codex(clean / "codex", None, repo, None)
 
     merged = gh_pr(7, "feat/squashed", state="MERGED")
-    bot = {"login": "dependabot[bot]", "__typename": "Bot"}
+    bot_pr = gh_pr(40, "deps/bump", author={"login": "dependabot[bot]", "__typename": "Bot"})
     states = {
-        "findings": [
-            merged,
-            gh_pr(31, "chore/bump", draft=True),
-            gh_pr(40, "deps/bump", author=bot),
-        ],
-        "clean": [merged],
+        "findings": [merged, gh_pr(31, "chore/bump", draft=True), bot_pr],
+        "clean": [merged, bot_pr],
     }
     for name, prs in states.items():
         state = gh_state(repos={SLUG: gh_repo(prs=prs)})
@@ -176,7 +181,7 @@ def section_rows(text: str, heading: str) -> int:
     return 0 if rows == ["  (none)"] else len(rows) - 1
 
 
-def check(text_path: Path, json_path: Path) -> int:
+def check(text_path: Path, json_path: Path, git_log: Path) -> int:
     text = text_path.read_text(encoding="utf-8")
     data = json.loads(json_path.read_text(encoding="utf-8"))
     problems = []
@@ -197,6 +202,10 @@ def check(text_path: Path, json_path: Path) -> int:
         found = section_rows(text, heading)
         if found != expected:
             problems.append(f"{heading!r}: text has {found} rows, JSON {expected}")
+    if not git_log.exists() or not git_log.read_text(encoding="utf-8").strip():
+        problems.append(f"{git_log} recorded no git call: the shim was not on the audit's PATH")
+    for line in writing_git_calls(git_log):
+        problems.append(f"git ran a subcommand outside the read-only set: {line}")
     for problem in problems:
         print(problem)
     return 1 if problems else 0
@@ -206,9 +215,9 @@ def main(argv: list[str]) -> int:
     if len(argv) == 2 and argv[0] == "setup":
         setup(Path(argv[1]))
         return 0
-    if len(argv) == 3 and argv[0] == "check":
-        return check(Path(argv[1]), Path(argv[2]))
-    print("usage: audit_e2e.py setup <work> | check <text> <json>", file=sys.stderr)
+    if len(argv) == 4 and argv[0] == "check":
+        return check(Path(argv[1]), Path(argv[2]), Path(argv[3]))
+    print("usage: audit_e2e.py setup <work> | check <text> <json> <git-log>", file=sys.stderr)
     return 2
 
 

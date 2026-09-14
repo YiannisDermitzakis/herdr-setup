@@ -325,6 +325,39 @@ def fingerprint(repo) -> tuple[str, str]:
     return refs, status
 
 
+# The only git subcommands a read-only audit has any business running. A new
+# one must be added here on purpose, after checking it cannot write.
+# tests/helpers/audit_e2e.py checks the end-to-end run against this same set.
+READ_ONLY_SUBCOMMANDS = frozenset(
+    {
+        "rev-parse",
+        "remote",
+        "show-ref",
+        "for-each-ref",
+        "merge-base",
+        "symbolic-ref",
+        "worktree list",
+    }
+)
+
+
+def git_subcommand(logged: str) -> str:
+    """The subcommand of one recording_git log line, its global -C/-c pairs skipped."""
+    words = logged.split()
+    while words and words[0] in ("-C", "-c"):
+        words = words[2:]
+    if not words:
+        return ""
+    return " ".join(words[:2]) if words[0] == "worktree" else words[0]
+
+
+def writing_git_calls(log_path) -> list[str]:
+    """Every logged git call whose subcommand is not in READ_ONLY_SUBCOMMANDS."""
+    path = Path(log_path)
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    return [line for line in lines if git_subcommand(line) not in READ_ONLY_SUBCOMMANDS]
+
+
 def recording_git(directory) -> tuple[str, Path]:
     """A PATH entry whose `git` logs its argv and then runs the real git.
 

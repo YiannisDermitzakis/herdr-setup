@@ -48,6 +48,7 @@ from auditlib import (  # noqa: E402
     make_repo,
     recording_git,
     use_in_process_gh,
+    writing_git_calls,
 )
 
 isolate_audit_environment()
@@ -285,6 +286,22 @@ class TestWhatIsAsked(MergeStateCase):
         self.assertEqual(len(calls), 1)
         asked = {key: value for key, value in calls[0]["raw"].items() if key.startswith("h")}
         self.assertEqual(asked, {"h0": "feat/undecided"})
+
+    def test_resolution_runs_only_read_only_git_subcommands(self):
+        self.branch_with_commit("feat/local-only")
+        git(self.repo, "branch", "feat/fresh")
+        prs = [gh_pr(1, "feat/merged", state="MERGED")]
+        self.github(refs={"feat/remote": ZERO_OID}, compare={"feat/remote": "AHEAD"}, prs=prs)
+        other = make_repo(self.root, "not-on-github", remote=NOT_GITHUB)
+        entries = [
+            entry(name, self.repo, self.repo)
+            for name in ("feat/local-only", "feat/fresh", "feat/merged", "feat/remote", "feat/none")
+        ] + [entry("feat/elsewhere", other, other), entry("feat/lost", self.root / "gone", None)]
+        bin_dir, git_log = recording_git(self.root / "record")
+        with mock.patch.dict(os.environ, {"PATH": bin_dir + os.pathsep + os.environ["PATH"]}):
+            audit.resolve_branches(entries)
+        self.assertGreater(len(git_log.read_text(encoding="utf-8").splitlines()), 5)
+        self.assertEqual(writing_git_calls(git_log), [])
 
     def test_one_resolution_per_repository_and_branch_however_many_name_it(self):
         worktree = self.root / "worktree"

@@ -594,22 +594,147 @@ class TestExitCode(unittest.TestCase):
                 self.assertEqual(audit.exit_code(report(**kwargs)), expected)
 
 
+CLONE_A = "/work/clone-a"
+CLONE_B = "/work/clone-b"
+CLONE_C = "/work/clone-c"
+PR_5 = {"number": 5, "draft": False, "url": "https://github.com/example-org/example-repo/pull/5"}
+
+
+class TestClonesOfOneRepository(unittest.TestCase):
+    """Several checkouts of one GitHub repository are that one repository."""
+
+    def clones(self, state="open-pr", pr=PR_5, clones=(CLONE_A, CLONE_B, CLONE_C)):
+        world = World()
+        for clone in clones:
+            world.resolve("feat/x", state, repo=clone, pr=pr)
+        return world
+
+    def session_in(self, world, sid, clone, day):
+        world.session(
+            "claude",
+            sid,
+            cwd=clone,
+            last_active=f"2026-09-{day}T00:00:00Z",
+            branches=[("feat/x", clone, clone)],
+        )
+
+    def test_an_open_pane_in_one_clone_excludes_the_branch_closed_sessions_worked_in_others(self):
+        world = self.clones()
+        self.session_in(world, ID_A, CLONE_A, "12")
+        self.session_in(world, ID_B, CLONE_B, "10")
+        self.session_in(world, ID_C, CLONE_C, "09")
+        world.pane("w1:p1", sid=ID_A, entries=[("feat/x", CLONE_A, CLONE_A, "command", CLONE_A)])
+        world.pr(5, "feat/x")
+        report = world.report()
+        self.assertEqual(report["closed_unmerged"], [])
+        self.assertEqual(report["unmatched_prs"], [])
+        self.assertEqual(audit.exit_code(report), 0)
+
+    def test_the_open_pane_in_a_clone_no_closed_session_used_still_excludes_it(self):
+        world = self.clones()
+        self.session_in(world, ID_B, CLONE_B, "10")
+        self.session_in(world, ID_C, CLONE_C, "09")
+        world.pane(
+            "w1:p1", sid=None, entries=[("feat/x", CLONE_A, CLONE_A, "worktree-path", CLONE_A)]
+        )
+        self.assertEqual(world.report()["closed_unmerged"], [])
+
+    def test_closed_sessions_in_two_clones_are_one_row_with_the_older_counted(self):
+        world = self.clones(clones=(CLONE_B, CLONE_C))
+        self.session_in(world, ID_C, CLONE_C, "09")
+        self.session_in(world, ID_B, CLONE_B, "10")
+        rows = world.report()["closed_unmerged"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            (rows[0]["repo"], rows[0]["name"], rows[0]["session"]["id"], rows[0]["older_sessions"]),
+            (SLUG, "feat/x", ID_B, 1),
+        )
+
+    def test_closed_sessions_in_three_clones_are_one_row_with_both_older_counted(self):
+        world = self.clones()
+        self.session_in(world, ID_A, CLONE_A, "05")
+        self.session_in(world, ID_B, CLONE_B, "11")
+        self.session_in(world, ID_C, CLONE_C, "09")
+        rows = world.report()["closed_unmerged"]
+        self.assertEqual([(r["session"]["id"], r["older_sessions"]) for r in rows], [(ID_B, 2)])
+
+    def test_clones_that_disagree_report_the_most_actionable_state_everywhere(self):
+        world = World()
+        world.resolve("feat/x", "contained", repo=CLONE_A)
+        world.resolve("feat/x", "unmerged", repo=CLONE_B)
+        world.resolve("feat/x", "gone", repo=CLONE_C)
+        self.session_in(world, ID_A, CLONE_A, "12")
+        self.session_in(world, ID_B, CLONE_B, "10")
+        self.session_in(world, ID_C, CLONE_C, "09")
+        report = world.report()
+        self.assertEqual(
+            [(r["name"], r["state"], r["older_sessions"]) for r in report["closed_unmerged"]],
+            [("feat/x", "unmerged", 2)],
+        )
+        self.assertEqual(report["counts"]["gone"], 0)
+        world.pane("w1:p1", sid=ID_A, entries=[("feat/x", CLONE_A, CLONE_A, "command", CLONE_A)])
+        report = world.report()
+        self.assertEqual(
+            [(b["name"], b["state"]) for b in report["open"][0]["branches"]],
+            [("feat/x", "unmerged")],
+        )
+        self.assertEqual(report["closed_unmerged"], [])
+
+    def test_the_state_order_between_clones(self):
+        order = ["unmerged", "open-pr", "unresolved", "contained", "merged", "gone"]
+        for better, worse in zip(order, order[1:], strict=False):
+            with self.subTest(better=better, worse=worse):
+                world = World()
+                world.resolve("feat/x", worse, repo=CLONE_A)
+                world.resolve("feat/x", better, repo=CLONE_B)
+                world.pane(
+                    "w1:p1",
+                    entries=[
+                        ("feat/x", CLONE_A, CLONE_A, "command", CLONE_A),
+                        ("feat/x", CLONE_B, CLONE_B, "command", CLONE_B),
+                    ],
+                )
+                branches = world.report()["open"][0]["branches"]
+                self.assertEqual(
+                    [b["state"] for b in branches], [] if better == "gone" else [better]
+                )
+
+    def test_the_repository_is_compared_ignoring_the_case_of_its_slug(self):
+        world = World()
+        world.resolve("feat/x", "unmerged", repo=CLONE_A, slug="Example-Org/Example-Repo")
+        world.resolve("feat/x", "unmerged", repo=CLONE_B, slug=SLUG)
+        self.session_in(world, ID_A, CLONE_A, "12")
+        self.session_in(world, ID_B, CLONE_B, "10")
+        self.assertEqual(len(world.report()["closed_unmerged"]), 1)
+
+    def test_checkouts_with_no_github_remote_stay_apart(self):
+        world = World()
+        world.resolve("feat/x", "unmerged", repo=CLONE_A, slug=None)
+        world.resolve("feat/x", "unmerged", repo=CLONE_B, slug=None)
+        self.session_in(world, ID_A, CLONE_A, "12")
+        self.session_in(world, ID_B, CLONE_B, "10")
+        rows = world.report()["closed_unmerged"]
+        self.assertEqual(sorted(r["repo"] for r in rows), [CLONE_A, CLONE_B])
+
+
 class TestRun(unittest.TestCase):
-    """run() with every stage replaced: order, output, and every error path."""
+    """run() with every stage replaced: order, output, arguments, and every error path."""
 
     def stages(self, calls: list[str], **raising):
         world = full_world()
+        self.received: dict[str, list] = {}
 
         def stage(name, value):
-            def call(*_args, **_kwargs):
+            def call(*args, **kwargs):
                 calls.append(name)
+                self.received.setdefault(name, []).append((args, kwargs))
                 if name in raising:
                     raise raising[name]
                 return value
 
             return call
 
-        adapters_value = ([], ["adapter broken: skipped"])
+        adapters_value = ([], ["adapter broken: skipped"], {"broken"})
         gathered = audit.Gathered(sessions=world.sessions, failed={}, incomplete=[])
         return {
             "require_tools": stage("require_tools", None),
@@ -650,6 +775,41 @@ class TestRun(unittest.TestCase):
         self.assertEqual(code, 2)  # load_adapters reported a skipped adapter
         self.assertIn("open in Herdr", out)
         self.assertTrue(out.rstrip().endswith("incomplete: adapter broken: skipped"))
+
+    def test_the_command_line_reaches_every_consumer(self):
+        code, out, _, _ = self.run_audit(
+            [
+                "--since",
+                "7",
+                "--include-sdk",
+                "--include-bots",
+                "--owner",
+                "example-org",
+                "--owner",
+                "example-user",
+            ]
+        )
+        self.assertEqual(self.received["owners"], [((["example-org", "example-user"],), {})])
+        [(args, kwargs)] = self.received["gather_sessions"]
+        self.assertEqual(args[1], 7)
+        self.assertIs(kwargs["include_sdk"], True)
+        [(_, join_kwargs)] = self.received["join"]
+        self.assertEqual(join_kwargs["failed_probes"], {"broken"})
+        self.assertEqual(
+            [args[0] for args, _ in self.received["open_prs"]], ["example-user", "example-org"]
+        )
+        prs = out[out.index("open PRs no session is working on") :]
+        self.assertIn("deps/x", prs)
+        self.assertIn("0 bot PRs hidden", out)
+
+    def test_without_flags_the_defaults_reach_them(self):
+        _, out, _, _ = self.run_audit([])
+        self.assertEqual(self.received["owners"], [(([],), {})])
+        [(args, kwargs)] = self.received["gather_sessions"]
+        self.assertEqual(args[1], 30)
+        self.assertIs(kwargs["include_sdk"], False)
+        self.assertNotIn("deps/x", out)
+        self.assertRegex(out, r"not listed: .*, [1-9][0-9]* bot PRs? hidden\.")
 
     def test_json_prints_one_object(self):
         code, out, _, _ = self.run_audit(["--json"])

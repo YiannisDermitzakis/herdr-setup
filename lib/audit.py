@@ -1169,7 +1169,8 @@ def panes() -> list[dict]:
             )
         session = entry.get("agent_session")
         value = session.get("value") if isinstance(session, dict) else None
-        cwd = entry.get("cwd") or entry.get("foreground_cwd")
+        # The agent process's own directory first, then the pane's: lib/feed.py's order.
+        cwd = entry.get("foreground_cwd") or entry.get("cwd")
         found.append(
             {
                 "pane_id": pane_id,
@@ -1182,17 +1183,18 @@ def panes() -> list[dict]:
     return found
 
 
-def load_adapters(adapter_dir, warn=warn) -> tuple[list, list[str]]:
-    """The usable adapters, and an incomplete reason for every probe that failed.
+def load_adapters(adapter_dir, warn=warn) -> tuple[list, list[str], set[str]]:
+    """The usable adapters, an incomplete reason per failed probe, and those adapters' names.
 
     feed.usable_adapters is the one discovery and probe policy. A failed probe
     is also a source this run could not read -- its agent's sessions are
-    missing and its panes would read "no adapter" -- so unlike `feed`, the
-    audit marks the report incomplete for it.
+    missing -- so unlike `feed`, the audit marks the report incomplete for it,
+    and join() tells its panes so rather than calling them "no adapter".
     """
     skipped: list[tuple[str, str]] = []
     adapters = feed.usable_adapters(adapter_dir, warn=warn, skipped=skipped)
-    return adapters, [f"adapter {name}: probe failed: {reason}" for name, reason in skipped]
+    reasons = [f"adapter {name}: probe failed: {reason}" for name, reason in skipped]
+    return adapters, reasons, {name for name, _ in skipped}
 
 
 @dataclass(frozen=True)
@@ -1246,12 +1248,17 @@ def pane_worktree(cwd) -> dict | None:
     return {"name": name, "dir": match["dir"]}
 
 
-def join(pane_list: list[dict], adapters, gathered: Gathered) -> list[dict]:
+def join(
+    pane_list: list[dict], adapters, gathered: Gathered, *, failed_probes=frozenset()
+) -> list[dict]:
     """One record per pane: its branch entries, or the note saying why it has none.
 
     A pane's session is looked up under its own agent. Its entries are that
     session's branches (with the session's cwd, the resolver's fallback) plus
     a worktree-path branch when the pane's own cwd is in an fr worktree.
+    `failed_probes` names the adapters whose probe failed; a failed probe says
+    nothing about its agent, so a pane is matched to it by the adapter's own
+    name, which is the agent it covers (adapters/claude, adapters/codex, ...).
     """
     by_agent: dict[str, object] = {}
     for adapter in adapters:
@@ -1280,7 +1287,7 @@ def join(pane_list: list[dict], adapters, gathered: Gathered) -> list[dict]:
         note = None
         if not entries:
             if adapter is None:
-                note = NOTE_NO_ADAPTER
+                note = NOTE_ADAPTER_FAILED if pane["agent"] in failed_probes else NOTE_NO_ADAPTER
             elif not adapter.sessions:
                 note = NOTE_UNSUPPORTED
             elif pane["agent"] in gathered.failed:
@@ -1344,6 +1351,33 @@ STATE_ONLY_GONE = "only gone branches (counted)"
 SESSION_ID_TEXT = 8
 
 
+# Clones of one repository can disagree on a branch's local half of merge state
+# (one holds a commit another lacks). The report keeps the most actionable.
+STATE_PRIORITY = (UNMERGED, OPEN_PR, UNRESOLVED, CONTAINED, MERGED, GONE)
+
+
+def _identity(key: tuple[str, str], resolution: Resolution) -> tuple[str, str]:
+    """(repository, branch): the GitHub slug ignoring case, else the checkout path.
+
+    Resolutions are keyed by main checkout, so two clones of one GitHub
+    repository are two keys; the report must count them as one repository.
+    """
+    repo = resolution.repo_slug.lower() if resolution.repo_slug is not None else key[0]
+    return repo, key[1]
+
+
+def _reconcile(resolutions: Resolutions) -> dict[tuple[str, str], tuple]:
+    """{(repository, branch): (key, Resolution)}, the most actionable state among clones."""
+    chosen: dict[tuple[str, str], tuple] = {}
+    for key, resolution in resolutions.items():
+        identity = _identity(key, resolution)
+        held = chosen.get(identity)
+        rank = STATE_PRIORITY.index(resolution.state)
+        if held is None or rank < STATE_PRIORITY.index(held[1].state):
+            chosen[identity] = (key, resolution)
+    return chosen
+
+
 def _repo_name(key: tuple[str, str], resolution: Resolution) -> str:
     """`owner/name` when the branch resolved on github.com, else its repository path."""
     return resolution.repo_slug if resolution.repo_slug is not None else key[0]
@@ -1371,19 +1405,30 @@ def build_report(
     include_bots: bool,
     incomplete: list[str],
 ) -> dict:
-    """The report as the spec's JSON object; see render_text and render_json."""
+    """The report as the spec's JSON object; see render_text and render_json.
+
+    Every section and count works on (repository, branch), where the
+    repository is the GitHub repository when there is one (_identity), with
+    the one merge state _reconcile chose for it.
+    """
+    chosen = _reconcile(resolutions)
+
+    def identity_for(name: str, directory, cwd) -> tuple[str, str]:
+        key = resolutions.key_for(name, directory, cwd)
+        return _identity(key, resolutions[key])
+
     open_panes: list[dict] = []
-    open_keys: set[tuple[str, str]] = set()
+    open_identities: set[tuple[str, str]] = set()
     for pane in joined:
         branches: dict[tuple[str, str], dict] = {}
         for entry in pane["entries"]:
-            key = resolutions.key_for(entry["name"], entry["dir"], entry["cwd"])
-            open_keys.add(key)
-            resolution = resolutions[key]
+            identity = identity_for(entry["name"], entry["dir"], entry["cwd"])
+            open_identities.add(identity)
+            key, resolution = chosen[identity]
             if resolution.state == GONE:
                 continue
             record = branches.setdefault(
-                key,
+                identity,
                 {
                     "repo": _repo_name(key, resolution),
                     "name": key[1],
@@ -1411,14 +1456,15 @@ def build_report(
     touched: dict[tuple[str, str], dict[tuple[str, str], dict]] = {}
     for session in sessions:
         for branch in session["branches"]:
-            key = resolutions.key_for(branch["name"], branch["dir"], session["cwd"])
-            touched.setdefault(key, {})[(session["agent"], session["id"])] = session
+            identity = identity_for(branch["name"], branch["dir"], session["cwd"])
+            touched.setdefault(identity, {})[(session["agent"], session["id"])] = session
     closed: list[dict] = []
-    for key, resolution in resolutions.items():
-        if resolution.state not in STRANDED or key in open_keys or key not in touched:
+    for identity, (key, resolution) in chosen.items():
+        stranded = resolution.state in STRANDED and identity in touched
+        if not stranded or identity in open_identities:
             continue
         by_age = sorted(
-            touched[key].values(), key=lambda s: (s["last_active"], s["id"]), reverse=True
+            touched[identity].values(), key=lambda s: (s["last_active"], s["id"]), reverse=True
         )
         closed.append(
             {
@@ -1433,10 +1479,10 @@ def build_report(
     closed.sort(key=lambda row: row["repo"].lower() + "\0" + row["name"])
     closed.sort(key=lambda row: row["session"]["last_active"], reverse=True)
 
+    # Every resolved branch -- from session history and from pane directories
+    # alike -- in the same (repository, branch) identity, slug ignoring case.
     session_branches = {
-        (resolution.repo_slug.lower(), key[1])
-        for key, resolution in resolutions.items()
-        if resolution.repo_slug is not None
+        identity for identity, (_, resolution) in chosen.items() if resolution.repo_slug is not None
     }
     unmatched: list[dict] = []
     bots_hidden = 0
@@ -1467,7 +1513,7 @@ def build_report(
         )
     unmatched.sort(key=lambda row: (row["repo"].lower(), row["number"]))
 
-    states = [resolution.state for resolution in resolutions.values()]
+    states = [resolution.state for _, resolution in chosen.values()]
     return {
         "generated_at": generated_at,
         "since_days": since_days,
@@ -1617,9 +1663,9 @@ def run(args, *, out, err, now=_now) -> int:
         require_tools()
         owner_list = owners(args.owners or [])
         pane_list = panes()
-        adapters, probe_failures = load_adapters(adapter_dir, warn=say)
+        adapters, probe_failures, failed_probes = load_adapters(adapter_dir, warn=say)
         gathered = gather_sessions(adapters, args.since, include_sdk=args.include_sdk, warn=say)
-        joined = join(pane_list, adapters, gathered)
+        joined = join(pane_list, adapters, gathered, failed_probes=failed_probes)
         resolutions = resolve_branches(resolution_entries(joined, gathered))
         prs = [pr for login in owner_list for pr in open_prs(login)]
     except (AuditError, feed.HerdrError) as exc:

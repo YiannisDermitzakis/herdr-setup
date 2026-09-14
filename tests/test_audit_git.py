@@ -25,6 +25,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent / "helpers"))
 
 from auditlib import (  # noqa: E402
+    READ_ONLY_SUBCOMMANDS,
     commit,
     fingerprint,
     git,
@@ -39,18 +40,6 @@ isolate_audit_environment()
 audit = load_audit()
 
 SLUG = "example-org/example-repo"
-
-# The only git subcommands a read-only audit has any business running. A new
-# one must be added here on purpose, after checking it cannot write.
-READ_ONLY_SUBCOMMANDS = {
-    "rev-parse",
-    "remote",
-    "show-ref",
-    "for-each-ref",
-    "merge-base",
-    "symbolic-ref",
-    "worktree list",
-}
 
 
 def corrupt_ref(repo: Path, branch: str) -> None:

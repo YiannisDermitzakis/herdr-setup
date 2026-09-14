@@ -11,6 +11,11 @@
 #      source it cannot read fails closed: one line, exit 2, no report.
 #   3. Arguments (here, --since) actually reach lib/audit.py's own argparse.
 #   4. cmd_audit forwards --adapters and --socket before the operator's flags.
+#   5. End to end, with the real claude and codex adapters, a real repository
+#      and the fake gh: every section, exit 0, 1 and 2, the flags reaching
+#      their consumers, --json agreeing with the text, and nothing written --
+#      no gh mutation, only read-only git subcommands, refs, status and the
+#      session stores unchanged.
 #
 # The sandbox trick is the established one (tests/test_feed_entrypoint.sh):
 # HS_ROOT follows $0, so a copy of the entrypoint in $work gets its own root,
@@ -133,6 +138,19 @@ fingerprint_before="$(fingerprint)"
 marker="$work/written-before-the-runs"
 : > "$marker"
 
+# A git that logs every call and then runs the real one, put first on PATH for
+# the findings run: the audit must run no git subcommand outside the read-only
+# set (tests/helpers/auditlib.py READ_ONLY_SUBCOMMANDS, checked by audit_e2e.py).
+real_git="$(command -v git)"
+git_shim="$work/git-shim"
+mkdir -p "$git_shim"
+cat > "$git_shim/git" <<SHIM
+#!/bin/sh
+printf '%s\n' "\$*" >> "$work/git.log"
+exec "$real_git" "\$@"
+SHIM
+chmod +x "$git_shim/git"
+
 # audit_run <label> <findings|clean> [VAR=value ...] -- <herdr-setup arguments...>
 # Leaves the exit status in $rc and the output in $work/out_<label>, err_<label>.
 audit_run() {
@@ -154,8 +172,8 @@ section() {  # section <label> <heading>: that section's lines, heading included
 }
 
 # (5a) findings: exit 1, all three sections, the rows the sandbox implies.
-audit_run findings findings -- audit
-assert_status "findings in section 2 or 3 exit 1" 1 "$rc"
+audit_run findings findings PATH="$git_shim:$PATH" -- audit
+assert_status "findings in section 2 or 3 exit 1 (stderr: $(cat "$work/err_findings"))" 1 "$rc"
 out="$(cat "$work/out_findings")"
 assert_contains "section 1 heading" "$out" "open in Herdr"
 assert_contains "section 2 heading" "$out" "closed, with unmerged branches"
@@ -183,18 +201,25 @@ assert_contains "the footer counts the gone branch and the hidden bot" "$out" \
 audit_run json findings -- --dry-run audit --json
 assert_status "--dry-run audit --json exits as audit does" 1 "$rc"
 uv run --quiet --script "$test_dir/helpers/audit_e2e.py" \
-  check "$work/out_findings" "$work/out_json" >"$work/check.log" 2>&1
+  check "$work/out_findings" "$work/out_json" "$work/git.log" >"$work/check.log" 2>&1
 check_rc=$?
-assert_status "the JSON parses and agrees with the text run: $(cat "$work/check.log")" 0 "$check_rc"
+assert_status "the JSON agrees with the text run, and git ran read-only: $(cat "$work/check.log")" 0 "$check_rc"
 
 # (5c) a clean state: nothing stranded, no unmatched pull request -> exit 0.
-audit_run clean clean -- audit --owner example-org
+# Its own gh log: --owner replaces the owner list, so gh is never asked who
+# the user is or which organisations it belongs to.
+audit_run clean clean FAKE_GH_LOG="$work/gh-clean.log" -- audit --owner example-org
 assert_status "a clean state exits 0" 0 "$rc"
+assert_eq "--owner: no api user call" "0" "$(grep -c '^\["api", "user"[],]' "$work/gh-clean.log")"
+assert_eq "--owner: no user/orgs call" "0" "$(grep -c 'user/orgs' "$work/gh-clean.log")"
+assert_contains "the clean state's bot pull request is hidden and counted" \
+  "$(tail -n 1 "$work/out_clean")" "1 bot PR hidden"
 assert_contains "section 2 is empty" "$(section clean "closed, with unmerged branches")" "(none)"
 assert_contains "section 3 is empty" "$(section clean "open PRs no session is working on")" "(none)"
 
 # (5d) an adapter that cannot answer: the report still prints, marked
-# incomplete, and exits 2 even though it would otherwise be clean.
+# incomplete, and exits 2 even though it would otherwise be clean. The same
+# run passes --include-bots, which must list the bot pull request 5c hid.
 cat > "$sandbox/adapters/zz-broken" <<'ADAPTER'
 #!/bin/sh
 case "$1" in
@@ -204,12 +229,14 @@ case "$1" in
 esac
 ADAPTER
 chmod +x "$sandbox/adapters/zz-broken"
-audit_run broken clean -- audit --owner example-org
+audit_run broken clean -- audit --owner example-org --include-bots
 rm -f "$sandbox/adapters/zz-broken"
 assert_status "an adapter that could not answer exits 2" 2 "$rc"
 assert_contains "the report still prints" "$(cat "$work/out_broken")" "open in Herdr"
 assert_contains "and ends incomplete, naming the adapter" \
   "$(tail -n 1 "$work/out_broken")" "incomplete: adapter zz-broken"
+assert_contains "--include-bots lists the bot pull request" \
+  "$(section broken "open PRs no session is working on")" "deps/bump"
 
 # (5e) a failing gh call: exit 2, one line quoting it, and no table at all.
 audit_run ghfail findings FAKE_GH_FAIL="api graphql" -- audit --owner example-org
@@ -236,9 +263,14 @@ assert_eq "before any gh call" "no" "$gh_called"
 
 # Nothing written: gh saw only read-only calls, and the repository and the
 # session stores are exactly as they were.
-assert_eq "gh saw no mutation" "0" "$(grep -c 'mutation' "$work/gh.log")"
+gh_disallowed() {  # the gh log lines that are none of the audit's read-only calls
+  grep -vE '^\["auth", "status"[],]|^\["api", "graphql"[],]|^\["api", "user"[],]|^\["api", "--paginate", "user/orgs"[],]'
+}
+assert_eq "gh saw no mutation" "0" "$(cat "$work/gh.log" "$work/gh-clean.log" | grep -c 'mutation')"
 assert_eq "gh saw only auth status, api user, api user/orgs and GraphQL queries" "" \
-  "$(grep -vE '^\["(auth", "status"|api", "(graphql|user|--paginate", "user/orgs)")' "$work/gh.log")"
+  "$(cat "$work/gh.log" "$work/gh-clean.log" | gh_disallowed)"
+assert_eq "that check rejects any other call, api user/repos included" '["api", "user/repos"]' \
+  "$(printf '%s\n' '["api", "user/repos"]' '["api", "user", "--jq", ".login"]' | gh_disallowed)"
 assert_eq "refs, status and the store listings are unchanged" "$fingerprint_before" "$(fingerprint)"
 assert_eq "no store file was modified" "" "$(find "$work/stores" -newer "$marker")"
 
