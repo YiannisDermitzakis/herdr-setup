@@ -457,8 +457,18 @@ else
   status="$(run_install "$entry16" "$home16" "/usr/bin:/bin" "$out" "$err")"
   chmod 755 "$home16/.local"
   assert_status "16: mkdir failing under a read-only ~/.local exits 2" 2 "$status"
-  assert_contains "16: stderr names the directory it could not create" \
-    "$(cat "$err")" "$home16/.local/bin"
+  # The tool's OWN wording, not just "the path appears somewhere in
+  # stderr" -- mkdir's own "Permission denied" line ALSO names the path
+  # (stderr here is two lines: mkdir's own, then herdr-setup's), so a
+  # substring check on the whole file cannot fail even if herdr-setup's own
+  # message text were replaced by something unrelated. Matched as one
+  # exact, whole LINE rather than the whole file, since mkdir's own line
+  # precedes it. See mutate_blank_create_message below for the proof.
+  if grep -qxF "herdr-setup: install: could not create $home16/.local/bin." "$err"; then
+    pass
+  else
+    fail "16: stderr does not carry herdr-setup's own 'could not create' line: $(cat "$err")"
+  fi
 
   # --- 17: ~/.local/bin mode 555 -> ln -s into it fails -> exit 2 ---
   entry17="$(hs_test_sandbox)"
@@ -469,8 +479,56 @@ else
   status="$(run_install "$entry17" "$home17" "/usr/bin:/bin" "$out" "$err")"
   chmod 755 "$home17/.local/bin"
   assert_status "17: ln failing under a read-only ~/.local/bin exits 2" 2 "$status"
-  assert_contains "17: stderr names the link it could not create" \
-    "$(cat "$err")" "$home17/.local/bin/herdr-setup"
+  if grep -qxF "herdr-setup: install: could not create $home17/.local/bin/herdr-setup." "$err"; then
+    pass
+  else
+    fail "17: stderr does not carry herdr-setup's own 'could not create' line: $(cat "$err")"
+  fi
+
+  # --- mutation check: with both "could not create" messages blanked out,
+  # 16 and 17's assertions above must now FAIL -- proving they actually
+  # read the tool's own wording rather than passing on any stderr output
+  # that happens to mention the path (which mkdir's/ln's own OS error
+  # already does, on both platforms this runs on). ---
+  mutate_blank_create_message() {
+    local entry="$1" tmp
+    tmp="$(mktemp)"
+    awk '
+      { gsub(/could not create \$dir\./, "refused.") }
+      { gsub(/could not create \$link\./, "refused.") }
+      { print }
+    ' "$entry" > "$tmp"
+    chmod +x "$tmp"
+    mv "$tmp" "$entry"
+  }
+
+  entry16m="$(hs_test_sandbox)"
+  mutate_blank_create_message "$entry16m"
+  home16m="$work/home16m"
+  mkdir -p "$home16m/.local"
+  chmod 555 "$home16m/.local"
+  out="$work/out16m"; err="$work/err16m"
+  run_install "$entry16m" "$home16m" "/usr/bin:/bin" "$out" "$err" >/dev/null
+  chmod 755 "$home16m/.local"
+  if grep -qxF "herdr-setup: install: could not create $home16m/.local/bin." "$err"; then
+    fail "16 (mutated): the literal-message assertion still matched a mutated tool, so it proves nothing"
+  else
+    pass
+  fi
+
+  entry17m="$(hs_test_sandbox)"
+  mutate_blank_create_message "$entry17m"
+  home17m="$work/home17m"
+  mkdir -p "$home17m/.local/bin"
+  chmod 555 "$home17m/.local/bin"
+  out="$work/out17m"; err="$work/err17m"
+  run_install "$entry17m" "$home17m" "/usr/bin:/bin" "$out" "$err" >/dev/null
+  chmod 755 "$home17m/.local/bin"
+  if grep -qxF "herdr-setup: install: could not create $home17m/.local/bin/herdr-setup." "$err"; then
+    fail "17 (mutated): the literal-message assertion still matched a mutated tool, so it proves nothing"
+  else
+    pass
+  fi
 fi
 
 # ---------------------------------------------------------------------
