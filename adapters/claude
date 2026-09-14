@@ -238,23 +238,32 @@ def read_transcript_lines(path: Path):
     downstream has to remember to check it. Bytes are decoded with
     `errors="replace"` rather than raising -- a bad byte in one line must
     not cost the file's other, well-formed lines.
+
+    Reads from an OPEN file, one line at a time, rather than `read_bytes()`
+    into memory whole -- a real 30-day window can hold hundreds of
+    transcripts, some tens of MB each, and this adapter has no reason to
+    hold all of that at once (review item 11). `derive_session`'s own early
+    return for a filtered SDK session, once it has enough to decide, closes
+    this generator (and so the underlying file) before the rest is ever
+    read.
     """
     try:
-        data = path.read_bytes()
+        handle = path.open("rb")
     except OSError:
         return
-    for raw_line in data.split(b"\n"):
-        if not raw_line.strip():
-            continue
-        try:
-            obj = json.loads(raw_line.decode("utf-8", errors="replace"))
-        except ValueError:
-            continue
-        if not isinstance(obj, dict):
-            continue
-        if obj.get("isSidechain") is True:
-            continue
-        yield obj
+    with handle:
+        for raw_line in handle:
+            if not raw_line.strip():
+                continue
+            try:
+                obj = json.loads(raw_line.decode("utf-8", errors="replace"))
+            except ValueError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            if obj.get("isSidechain") is True:
+                continue
+            yield obj
 
 
 def _record_branch(
@@ -699,8 +708,18 @@ def derive_session(path: Path, *, include_sdk: bool) -> dict | None:
         if timestamp:
             last_active = timestamp
         line_entrypoint = line.get("entrypoint")
-        if isinstance(line_entrypoint, str) and line_entrypoint:
+        if entrypoint is None and isinstance(line_entrypoint, str) and line_entrypoint:
             entrypoint = line_entrypoint
+            # A real transcript's `entrypoint` is a session-level constant,
+            # repeated on every line -- so the FIRST one seen already
+            # decides an SDK skip, and there is no reason to keep reading
+            # (and evidence-extracting through) a whole transcript this
+            # query is about to discard anyway (review item 11). Closing
+            # over `read_transcript_lines`'s generator here also closes its
+            # open file promptly rather than waiting for the loop to finish
+            # exhausting it on its own.
+            if entrypoint.startswith(SDK_ENTRYPOINT_PREFIX) and not include_sdk:
+                return None
 
         line_type = line.get("type")
         if line_type == "custom-title" and isinstance(line.get("customTitle"), str):
@@ -722,8 +741,6 @@ def derive_session(path: Path, *, include_sdk: bool) -> dict | None:
         extract_worktree_path_evidence(line, branch_hits, seen_at=timestamp or "")
 
     if not saw_a_line or not cwd:
-        return None
-    if entrypoint and entrypoint.startswith(SDK_ENTRYPOINT_PREFIX) and not include_sdk:
         return None
     if last_active is None:
         last_active = _file_mtime_z(path)

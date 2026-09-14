@@ -323,6 +323,17 @@ class TestSdkFiltering(TempConfigCase):
         self.write_transcript([line(entrypoint="claude-desktop")])
         self.assertEqual(len(sessions_of(self.config_dir, "--since", "30")), 1)
 
+    def test_a_skipped_sdk_transcript_with_invalid_later_lines_is_still_skipped_cleanly(self):
+        """review item 11: the SDK skip decides on the FIRST line carrying
+        `entrypoint` and stops reading -- proven here by making every later
+        line something that would be a problem if it were actually read
+        (invalid UTF-8, unparseable JSON, a truncated line)."""
+        path = self.write_transcript([line(entrypoint="sdk-cli")])
+        with path.open("ab") as handle:
+            handle.write(b"\xff\xfe not valid utf-8, and not json either\n")
+            handle.write(b'{"type":"user","cwd":"/work/trunc')  # truncated, no closing brace
+        self.assertEqual(sessions_of(self.config_dir, "--since", "30"), [])
+
 
 class TestWindowAndTolerance(TempConfigCase):
     def test_a_file_older_than_since_is_ignored(self):
