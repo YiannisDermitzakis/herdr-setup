@@ -342,25 +342,37 @@ Rules:
   - **Parsing.** Backslash-newline continuations are joined first; the
     command is then split into physical lines, since `shlex` treats a bare
     newline as ordinary whitespace and would otherwise fuse two independent
-    lines into one nonsensical segment. Each physical line is tokenised with
-    `shlex` in POSIX mode with punctuation characters, then split into
-    segments at `&&`, `||`, `;`, `|`, `(` and `)` -- the last two so a
-    subshell's command (`(git checkout -b x)`) is read the same as a bare
-    one. A line `shlex` cannot parse falls back to whitespace splitting.
+    lines into one nonsensical segment. A heredoc's BODY is skipped
+    entirely: every line after a `<<TAG`, `<<-TAG`, `<<'TAG'` or `<<"TAG"`
+    marker, up to and including the line matching `TAG` exactly (leading
+    tabs stripped first for the `<<-` form), is data, not commands. A
+    marker whose terminator never arrives skips to the end of the command.
+    Each remaining physical line is tokenised with `shlex` in POSIX mode
+    with punctuation characters, then split into segments at `&&`, `||`,
+    `;`, `|` and `&` (a background job runs in the same directory, so it is
+    a plain separator too). `(` and `)` are not simple separators: they
+    give the subshell between them its own directory SCOPE, so a `cd`
+    inside `(...)` never leaks past the matching `)`. A line `shlex` cannot
+    parse falls back to whitespace splitting.
   - **Directory.** `cd <dir>` sets the CURRENT directory for the segments
-    after it, carried across physical lines within the same command; `git -C
-    <dir>` sets it for its own segment only. A relative path -- for `cd`,
-    `-C`, `--repo`, or a `worktree add` path -- resolves against the CURRENT
-    directory (the latest `cd` already seen in this command, else the
-    line's own `cwd`), and `~` resolves against `$HOME`, as text only.
-    `cd -` and a bare `cd` leave the current directory unknown rather than
-    inventing a path, falling back to the line's own `cwd`.
+    after it, carried across physical lines within the same command (but
+    never past a `)` that closed the subshell it happened inside); `git -C
+    <dir>` and `git --work-tree=<dir>` set it for their own segment only. A
+    relative path -- for `cd`, `-C`, `--work-tree=`, `--repo`, or a
+    `worktree add` path -- resolves against the CURRENT directory (the
+    latest `cd` already seen in this command, else the line's own `cwd`),
+    and `~` resolves against `$HOME`, as text only. `cd -` and a bare `cd`
+    leave the current directory unknown rather than inventing a path,
+    falling back to the line's own `cwd`.
   - **Shapes read:**
     - `fr isolation up|attach ... --branch <b>` (or `--branch=<b>`), with
       `--repo <path>` as `dir` when present;
     - `git checkout|switch -b|-c|-B <b>`, with other flags before it
-      skipped, and a `-c <k>=<v>` or `-C <dir>` global option before the
-      subcommand skipped (a `-C` sets `dir`);
+      skipped, and `git`'s own global options before the subcommand skipped
+      -- `-c <k>=<v>`, `-C <dir>` (sets `dir`), `--work-tree=<dir>` (sets
+      `dir`), `--git-dir=<dir>` (does not -- it names the metadata store,
+      not a working tree), `--no-pager`, `-P`/`--paginate`, `-p`,
+      `--no-replace-objects`;
     - `git worktree add <path> ... -b|-B <b>`, flags -- including
       `--reason <string>`, whose value is skipped too -- in any order, with
       `<path>` as `dir`;
@@ -372,11 +384,11 @@ Rules:
       work on it;
     - `gh pr create ... --head|-H <b>`, minus an `owner:` prefix.
 - **Evidence `worktree-path`.** An fr worktree path,
-  `.../.cache/fr/worktrees/<repo>/<slug>`, or the same shape under `~/`
-  (expanded against `$HOME`). The branch is the slug with `__` turned back
-  into `/`, and `dir` is the worktree path up to and including the slug; a
-  slug immediately followed by `;`, `&`, `|`, `(` or `)` does not swallow it
-  into the branch name.
+  `.../.cache/fr/worktrees/<repo>/<slug>`, or the same shape under `~/`,
+  `$HOME/` or `${HOME}/` (all three expanded against `$HOME`). The branch
+  is the slug with `__` turned back into `/`, and `dir` is the worktree
+  path up to and including the slug; a slug immediately followed by `;`,
+  `&`, `|`, `(`, `)`, `<` or `>` does not swallow it into the branch name.
   - **Where it is read.** Only in `cwd` fields and in Bash command text,
     never in tool output. `fr isolation status` output lists every worktree
     on the host and would attribute all of them to whichever session ran it.

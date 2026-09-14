@@ -706,6 +706,74 @@ class TestCommandEvidence(TempConfigCase):
         sessions = self.sessions_for("cd /work/other && cd && git checkout -b b", cwd="/work/alpha")
         self.assertEqual(one_branch(sessions)["dir"], "/work/alpha")
 
+    # -- item 4(a): a heredoc body is data, not commands. --
+
+    def test_heredoc_body_is_not_parsed_as_commands(self):
+        sessions = self.sessions_for("cat <<EOF\ngit checkout -b heredoc-fake\nEOF")
+        self.assertEqual(branch_names(sessions), [])
+
+    def test_heredoc_with_no_terminator_skips_to_the_end_of_the_command(self):
+        sessions = self.sessions_for("cat <<EOF\ngit checkout -b heredoc-fake")
+        self.assertEqual(branch_names(sessions), [])
+
+    def test_heredoc_dash_form_strips_leading_tabs_from_the_terminator(self):
+        sessions = self.sessions_for(
+            "cat <<-EOF\n\tgit checkout -b heredoc-fake\n\tEOF\ngit checkout -b real"
+        )
+        self.assertEqual(one_branch(sessions)["name"], "real")
+
+    def test_a_quoted_heredoc_tag_is_recognised(self):
+        sessions = self.sessions_for("cat <<'EOF'\ngit checkout -b heredoc-fake\nEOF")
+        self.assertEqual(branch_names(sessions), [])
+
+    # -- item 4(b): a subshell's own directory does not leak past its `)`. --
+
+    def test_cd_inside_a_subshell_does_not_leak_out(self):
+        sessions = self.sessions_for("(cd /work/sub) && git checkout -b leak", cwd="/work/alpha")
+        self.assertEqual(one_branch(sessions)["dir"], "/work/alpha")
+
+    # -- item 5: further parsing gaps. --
+
+    def test_git_no_pager_global_option_is_skipped(self):
+        sessions = self.sessions_for("git --no-pager checkout -b x")
+        self.assertEqual(one_branch(sessions)["name"], "x")
+
+    def test_git_dash_cap_p_global_option_is_skipped(self):
+        sessions = self.sessions_for("git -P checkout -b x")
+        self.assertEqual(one_branch(sessions)["name"], "x")
+
+    def test_git_work_tree_equals_sets_dir(self):
+        sessions = self.sessions_for("git --work-tree=/work/wt checkout -b x")
+        self.assertEqual(one_branch(sessions)["dir"], "/work/wt")
+
+    def test_git_dir_equals_is_skipped_without_setting_dir(self):
+        sessions = self.sessions_for("git --git-dir=/work/.git checkout -b x", cwd="/work/alpha")
+        branch = one_branch(sessions)
+        self.assertEqual(branch["name"], "x")
+        self.assertEqual(branch["dir"], "/work/alpha")
+
+    def test_a_single_ampersand_is_a_segment_boundary(self):
+        sessions = self.sessions_for("cd /work/other & git checkout -b y")
+        branch = one_branch(sessions)
+        self.assertEqual(branch["name"], "y")
+        self.assertEqual(branch["dir"], "/work/other")
+
+    def test_dollar_home_worktree_path_in_a_command_is_expanded(self):
+        home = os.environ.get("HOME", "")
+        sessions = self.sessions_for("cat $HOME/.cache/fr/worktrees/example-repo/feat__x/notes.txt")
+        branch = one_branch(sessions)
+        self.assertEqual(branch["name"], "feat/x")
+        self.assertEqual(branch["dir"], f"{home}/.cache/fr/worktrees/example-repo/feat__x")
+
+    def test_dollar_brace_home_worktree_path_in_a_command_is_expanded(self):
+        home = os.environ.get("HOME", "")
+        sessions = self.sessions_for(
+            "cat ${HOME}/.cache/fr/worktrees/example-repo/feat__x/notes.txt"
+        )
+        branch = one_branch(sessions)
+        self.assertEqual(branch["name"], "feat/x")
+        self.assertEqual(branch["dir"], f"{home}/.cache/fr/worktrees/example-repo/feat__x")
+
 
 class TestBranchNameFilterAgreesWithTheRunner(unittest.TestCase):
     """checklist item 7: this adapter's own copy must not drift from lib/feed.py's.
@@ -780,6 +848,20 @@ class TestWorktreePathEvidence(TempConfigCase):
 
     def test_a_slug_followed_by_and_and_does_not_swallow_it(self):
         self.write_transcript([bash_line(f"cd {self.WT_PATH}&&ls", cwd="/work/alpha")])
+        sessions = sessions_of(self.config_dir, "--since", "30")
+        branch = one_branch(sessions)
+        self.assertEqual(branch["name"], "feat/q")
+        self.assertEqual(branch["dir"], self.WT_PATH)
+
+    def test_a_slug_followed_by_a_redirect_does_not_swallow_it(self):
+        """review re-round item 5: exclude `<` and `>` from the slug class.
+
+        The slug itself is directly followed by `>out`, with no `/` in
+        between -- unlike the `;`/`&&` cases above, `>` was never excluded
+        from the slug's own character class, so it used to be swallowed
+        into the branch name (`q>out` instead of `q`).
+        """
+        self.write_transcript([bash_line(f"cat {self.WT_PATH}>out", cwd="/work/alpha")])
         sessions = sessions_of(self.config_dir, "--since", "30")
         branch = one_branch(sessions)
         self.assertEqual(branch["name"], "feat/q")
