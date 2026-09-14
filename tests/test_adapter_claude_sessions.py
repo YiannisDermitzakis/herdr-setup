@@ -875,29 +875,41 @@ class TestCommandEvidence(TempConfigCase):
         self.assertEqual(one_branch(sessions)["dir"], "/work/deep/wt")
 
     # -- item 6(f): the SDK early exit really stops reading, not merely
-    # tolerates whatever garbage follows. A huge remainder that would take
-    # a measurable amount of time to read and fail to parse, one line at a
-    # time, must not cost this transcript anything once the first line has
-    # already decided it is filtered out. --
+    # tolerates whatever follows. Counted, not timed: a wall-clock bound on
+    # the adapter subprocess includes uv's own startup and flakes on a loaded
+    # CI runner, whereas the number of lines the derivation consumed is exact
+    # on every machine. --
 
-    def test_sdk_early_exit_avoids_reading_a_huge_remainder(self):
-        """Calibrated empirically: on this machine, reading and failing to
-        parse 1,000,000 garbage lines one at a time takes ~5s; exiting on
-        the first (SDK) line takes ~0.4s regardless of what follows it. 2s
-        sits comfortably between the two, with margin either way."""
-        path = self.write_transcript([line(entrypoint="sdk-cli")])
-        with path.open("a", encoding="utf-8") as handle:
-            for _ in range(1_000_000):
-                handle.write("not json at all, and long enough to matter if ever read\n")
-        start = time.monotonic()
-        sessions = sessions_of(self.config_dir, "--since", "30")
-        elapsed = time.monotonic() - start
-        self.assertEqual(sessions, [])
-        self.assertLess(
-            elapsed,
-            2.0,
-            "reading 1,000,000 garbage lines one at a time takes much longer than this",
-        )
+    def _lines_consumed(self, path: Path, *, include_sdk: bool):
+        """Run derive_session on `path`, counting the lines it pulled."""
+        module = load_adapter_module("claude")
+        real_reader = module.read_transcript_lines
+        consumed: list = []
+
+        def counting_reader(transcript):
+            for item in real_reader(transcript):
+                consumed.append(item)
+                yield item
+
+        module.read_transcript_lines = counting_reader
+        try:
+            session = module.derive_session(path, include_sdk=include_sdk)
+        finally:
+            module.read_transcript_lines = real_reader
+        return session, len(consumed)
+
+    def test_sdk_early_exit_consumes_only_the_first_entrypoint_line(self):
+        path = self.write_transcript([line(entrypoint="sdk-cli") for _ in range(50)])
+        session, consumed = self._lines_consumed(path, include_sdk=False)
+        self.assertIsNone(session)
+        self.assertEqual(consumed, 1)
+
+    def test_the_counter_sees_every_line_when_nothing_is_skipped(self):
+        """The control: without it, a counter that never counted would pass."""
+        path = self.write_transcript([line(entrypoint="sdk-cli") for _ in range(50)])
+        session, consumed = self._lines_consumed(path, include_sdk=True)
+        self.assertIsNotNone(session)
+        self.assertEqual(consumed, 50)
 
 
 class TestBranchNameFilterAgreesWithTheRunner(unittest.TestCase):
