@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
-# `herdr-setup audit` through the real entrypoint -- the skeleton (phase 1).
+# `herdr-setup audit` through the real entrypoint.
 #
-# lib/audit.py is a stub in this phase: it accepts its real flags through
-# argparse, prints one line, and exits 2 -- the skeleton FAILS CLOSED rather
-# than printing an empty, clean-looking report (AGENTS.md: "fail closed").
-# Later phases give it a real body; this file only proves the entrypoint's
-# OWN plumbing, which later phases build on unchanged:
+# lib/audit.py's logic is tested directly by tests/test_audit_*.py. This file
+# proves what only a run through the entrypoint can:
 #
 #   1. audit gates on hs_require_socket, FIRST -- exactly like feed's own
 #      gate (tests/test_feed_entrypoint.sh), because audit needs `herdr
-#      agent list` (and, once implemented, `herdr tab list`) too.
-#   2. A matched host reaches lib/audit.py through the new hs_audit door.
+#      agent list` and `herdr tab list`.
+#   2. A matched host reaches lib/audit.py through the hs_audit door, and a
+#      source it cannot read fails closed: one line, exit 2, no report.
 #   3. Arguments (here, --since) actually reach lib/audit.py's own argparse.
+#   4. cmd_audit forwards --adapters and --socket before the operator's flags.
 #
 # The sandbox trick is the established one (tests/test_feed_entrypoint.sh):
 # HS_ROOT follows $0, so a copy of the entrypoint in $work gets its own root,
@@ -56,15 +55,18 @@ assert_status "audit refuses under a protocol mismatch" 3 "$status"
 assert_contains "the refusal names the restart" "$(cat "$err")" "restart"
 assert_eq "a refused audit prints nothing to stdout" "" "$(cat "$out")"
 
-# --- (2) a matched host reaches lib/audit.py through hs_audit, and the
-# skeleton fails closed: it never prints a clean, empty report ---
+# --- (2) a matched host reaches lib/audit.py through hs_audit, and a source
+# it cannot read fails closed: here the fake gh has no state to answer
+# `gh api user` from, so the run stops with one line and never prints a
+# clean, empty report ---
 out="$work/out_matched"; err="$work/err_matched"
 HERDR_SOCKET_PATH="$socket" \
   "$sandbox/herdr-setup" audit >"$out" 2>"$err"
 status=$?
-assert_status "a matched host reaches the audit skeleton, which exits 2" 2 "$status"
-assert_contains "the skeleton says it is incomplete rather than printing an empty report" \
-  "$(cat "$out")" "incomplete: the audit runner is not implemented yet"
+assert_status "a matched host reaches the audit runner, which exits 2 on a failed gh call" 2 "$status"
+assert_eq "no report is printed" "" "$(cat "$out")"
+assert_contains "one line naming the gh call" "$(cat "$err")" "herdr-setup: audit: gh api user"
+assert_eq "and only one line" "1" "$(wc -l < "$err" | tr -d ' ')"
 
 # --- (3) --since is real argparse, reaching lib/audit.py: 0 is out of range
 # (1..3650) and argparse itself refuses, naming the flag ---

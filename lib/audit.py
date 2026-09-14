@@ -9,27 +9,25 @@ pull requests into one read-only report.
 See docs/superpowers/specs/2026-09-13-session-audit-design.md, "The audit
 runner" and "`audit` (read-only)".
 
-What exists so far is the evidence machinery, layer by layer:
+Layer by layer, each failing closed:
 
-- **The GitHub layer.** `gh api` calls, each read-only and each failing
-  closed: a non-zero exit, and an `errors` array returned with exit 0, both
-  raise GhError. `require_tools`, `owners`, `open_prs`, `repo_branches`,
-  `compare`.
-- **The git layer.** One read-only git question per function, its exit
-  status read explicitly: `repo_for`, `local_ref`, `is_ancestor`,
-  `local_default`.
-- **Merge state.** `classify`, the spec's table as a pure function of
-  gathered facts, and `resolve_branches`, which gathers them once per
-  (repository, branch).
+- **The GitHub layer.** `gh api` calls, each read-only: a non-zero exit, and an
+  `errors` array returned with exit 0, both raise GhError. `require_tools`,
+  `owners`, `open_prs`, `repo_branches`, `compare`.
+- **The git layer.** One read-only git question per function, its exit status
+  read explicitly: `repo_for`, `local_ref`, `is_ancestor`, `local_default`.
+- **Merge state.** `classify`, the spec's table as a pure function of gathered
+  facts, and `resolve_branches`, which gathers them once per (repository,
+  branch).
+- **The sources and the join.** `panes` (Herdr; HerdrError), `load_adapters`
+  and `gather_sessions` (an adapter that cannot answer makes the report
+  incomplete), `pane_worktree` and `join`. The audit never runs `fr`.
+- **The report.** `build_report` (the spec's JSON object, pure),
+  `render_text`, `render_json` and `exit_code`; `run` wires every stage.
 
-The sources (Herdr panes, adapter session history, pane directories), the join
-and the report are phase 4, and `main()` calls none of this yet. Until the
-report arrives
-(phase 4) it FAILS CLOSED -- AGENTS.md's own rule -- rather than printing an
-empty, clean-looking report a partial run could not back up. An incomplete
-report is exit 2 per the design doc's exit-code table ("An incomplete report
-is printed and still exits 2"), and this is that incomplete report in its
-most extreme form: no sections at all.
+Exit statuses: 0 nothing to act on, 1 section 2 or 3 has a row, 2 an error
+(nothing printed on stdout) or an incomplete report (printed, still 2). The
+entrypoint's preflight owns 3.
 
 Standard library only, and the interpreter comes from uv (see AGENTS.md).
 """
@@ -43,7 +41,9 @@ import re
 import shutil
 import subprocess
 import sys
+import traceback
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 # lib/feed.py from this script's own directory: discovery, probing, probe
@@ -1323,6 +1323,328 @@ def resolution_entries(joined: list[dict], gathered: Gathered) -> list[dict]:
 
 
 # --------------------------------------------------------------------------
+# The report (spec: "`audit` (read-only)": Text output, JSON output, Exit codes)
+# --------------------------------------------------------------------------
+#
+# build_report() is pure: it turns joined panes, gathered sessions, resolutions
+# and open pull requests into the JSON object the spec describes, and both
+# renderers read only that object, so the text and the JSON cannot disagree.
+
+# States section 2 lists: work that exists and is not in the default branch.
+STRANDED = frozenset({UNMERGED, OPEN_PR})
+
+HEADING_OPEN = "open in Herdr"
+HEADING_CLOSED = "closed, with unmerged branches"
+HEADING_PRS = "open PRs no session is working on"
+
+# A pane with branch evidence whose every branch is `gone` has no row to show a
+# branch in; its one row says so, so the pane is never missing from section 1.
+STATE_ONLY_GONE = "only gone branches (counted)"
+
+SESSION_ID_TEXT = 8
+
+
+def _repo_name(key: tuple[str, str], resolution: Resolution) -> str:
+    """`owner/name` when the branch resolved on github.com, else its repository path."""
+    return resolution.repo_slug if resolution.repo_slug is not None else key[0]
+
+
+def _session_record(session: dict) -> dict:
+    return {
+        "agent": session["agent"],
+        "id": session["id"],
+        "cwd": session["cwd"],
+        "last_active": session["last_active"],
+        "title": session.get("title"),
+    }
+
+
+def build_report(
+    *,
+    generated_at: str,
+    since_days: int,
+    owners: list[str],
+    joined: list[dict],
+    sessions: list[dict],
+    resolutions: Resolutions,
+    prs: list[dict],
+    include_bots: bool,
+    incomplete: list[str],
+) -> dict:
+    """The report as the spec's JSON object; see render_text and render_json."""
+    open_panes: list[dict] = []
+    open_keys: set[tuple[str, str]] = set()
+    for pane in joined:
+        branches: dict[tuple[str, str], dict] = {}
+        for entry in pane["entries"]:
+            key = resolutions.key_for(entry["name"], entry["dir"], entry["cwd"])
+            open_keys.add(key)
+            resolution = resolutions[key]
+            if resolution.state == GONE:
+                continue
+            record = branches.setdefault(
+                key,
+                {
+                    "repo": _repo_name(key, resolution),
+                    "name": key[1],
+                    "state": resolution.state,
+                    "pr": resolution.pr,
+                    "evidence": [],
+                    "reason": resolution.reason,
+                },
+            )
+            if entry["evidence"] not in record["evidence"]:
+                record["evidence"].append(entry["evidence"])
+        for record in branches.values():
+            record["evidence"].sort()
+        open_panes.append(
+            {
+                "pane_id": pane["pane_id"],
+                "tab": pane["tab"],
+                "agent": pane["agent"],
+                "session_id": pane["session_id"],
+                "note": pane["note"],
+                "branches": list(branches.values()),
+            }
+        )
+
+    touched: dict[tuple[str, str], dict[tuple[str, str], dict]] = {}
+    for session in sessions:
+        for branch in session["branches"]:
+            key = resolutions.key_for(branch["name"], branch["dir"], session["cwd"])
+            touched.setdefault(key, {})[(session["agent"], session["id"])] = session
+    closed: list[dict] = []
+    for key, resolution in resolutions.items():
+        if resolution.state not in STRANDED or key in open_keys or key not in touched:
+            continue
+        by_age = sorted(
+            touched[key].values(), key=lambda s: (s["last_active"], s["id"]), reverse=True
+        )
+        closed.append(
+            {
+                "repo": _repo_name(key, resolution),
+                "name": key[1],
+                "state": resolution.state,
+                "pr": resolution.pr,
+                "session": _session_record(by_age[0]),
+                "older_sessions": len(by_age) - 1,
+            }
+        )
+    closed.sort(key=lambda row: row["repo"].lower() + "\0" + row["name"])
+    closed.sort(key=lambda row: row["session"]["last_active"], reverse=True)
+
+    session_branches = {
+        (resolution.repo_slug.lower(), key[1])
+        for key, resolution in resolutions.items()
+        if resolution.repo_slug is not None
+    }
+    unmatched: list[dict] = []
+    bots_hidden = 0
+    for pr in prs:
+        heads = {(pr["repo"].lower(), pr["head"])}
+        if pr.get("head_repo"):
+            heads.add((pr["head_repo"].lower(), pr["head"]))
+        if heads & session_branches:
+            continue
+        if pr["bot"] and not include_bots:
+            bots_hidden += 1
+            continue
+        unmatched.append(
+            {
+                key: pr[key]
+                for key in (
+                    "repo",
+                    "number",
+                    "title",
+                    "head",
+                    "author",
+                    "bot",
+                    "draft",
+                    "updated_at",
+                    "url",
+                )
+            }
+        )
+    unmatched.sort(key=lambda row: (row["repo"].lower(), row["number"]))
+
+    states = [resolution.state for resolution in resolutions.values()]
+    return {
+        "generated_at": generated_at,
+        "since_days": since_days,
+        "owners": list(owners),
+        "open": open_panes,
+        "closed_unmerged": closed,
+        "unmatched_prs": unmatched,
+        "counts": {
+            "gone": states.count(GONE),
+            "unresolved": states.count(UNRESOLVED),
+            "bots_hidden": bots_hidden,
+        },
+        "incomplete": list(incomplete),
+    }
+
+
+def exit_code(report: dict) -> int:
+    """2 when incomplete, whatever the findings; else 1 when section 2 or 3 has a row."""
+    if report["incomplete"]:
+        return 2
+    return 1 if report["closed_unmerged"] or report["unmatched_prs"] else 0
+
+
+def render_json(report: dict) -> str:
+    return json.dumps(report, indent=2) + "\n"
+
+
+def _plural(count: int, word: str, plural: str | None = None) -> str:
+    return f"{count} {word if count == 1 else (plural or word + 's')}"
+
+
+def _state_text(state: str, pr: dict | None) -> str:
+    if state == OPEN_PR and pr is not None:
+        return f"open PR #{pr['number']}" + (" (draft)" if pr["draft"] else "")
+    if state == MERGED and pr is not None:
+        return f"merged PR #{pr['number']}"
+    return state
+
+
+def _short(session_id: str | None) -> str:
+    return session_id[:SESSION_ID_TEXT] if session_id else "-"
+
+
+def _table(columns: list[str], rows: list[list[str]]) -> list[str]:
+    if not rows:
+        return ["  (none)"]
+    widths = [max(len(row[i]) for row in [columns, *rows]) for i in range(len(columns))]
+    return [
+        (
+            "  " + "  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True))
+        ).rstrip()
+        for row in [columns, *rows]
+    ]
+
+
+def render_text(report: dict, *, session_count: int) -> str:
+    """The spec's text shape: a header line, three sections, the footer."""
+    generated = datetime.strptime(report["generated_at"], "%Y-%m-%dT%H:%M:%SZ")
+    since = (generated - timedelta(days=report["since_days"])).strftime("%Y-%m-%d")
+    lines = [
+        f"audit: {_plural(len(report['open']), 'pane')}, {_plural(session_count, 'session')} "
+        f"since {since}, owners: {', '.join(report['owners'])}",
+        "",
+        HEADING_OPEN,
+    ]
+
+    rows = []
+    for pane in report["open"]:
+        lead = [pane["pane_id"], pane["tab"] or "-", pane["agent"], _short(pane["session_id"])]
+        if pane["note"] is not None:
+            rows.append([*lead, "-", "-", pane["note"]])
+        elif not pane["branches"]:
+            rows.append([*lead, "-", "-", STATE_ONLY_GONE])
+        for branch in pane["branches"]:
+            rows.append(
+                [*lead, branch["repo"], branch["name"], _state_text(branch["state"], branch["pr"])]
+            )
+    lines += _table(["PANE", "TAB", "AGENT", "SESSION", "REPO", "BRANCH", "STATE"], rows)
+
+    lines += ["", HEADING_CLOSED]
+    rows = []
+    for row in report["closed_unmerged"]:
+        session = row["session"]
+        older = f" +{row['older_sessions']}" if row["older_sessions"] else ""
+        rows.append(
+            [
+                session["agent"],
+                _short(session["id"]) + older,
+                session["last_active"][:10],
+                row["repo"],
+                row["name"],
+                _state_text(row["state"], row["pr"]),
+            ]
+        )
+    lines += _table(["AGENT", "SESSION", "LAST ACTIVE", "REPO", "BRANCH", "STATE"], rows)
+
+    lines += ["", HEADING_PRS]
+    rows = []
+    for pr in report["unmatched_prs"]:
+        note = ", ".join(word for word, on in (("draft", pr["draft"]), ("bot", pr["bot"])) if on)
+        rows.append(
+            [
+                pr["repo"],
+                f"#{pr['number']}",
+                pr["head"],
+                pr["author"] or "-",
+                pr["updated_at"][:10],
+                note,
+            ]
+        )
+    lines += _table(["REPO", "PR", "BRANCH", "AUTHOR", "UPDATED", "NOTE"], rows)
+
+    counts = report["counts"]
+    lines += [
+        "",
+        f"not listed: {_plural(counts['gone'], 'branch', 'branches')} gone, "
+        f"{counts['unresolved']} unresolved, {_plural(counts['bots_hidden'], 'bot PR')} hidden.",
+    ]
+    if report["incomplete"]:
+        lines.append(f"incomplete: {'; '.join(report['incomplete'])}")
+    return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------
+# The run
+# --------------------------------------------------------------------------
+
+
+def _now() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def run(args, *, out, err, now=_now) -> int:
+    """One audit: require_tools -> owners -> panes -> sessions -> resolve -> open PRs -> report.
+
+    Any AuditError (ToolError, GhError, GitError) or feed.HerdrError stops the
+    run before anything is printed on `out`: one line on `err`, exit 2. An
+    adapter that could not answer does not stop it: the report prints, marked
+    incomplete, and exits 2.
+    """
+
+    def say(message: str) -> None:
+        err.write(f"herdr-setup: audit: {message}\n")
+
+    adapter_dir = feed.default_adapter_dir() if args.adapter_dir is None else Path(args.adapter_dir)
+    try:
+        require_tools()
+        owner_list = owners(args.owners or [])
+        pane_list = panes()
+        adapters, probe_failures = load_adapters(adapter_dir, warn=say)
+        gathered = gather_sessions(adapters, args.since, include_sdk=args.include_sdk, warn=say)
+        joined = join(pane_list, adapters, gathered)
+        resolutions = resolve_branches(resolution_entries(joined, gathered))
+        prs = [pr for login in owner_list for pr in open_prs(login)]
+    except (AuditError, feed.HerdrError) as exc:
+        say(str(exc))
+        return 2
+
+    report = build_report(
+        generated_at=now(),
+        since_days=args.since,
+        owners=owner_list,
+        joined=joined,
+        sessions=gathered.sessions,
+        resolutions=resolutions,
+        prs=prs,
+        include_bots=args.include_bots,
+        incomplete=probe_failures + gathered.incomplete,
+    )
+    if args.json:
+        out.write(render_json(report))
+    else:
+        out.write(render_text(report, session_count=len(gathered.sessions)))
+    return exit_code(report)
+
+
+# --------------------------------------------------------------------------
 # Command line
 # --------------------------------------------------------------------------
 
@@ -1399,16 +1721,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    parser.parse_args(argv)
+def main(argv: list[str] | None = None, *, out=None, err=None, now=None) -> int:
+    """Parse the command line and run one audit; see run() for the exit statuses.
 
-    # Still the walking skeleton's body: say so, and fail closed. Sections 1
-    # through 3 (panes, stranded branches, unmatched pull requests) are not
-    # joined or printed yet, and printing an empty report here would read as
-    # "nothing to act on" -- the one thing this run does not know.
-    print("incomplete: the audit runner is not implemented yet")
-    return 2
+    Anything run() did not anticipate still exits 2, with its traceback on
+    stderr: Python's own exit status for an uncaught exception is 1, which
+    this command's table reads as "findings to act on" -- the one answer a
+    crash must never give.
+    """
+    args = build_parser().parse_args(argv)
+    out = sys.stdout if out is None else out
+    err = sys.stderr if err is None else err
+    try:
+        return run(args, out=out, err=err, now=_now if now is None else now)
+    except Exception as exc:  # see the docstring
+        traceback.print_exc(file=err)
+        err.write(f"herdr-setup: audit: unexpected error: {type(exc).__name__}: {exc}\n")
+        return 2
 
 
 if __name__ == "__main__":
