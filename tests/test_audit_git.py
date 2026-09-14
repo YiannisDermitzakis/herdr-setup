@@ -74,7 +74,10 @@ class TestRepoFor(GitCase):
         repo = make_repo(self.root)
         (repo / "sub" / "deeper").mkdir(parents=True)
         found = audit.repo_for(str(repo / "sub" / "deeper"), None)
-        self.assertEqual(found, audit.Repo(toplevel=str(repo), main_checkout=str(repo), slug=SLUG))
+        expected = audit.Repo(
+            toplevel=str(repo), main_checkout=str(repo), slug=SLUG, remote="origin"
+        )
+        self.assertEqual(found, expected)
 
     def test_every_github_remote_url_form_names_the_slug(self):
         urls = (
@@ -110,7 +113,8 @@ class TestRepoFor(GitCase):
     def test_the_only_remote_is_used_whatever_its_name(self):
         repo = make_repo(self.root, remote=None)
         git(repo, "remote", "add", "upstream", "https://github.com/example-org/example-repo.git")
-        self.assertEqual(audit.repo_for(str(repo), None).slug, SLUG)
+        found = audit.repo_for(str(repo), None)
+        self.assertEqual((found.slug, found.remote), (SLUG, "upstream"))
 
     def test_several_remotes_and_no_origin_or_no_remote_at_all_mean_no_slug(self):
         several = make_repo(self.root, "several", remote=None)
@@ -195,6 +199,12 @@ class TestIsAncestor(GitCase):
             audit.is_ancestor(audit.repo_for(str(repo), None), "feat/broken", "main")
         self.assertIn(str(repo), str(ctx.exception))
 
+    def test_a_default_present_neither_locally_nor_on_the_remote_is_none_not_an_error(self):
+        repo = make_repo(self.root)
+        git(repo, "branch", "-m", "main", "master")
+        git(repo, "branch", "feat/x")
+        self.assertIsNone(audit.is_ancestor(audit.repo_for(str(repo), None), "feat/x", "main"))
+
 
 class TestLocalDefault(GitCase):
     def test_none_without_origin_head_and_the_target_with_it(self):
@@ -203,6 +213,12 @@ class TestLocalDefault(GitCase):
         self.assertIsNone(audit.local_default(found))
         git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
         self.assertEqual(audit.local_default(found), "trunk")
+
+    def test_the_head_of_the_chosen_remote_not_origin(self):
+        repo = make_repo(self.root, remote=None)
+        git(repo, "remote", "add", "upstream", "https://gitlab.example.invalid/example-org/r.git")
+        git(repo, "symbolic-ref", "refs/remotes/upstream/HEAD", "refs/remotes/upstream/trunk")
+        self.assertEqual(audit.local_default(audit.repo_for(str(repo), None)), "trunk")
 
 
 class TestNothingIsWrittenOrFetched(GitCase):

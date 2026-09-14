@@ -436,10 +436,12 @@ For each distinct (`dir`, `name`):
      reason in JSON.
    - A directory that no longer exists counts as "not a work tree". That is
      the ordinary fate of a removed worktree.
-2. **Name it.** The remote is `origin`, else the only remote. Its URL (https,
-   `git@host:`, or `ssh://`) names `owner/name` when the host is `github.com`.
-   With no such remote the branch still resolves, by ancestry only, and has no
-   pull request data.
+2. **Name it.** The chosen remote is `origin`, else the only remote. Its URL
+   (https, `git@host:`, or `ssh://`) names `owner/name` when the host is
+   `github.com`. With no such remote the branch still resolves, by ancestry
+   only, and has no pull request data. Every remote-tracking ref below is the
+   chosen remote's, `refs/remotes/<remote>/...`, so a clone whose only remote
+   is `upstream` is read the same way as one with `origin`.
 3. **Deduplicate.** The resolution key is (repository, branch). Several sessions
    and directories naming the same branch in the same repository resolve once.
 
@@ -464,15 +466,20 @@ deleted) cannot show that, so it is not used for `merged` or `open-pr`.
   - the local `refs/heads/<b>`, if it exists;
   - the GitHub branch `refs/heads/<b>`, if it exists.
 
-  `refs/remotes/origin/<b>` is not consulted: it is as stale as the last fetch,
-  and GitHub answers directly.
+  `refs/remotes/<remote>/<b>` is not consulted: it is as stale as the last
+  fetch, and GitHub answers directly.
 - **The default branch** is GitHub's `defaultBranchRef.name`. For a repository
-  with no GitHub remote it is the target of `refs/remotes/origin/HEAD`. With
-  neither, the branch is `unresolved`, never guessed.
+  with no GitHub remote it is the target of the chosen remote's
+  `refs/remotes/<remote>/HEAD`. With neither, the branch is `unresolved`, never
+  guessed.
 - **Local ancestry** is `git merge-base --is-ancestor refs/heads/<b> <default>`.
-  `<default>` is `refs/remotes/origin/<default>` when that exists, else
-  `refs/heads/<default>`. Exit 0 is contained, exit 1 is not, and any other exit
-  is an error: exit 2 for the run, naming the repository.
+  `<default>` is `refs/remotes/<remote>/<default>` (the chosen remote) when that
+  exists, else `refs/heads/<default>`. When neither exists locally -- a clone
+  from before a default-branch rename, a `--single-branch` clone, a fork clone
+  -- a branch that needs local ancestry is `unresolved` with the reason
+  `default branch <name> not present locally`, never an error. Otherwise exit 0
+  is contained, exit 1 is not, and any other exit is an error: exit 2 for the
+  run, naming the repository.
 - **Remote ancestry** is GitHub's compare of the default branch against
   `<b>`. `IDENTICAL` or `BEHIND` is contained.
 - **A branch cut from the default branch** with no commits of its own is

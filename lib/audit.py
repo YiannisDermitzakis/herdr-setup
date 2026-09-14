@@ -602,7 +602,7 @@ def compare(owner: str, name: str, branches: list[str]) -> dict[str, str]:
 #
 # One function per git question, each a single `git -C <dir> <read-only
 # subcommand>` whose exit status is read explicitly. Nothing here fetches:
-# remote state comes from GitHub, and refs/remotes/origin/<b> is as stale as
+# remote state comes from GitHub, and refs/remotes/<remote>/<b> is as stale as
 # the last fetch. GIT_OPTIONAL_LOCKS=0 keeps even git's opportunistic index
 # refresh from writing.
 
@@ -629,6 +629,10 @@ class Repo:
     toplevel: str  # the work tree the directory is in (a linked worktree's own root)
     main_checkout: str  # the main worktree: the same for every linked worktree of it
     slug: str | None  # `owner/name` when the chosen remote is on github.com
+    # The chosen remote: `origin`, else the only remote, else None. Every
+    # remote-tracking ref this module reads is this remote's, so the slug and
+    # the ancestry answer always describe the same remote.
+    remote: str | None = None
 
 
 def _git(directory: str, args: tuple[str, ...]) -> subprocess.CompletedProcess:
@@ -686,8 +690,8 @@ def _main_checkout(toplevel: str) -> str:
     raise GitError(f"git in {toplevel}: {' '.join(args)} named no main worktree")
 
 
-def _slug(toplevel: str) -> str | None:
-    """The slug of `origin`, else of the only remote; None with neither."""
+def _remote_and_slug(toplevel: str) -> tuple[str | None, str | None]:
+    """(the chosen remote, its github.com slug): `origin`, else the only remote."""
     args = ("remote",)
     proc = _git(toplevel, args)
     if proc.returncode != 0:
@@ -698,12 +702,12 @@ def _slug(toplevel: str) -> str | None:
     elif len(remotes) == 1:
         remote = remotes[0]
     else:
-        return None
+        return None, None
     args = ("remote", "get-url", remote)
     proc = _git(toplevel, args)
     if proc.returncode != 0:
         raise _git_failure(toplevel, args, proc)
-    return github_slug(proc.stdout)
+    return remote, github_slug(proc.stdout)
 
 
 def repo_for(directory: str | None, fallback: str | None) -> Repo | None:
@@ -711,7 +715,8 @@ def repo_for(directory: str | None, fallback: str | None) -> Repo | None:
     for candidate in (directory, fallback):
         toplevel = _toplevel(candidate)
         if toplevel is not None:
-            return Repo(toplevel, _main_checkout(toplevel), _slug(toplevel))
+            remote, slug = _remote_and_slug(toplevel)
+            return Repo(toplevel, _main_checkout(toplevel), slug, remote)
     return None
 
 
@@ -735,15 +740,34 @@ def local_ref(repo: Repo, name: str) -> bool:
     return _ref_exists(repo, f"refs/heads/{name}")
 
 
-def is_ancestor(repo: Repo, name: str, default: str) -> bool:
+def default_ref(repo: Repo, default: str) -> str | None:
+    """The local ref standing for the default branch, or None when there is none.
+
+    refs/remotes/<remote>/<default> for the chosen remote when that exists,
+    else refs/heads/<default>. Neither is an ordinary state -- a clone from
+    before a default-branch rename, a --single-branch clone, a fork clone --
+    not an error.
+    """
+    candidates = [f"refs/heads/{default}"]
+    if repo.remote is not None:
+        candidates.insert(0, f"refs/remotes/{repo.remote}/{default}")
+    for ref in candidates:
+        if _ref_exists(repo, ref):
+            return ref
+    return None
+
+
+def is_ancestor(repo: Repo, name: str, default: str) -> bool | None:
     """Whether refs/heads/<name> is reachable from the default branch.
 
-    The default branch is refs/remotes/origin/<default> when that exists,
-    else refs/heads/<default>. Exit 0 is contained, exit 1 is not, and any
-    other exit is a GitError naming the repository.
+    None when the default branch is not present locally at all (default_ref),
+    which makes the branch `unresolved` rather than stopping the run. Otherwise
+    exit 0 is contained, exit 1 is not, and any other exit on refs that do
+    exist is a GitError naming the repository.
     """
-    remote_default = f"refs/remotes/origin/{default}"
-    target = remote_default if _ref_exists(repo, remote_default) else f"refs/heads/{default}"
+    target = default_ref(repo, default)
+    if target is None:
+        return None
     args = ("merge-base", "--is-ancestor", f"refs/heads/{name}", target)
     proc = _git(repo.toplevel, args)
     if proc.returncode == 0:
@@ -754,17 +778,20 @@ def is_ancestor(repo: Repo, name: str, default: str) -> bool:
 
 
 def local_default(repo: Repo) -> str | None:
-    """The branch refs/remotes/origin/HEAD points at, or None when it is not set."""
-    args = ("symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+    """The branch the chosen remote's HEAD points at, or None when it is not set."""
+    if repo.remote is None:
+        return None
+    head = f"refs/remotes/{repo.remote}/HEAD"
+    args = ("symbolic-ref", "--quiet", head)
     proc = _git(repo.toplevel, args)
     if proc.returncode == 1:
         return None
     if proc.returncode != 0:
         raise _git_failure(repo.toplevel, args, proc)
     target = proc.stdout.strip()
-    prefix = "refs/remotes/origin/"
+    prefix = f"refs/remotes/{repo.remote}/"
     if not target.startswith(prefix) or target == prefix:
-        raise GitError(f"git in {repo.toplevel}: refs/remotes/origin/HEAD points at {target!r}")
+        raise GitError(f"git in {repo.toplevel}: {head} points at {target!r}")
     return target[len(prefix) :]
 
 
@@ -812,10 +839,12 @@ class Facts:
     """
 
     repo_slug: str | None  # `owner/name` on github.com, or None
-    default: str | None  # GitHub's default branch, else origin/HEAD's, else None
+    default: str | None  # GitHub's default branch, else <remote>/HEAD's, else None
     prs: tuple[dict, ...] = ()  # OPEN/MERGED pull requests by head name (RepoBranches.prs)
     local_ref: bool | None = None  # refs/heads/<b> exists locally
     local_contained: bool | None = None  # is_ancestor(), asked only when local_ref
+    # is_ancestor() found no local ref for the default branch at all
+    local_default_missing: bool = False
     remote_ref: bool | None = None  # refs/heads/<b> exists on GitHub
     remote_status: str | None = None  # compare() status, asked only when remote_ref
 
@@ -863,12 +892,15 @@ def classify(facts: Facts) -> Resolution:
         if facts.repo_slug is not None:
             reason = f"GitHub reports no default branch for {facts.repo_slug}"
         else:
-            reason = "no GitHub remote, and no refs/remotes/origin/HEAD to name a default branch"
+            reason = "no GitHub remote, and no <remote>/HEAD to name a default branch"
         return Resolution(UNRESOLVED, None, facts.repo_slug, reason)
 
     contained: list[bool] = []
     if facts.local_ref is None:
         raise ValueError("classify: whether the local ref exists was never asked")
+    if facts.local_ref and facts.local_default_missing:
+        reason = f"default branch {facts.default} not present locally"
+        return Resolution(UNRESOLVED, None, facts.repo_slug, reason)
     if facts.local_ref:
         if facts.local_contained is None:
             raise ValueError("classify: local ancestry was never asked")
@@ -923,6 +955,7 @@ def _resolve_repository(repo: Repo, names: list[str]) -> dict[str, Resolution]:
                 prs=prs[branch],
                 local_ref=local.get(branch),
                 local_contained=contained.get(branch),
+                local_default_missing=bool(local.get(branch)) and contained[branch] is None,
                 remote_ref=github.refs[branch] if github else None,
                 remote_status=statuses.get(branch),
             )

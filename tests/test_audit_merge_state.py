@@ -33,6 +33,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent / "helpers"))
 
 from auditlib import (  # noqa: E402
+    GITHUB_REMOTE,
     REPO_SLUG,
     ZERO_OID,
     FakeGh,
@@ -217,6 +218,45 @@ class TestFindingTheRepository(MergeStateCase):
         self.assertEqual(self.state(results, "feat/nothing", repo=other), "gone")
         self.assertIsNone(results[(str(other), "feat/work")].repo_slug)
         self.assertEqual(self.fake.calls(), [])
+
+
+class TestTheChosenRemoteAndItsDefault(MergeStateCase):
+    def test_a_default_branch_absent_locally_is_unresolved_and_the_run_continues(self):
+        # A clone from before a default-branch rename: only master, while
+        # GitHub's default is main.
+        git(self.repo, "branch", "-m", "main", "master")
+        git(self.repo, "checkout", "-q", "-b", "feat/stale")
+        commit(self.repo, "work on a pre-rename clone")
+        git(self.repo, "checkout", "-q", "master")
+        self.github(prs=[gh_pr(8, "feat/squashed", state="MERGED")])
+        results = self.resolve("feat/stale", "feat/squashed")
+        stale = results[(str(self.repo), "feat/stale")]
+        self.assertEqual(stale.state, "unresolved")
+        self.assertEqual(stale.reason, "default branch main not present locally")
+        self.assertEqual(self.state(results, "feat/squashed"), "merged")
+
+    def upstream_clone(self) -> Path:
+        """A clone whose only remote is `upstream`, with upstream/main containing feat/up."""
+        clone = make_repo(self.root, "upstream-clone", remote=None)
+        git(clone, "remote", "add", "upstream", GITHUB_REMOTE)
+        git(clone, "checkout", "-q", "-b", "feat/up")
+        commit(clone, "work merged upstream")
+        git(clone, "update-ref", "refs/remotes/upstream/main", "refs/heads/feat/up")
+        return clone
+
+    def test_the_sole_remotes_default_decides_ancestry_over_a_stale_local_main(self):
+        clone = self.upstream_clone()
+        git(clone, "checkout", "-q", "main")
+        self.github()
+        results = self.resolve("feat/up", repo=clone)
+        self.assertEqual(self.state(results, "feat/up", repo=clone), "contained")
+
+    def test_with_no_local_main_the_sole_remotes_default_is_used(self):
+        clone = self.upstream_clone()
+        git(clone, "branch", "-D", "main")
+        self.github()
+        results = self.resolve("feat/up", repo=clone)
+        self.assertEqual(self.state(results, "feat/up", repo=clone), "contained")
 
 
 class TestWhatIsAsked(MergeStateCase):
