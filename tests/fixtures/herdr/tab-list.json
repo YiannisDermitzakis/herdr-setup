@@ -6,7 +6,7 @@
       {
         "agent_status": "working",
         "focused": false,
-        "label": "9 · example-repo › claude › add the health endpoint",
+        "label": "9 · alpha › claude › add the health endpoint",
         "number": 9,
         "pane_count": 1,
         "tab_id": "w2:t9",
@@ -15,7 +15,7 @@
       {
         "agent_status": "idle",
         "focused": false,
-        "label": "2 · example-repo › claude › fix-image-size-check",
+        "label": "2 · beta › claude › fix-image-size-check",
         "number": 2,
         "pane_count": 1,
         "tab_id": "w2:t2",
@@ -24,7 +24,7 @@
       {
         "agent_status": "idle",
         "focused": false,
-        "label": "7 · example-repo › claude › check-engine-version",
+        "label": "7 · beta › claude › check-engine-version",
         "number": 7,
         "pane_count": 1,
         "tab_id": "w2:t7",
