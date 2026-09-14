@@ -29,7 +29,7 @@ socket answered normally, so the captures are the server's own output.
 |---|---|---|
 | `agent-list.json` | `agent.list` | Trimmed from 20 entries to 3 — one `working` and two `idle` — keeping every key. |
 | `pane-process-info.json` | `pane.process_info` with `pane_id` | Verbatim, one pane. |
-| `tab-list.json` | `tab.list` | Captured 2026-09-13 from the same server (see below), trimmed from ~35 tabs across five workspaces to the three whose `tab_id` matches `agent-list.json`'s three panes (`w2:t9`, `w2:t2`, `w2:t7`), keeping every key. |
+| `tab-list.json` | `tab.list` | Captured 2026-09-13 from the same server (see below), trimmed to the three tabs whose `tab_id` matches `agent-list.json`'s three panes (`w2:t9`, `w2:t2`, `w2:t7`), keeping every key. |
 
 ### `tab-list.json`, captured 2026-09-13
 

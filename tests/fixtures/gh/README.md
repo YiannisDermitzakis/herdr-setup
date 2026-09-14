@@ -14,12 +14,12 @@ read: no mutation, and the repository's refs and pull requests were
 unchanged before and after (see `git log`).
 
 `open-pull-requests.json` was captured 2026-09-14, read-only, against two
-unrelated public repositories chosen for their real open pull requests --
-this account's own history had none to capture (see "not seen" below).
+unrelated public repositories chosen for having real open pull requests to
+capture the shape from (see "not seen" below).
 
 | File | Command | Notes |
 |---|---|---|
-| `owner-pull-requests.json` | `HsOwnerPullRequests` (`repositoryOwner.repositories(first: 2, isArchived: false)`, each with `pullRequests(states: OPEN, first: 100)`) | Two of the account's own repositories, unrelated to this one -- this account has no OPEN pull request anywhere at capture time, so `pullRequests.nodes` is `[]` on both. See "not seen" below. |
+| `owner-pull-requests.json` | `HsOwnerPullRequests` (`repositoryOwner.repositories(first: 2, isArchived: false)`, each with `pullRequests(states: OPEN, first: 100)`) | Two of the account's own repositories, unrelated to this one. `pullRequests.nodes` is `[]` on both, in the capture. See "not seen" below. |
 | `repo-branches.json` | `HsRepoBranches` for this repository, two branches: one whose pull request merged and whose branch ref was then deleted (`h0`/`q0`), and one whose ref still exists (`h1`/`q1`) | The first branch's pull request merged and its ref was deleted -- `r0` (the ref) is `null`, `p0` (its pull requests) still finds the MERGED PR by head branch name. The second branch's ref exists (`r1`), and no pull request has it as its own head (`p1` is empty). One query, both branches, matching the design doc's own batching. |
 | `compare.json` | `HsCompare` for this repository, `h0` = the default branch | The default branch compared against itself: `IDENTICAL`, because that comparison is trivially true for any repository and needs no branch this account happens to have open right now. |
 | `compare-missing-ref.stdout` / `.stderr` / `.exit` | `HsCompare` for this repository, `h0` = a branch whose ref no longer exists | The captured shape docs/superpowers/specs/2026-09-13-session-audit-design.md's own "GitHub queries" section already names: partial `data` (`compare` is `null`), a `NOT_FOUND` entry in `errors`, `gh`'s own one-line message on stderr, and exit `1`. |
@@ -71,10 +71,10 @@ other enum value; `user.json`'s `type`, `user_view_type`, `site_admin`,
   a construction.
 - **`HsRepoOpenPullRequests`**, the follow-up query for a repository with
   more than 100 open pull requests. No repository queried came close.
-- **A second page** of `HsOwnerPullRequests` (`pageInfo.hasNextPage: true`
-  IS real and kept -- the account has more repositories than the page size
-  captured -- but no second page was fetched, since a further repository
-  would not have shown a different shape).
+- **A second page** of `HsOwnerPullRequests`. `pageInfo.hasNextPage: true`
+  IS real and kept as captured (its meaning: more results exist past this
+  page), but no second page was fetched, since a further repository would
+  not have shown a different shape.
 - **`gh auth status --hostname github.com`**, its success or failure shape,
   and `FAKE_GH_UNAUTH`/`GH_TOKEN=invalid`'s effect -- outside this task's
   read-only captures (`auth status` prints human-readable text to stderr,
