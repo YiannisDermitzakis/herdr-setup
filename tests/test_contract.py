@@ -103,6 +103,18 @@ class TestTheDocumentIsPresent(unittest.TestCase):
         self.assertIn("UTC", text)
         self.assertIn("procStart", text)
 
+    def test_it_states_the_runners_own_sessions_timeout_of_600_seconds(self):
+        """docs/superpowers/specs/2026-09-14-audit-live-host-findings-design.md, change 2.
+
+        Under host load the Claude adapter needed 82 s of a 120 s limit and
+        one run went incomplete. The timeout bounds a hung adapter; `--since`
+        already bounds the work. The document and the runner must agree.
+        """
+        stated = re.findall(r"Timeout: (\d+) seconds", DOC.read_text("utf-8"))
+        self.assertEqual(stated, [str(int(feed.SESSIONS_TIMEOUT))])
+        self.assertEqual(feed.SESSIONS_TIMEOUT, 600.0)
+        self.assertEqual((feed.PROBE_TIMEOUT, feed.RESOLVE_TIMEOUT), (10.0, 30.0))
+
 
 class TestValidateProbe(unittest.TestCase):
     def setUp(self) -> None:

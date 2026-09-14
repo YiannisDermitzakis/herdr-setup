@@ -307,7 +307,10 @@ Rules:
   so an adapter that forgets cannot inject noise.
 - **Failing** is as for `resolve`: exit non-zero, or print nothing. An empty
   `sessions` list means "no sessions in the window", never "could not read".
-  Timeout: 120 seconds. A malformed SESSION or a malformed BRANCH within an
+  Timeout: 600 seconds. It bounds a hung adapter, not the work, which
+  `--since` already bounds: under host load a month of Claude Code history
+  took 82 seconds, and a tighter limit turned that slow answer into an
+  incomplete report. A malformed SESSION or a malformed BRANCH within an
   otherwise-good answer is tolerated -- each is dropped and counted
   SEPARATELY, never fatal on its own -- but neither count is silently
   swallowed: the runner (`lib/feed.py`'s `sessions()`) warns by the

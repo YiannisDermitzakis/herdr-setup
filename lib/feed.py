@@ -70,10 +70,14 @@ TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 # An adapter is a small local script. These bound a broken one; they are not
 # a performance budget. `sessions` gets the longest budget of the three: it
 # walks a whole session store rather than answering about one process or one
-# batch of panes.
+# batch of panes. Under host load the Claude Code adapter needed 82 s for a
+# month of history against a former 120 s limit, and one run went incomplete
+# (docs/superpowers/specs/2026-09-14-audit-live-host-findings-design.md).
+# `--since` already bounds the work, so 600 s only has to catch a hung
+# adapter. `probe` and `resolve` bound `feed`'s interactive path and stay short.
 PROBE_TIMEOUT = 10.0
 RESOLVE_TIMEOUT = 30.0
-SESSIONS_TIMEOUT = 120.0
+SESSIONS_TIMEOUT = 600.0
 
 REPORT_METHOD = "pane.report_agent_session"
 
