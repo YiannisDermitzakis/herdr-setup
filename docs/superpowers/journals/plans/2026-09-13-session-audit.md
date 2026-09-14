@@ -845,3 +845,83 @@ READ_ONLY_SUBCOMMANDS moved from tests/test_audit_git.py to tests/helpers/auditl
 ### p4r-important3-clones · discovery · Review important 3: clones of one GitHub repository are one repository in the report (phase 4)
 
 Wrong, as the reviewer's probe showed: resolutions are keyed by main checkout, so feat/x worked in clone-a (open pane), clone-b and clone-c gave two identical section 2 rows, no +N, despite the open pane, exit 1. Fixed in build_report: _identity is (slug lowercased, branch) when the branch resolved on github.com, else (checkout, branch); _reconcile keeps one resolution per identity, the most actionable of STATE_PRIORITY (unmerged, open-pr, unresolved, contained, merged, gone); section 1 branches, the open-pane exclusion, section 2 rows and touched sessions, section 3's session branches and the gone and unresolved counts all use it. Section 3 already matched on the lowercased slug, so its behaviour is unchanged. The spec's Section 2 and Section 3 bullets say so, including the order. Tests in tests/test_audit_report.py TestClonesOfOneRepository: the reviewer's probe with three clones (no rows, no unmatched PR, exit 0); the open pane in a clone no closed session used; two and three clones as one row with +1 and +2, newest session; disagreeing clones (contained, unmerged, gone -> unmerged everywhere, gone count 0); the pairwise state order; slug case; checkouts without a GitHub remote staying apart. RED rc=1, 13 failures and 3 errors across the new and TestRun tests. Proof on an archive of 4d2736d, _identity reverted to the checkout path: test_audit_report rc=1, 12 failures (every clone test above but checkouts-apart, plus the two section 3 slug-case tests).
+
+<!-- fr:journal kind=finding scope=plan id=f4-flags-not-proven-through-run created=2026-09-14T15:12:06 phase=4 state=fixed -->
+### f4-flags-not-proven-through-run · finding [fixed] · No test proved the flags reached their consumers through run() (phase 4)
+
+Mutations forcing include_sdk, include_bots and since to fixed values, and dropping --owner, all survived: the run stubs ignored their arguments and no end-to-end run passed those flags. The stubs now record and assert their arguments, the --owner run asserts no gh user or orgs call, and an end-to-end run passes --include-bots. Each mutation now fails.
+
+<!-- fr:journal kind=finding scope=plan id=f4-no-fetch-untested-on-audit-path created=2026-09-14T15:12:08 phase=4 state=fixed -->
+### f4-no-fetch-untested-on-audit-path · finding [fixed] · The no-git-fetch guarantee was untested on the audit path (phase 4)
+
+A fetch inserted into repository resolution survived, because the read-only test called git-layer functions directly. A recording git now wraps resolve_branches and an end-to-end run, asserting every subcommand is read-only; the mutation fails.
+
+<!-- fr:journal kind=finding scope=plan id=f4-two-clones-duplicate-rows created=2026-09-14T15:12:10 phase=4 state=fixed -->
+### f4-two-clones-duplicate-rows · finding [fixed] · Two clones of one GitHub repository listed a branch twice and ignored the open pane (phase 4)
+
+Section 2 keyed rows and the open-pane exclusion by local checkout, so a branch touched in several clones of one repository appeared once per clone, without +N, even while an open pane in another clone worked its pull request. Rows and exclusion now group by repository slug, falling back to the checkout only without a GitHub remote, with section 3 on the same identity.
+
+<!-- fr:journal kind=finding scope=plan id=f4-probe-failure-reads-no-adapter created=2026-09-14T15:12:12 phase=4 state=fixed -->
+### f4-probe-failure-reads-no-adapter · finding [fixed] · A pane whose adapter's probe failed read no adapter (phase 4)
+
+Failed adapter names now reach the join, so such a pane says session history unavailable (adapter failed).
+
+<!-- fr:journal kind=finding scope=plan id=f4-pane-cwd-order created=2026-09-14T15:12:13 phase=4 state=fixed -->
+### f4-pane-cwd-order · finding [fixed] · The pane cwd fallback order was the reverse of feed.py's (phase 4)
+
+Aligned with feed.py and stated in the spec's Panes source.
+
+<!-- fr:journal kind=finding scope=plan id=f4-spec-pane-directory-branches created=2026-09-14T15:12:15 phase=4 state=fixed -->
+### f4-spec-pane-directory-branches · finding [fixed] · The spec did not say pane-directory branches count for sections 2 and 3 (phase 4)
+
+The code already counted them; the spec now says so.
+
+<!-- fr:journal kind=finding scope=plan id=f4-readme-audit-incomplete created=2026-09-14T15:12:17 phase=4 state=fixed -->
+### f4-readme-audit-incomplete · finding [fixed] · The README audit section missed three pane notes and the failed-probe exit (phase 4)
+
+All section 1 notes are listed, and exit 2 names a failed adapter probe.
+
+<!-- fr:journal kind=finding scope=plan id=f4-stale-comments created=2026-09-14T15:12:18 phase=4 state=fixed -->
+### f4-stale-comments · finding [fixed] · Two comments described code that had changed (phase 4)
+
+The entrypoint's tab-list comment and the end-to-end test's case list are current.
+
+<!-- fr:journal kind=finding scope=plan id=f4-agents-door-overstated created=2026-09-14T15:12:20 phase=4 state=fixed -->
+### f4-agents-door-overstated · finding [fixed] · AGENTS.md overstated the interpreter rule (phase 4)
+
+Narrowed to: the entrypoint reaches lib/ Python only through its doors, since adapters and tests are uv scripts in their own right.
+
+<!-- fr:journal kind=finding scope=plan id=f4-gh-log-regex-loose created=2026-09-14T15:12:22 phase=4 state=fixed -->
+### f4-gh-log-regex-loose · finding [fixed] · The gh call-log allow-list accepted more than intended (phase 4)
+
+Each allowed form is anchored, with a negative case proving a disallowed call is rejected.
+
+<!-- fr:journal kind=finding scope=plan id=f4-e2e-failure-opaque created=2026-09-14T15:12:23 phase=4 state=fixed -->
+### f4-e2e-failure-opaque · finding [fixed] · An end-to-end exit mismatch would not name its cause (phase 4)
+
+The assertion label carries the run's stderr, so a probe timeout on CI explains itself.
+
+<!-- fr:journal kind=finding scope=plan id=f4-readme-absorb-garbled created=2026-09-14T15:12:25 phase=4 state=fixed -->
+### f4-readme-absorb-garbled · finding [fixed] · A README paragraph was pasted into the middle of a sentence (pre-existing) (phase 4)
+
+The absorb sentence is whole again and the ref paragraph follows it.
+
+<!-- fr:journal kind=finding scope=plan id=f4-absorb-test-and-or created=2026-09-14T15:12:27 phase=4 state=fixed -->
+### f4-absorb-test-and-or · finding [fixed] · test_absorb.sh assigned through A && B || C (pre-existing) (phase 4)
+
+Rewritten as an explicit if; the suite's pass-or-fail idiom keeps its documented disable.
+
+<!-- fr:journal kind=finding scope=plan id=f4-archived-spec-origins created=2026-09-14T15:12:29 phase=4 state=fixed -->
+### f4-archived-spec-origins · finding [fixed] · Eight acceptance rows cited the archived 2026-09-08 spec path (pre-existing) (phase 4)
+
+Each origin now names the implemented/ path and the reports are regenerated, so fr acceptance check no longer warns about them.
+
+<!-- fr:journal kind=finding scope=plan id=f4-third-party-adapter-probe-note created=2026-09-14T15:12:30 phase=4 state=refuted -->
+### f4-third-party-adapter-probe-note · finding [refuted] · A third-party adapter named unlike its agent still reads no adapter when its probe fails (phase 4)
+
+Raised by the fix round itself. A failed probe is exactly the case where the adapter never reported its agent name, so the adapter's file name is the only link to the pane's agent. All four shipped adapters are named after their agent, and the report is already marked incomplete naming the failed adapter, so nothing is hidden; guessing a mapping would be worse than the plain note.
+
+<!-- fr:journal kind=finding scope=plan id=f4-flags-e2e-coverage created=2026-09-14T15:12:32 phase=4 state=refuted -->
+### f4-flags-e2e-coverage · finding [refuted] · --include-sdk and --since are killed by the run() argument test, not end to end (phase 4)
+
+test_the_command_line_reaches_every_consumer asserts the exact arguments each stage receives, and the mutations forcing those flags fail it. An end-to-end run per flag would add CI time without stronger evidence; --include-bots and --owner do have end-to-end cases because their effect is visible in output and gh calls.

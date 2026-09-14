@@ -79,3 +79,13 @@ Operator decision before phase 4, replacing an earlier choice to keep a fake fr.
 ### d-keep-json-output · decision · Phase 4 keeps --json output
 
 Operator decision before phase 4, when --json and the fr enrichment were offered as the optional parts of its scope: --json stays, the fr enrichment goes.
+
+<!-- fr:journal kind=decision scope=spec id=d-spec-repository-identity created=2026-09-14T15:12:34 -->
+### d-spec-repository-identity · decision · A repository in the report is its GitHub slug, not a local checkout
+
+Phase 4 review: grouping by checkout listed a branch once per clone and let an open pane in one clone miss closed sessions in another. The slug identifies the repository; the checkout path is the fallback only without a GitHub remote.
+
+<!-- fr:journal kind=decision scope=spec id=d-spec-pane-directory-branches-count created=2026-09-14T15:12:35 -->
+### d-spec-pane-directory-branches-count · decision · Branches found from a pane's own directory count as session branches
+
+Phase 4 review: they already fed section 2's exclusion and section 3's matching; the spec now states it, since a pane an unsupported agent runs in is still work in progress.
