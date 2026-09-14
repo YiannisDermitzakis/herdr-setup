@@ -26,7 +26,8 @@ LOG="$(mktemp)"; /bin/bash tests/run.sh > "$LOG" 2>&1; rc=$?; tail -3 "$LOG"; ec
 
 "All gates" is the suite as above, plus `uv run --group dev pytest`,
 `uv run --group dev ruff check .`, `uv run --group dev ruff format --check .`
-and `shellcheck -s bash -x herdr-setup lib/*.sh tests/*.sh`, each of which must
+and `uv run --group dev shellcheck -s bash -x herdr-setup lib/*.sh tests/*.sh`
+(pinned, never the host's own shellcheck), each of which must
 exit 0.
 
 A RED step is proven, not asserted. Journal each RED run's exit status and the

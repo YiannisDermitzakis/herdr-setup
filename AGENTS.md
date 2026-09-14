@@ -48,5 +48,6 @@ consideration: prefer the robust and obvious construction over the fast one.
 `hs_py` is the only sanctioned door to the interpreter, and structured work is
 batched behind subcommands of `lib/hs.py` for coherence, not for speed.
 
-**Development tools are pinned too**: `uv run --group dev pytest` and
-`uv run --group dev ruff check`.
+**Development tools are pinned too**: `uv run --group dev pytest`,
+`uv run --group dev ruff check`, and
+`uv run --group dev shellcheck -s bash -x herdr-setup lib/*.sh tests/*.sh`.
