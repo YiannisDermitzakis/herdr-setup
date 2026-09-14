@@ -219,3 +219,38 @@ Labels now say alpha and beta, matching agent-list.json, and the README tables i
 ### f1r-journal-owner-dead-sha · finding [fixed] · A journal entry named the owner and a destroyed commit sha (phase 1)
 
 Entry text scrubbed. The owner still shows as the removed line of that fix's own diff. It is the repository's canonical owner, already public on main in the README clone URL and the matrix, so history was not rewritten again for it.
+
+<!-- fr:journal kind=discovery scope=plan id=5f82cf7c8a48 created=2026-09-14T02:43:53 phase=2 -->
+### 5f82cf7c8a48 · discovery · RED: tests/test_feed_sessions.py + test_contract.py additions (P2.T1.S1) (phase 2)
+
+Before lib/feed.py gained sessions support: uv run --quiet --script tests/test_feed_sessions.py -> rc=1, 32 tests, 1 failure + 29 errors (only test_it_rejects_a_non_boolean genuinely failed; the rest errored on missing feed.Adapter 'sessions' kwarg / missing feed.branch_name_ok / feed.parse_sessions / feed.sessions / feed.EVIDENCE). tests/test_contract.py's new TestTheSessionsExamples and the widened marked-block list also failed for the same reason (docs/adapters.md had no sessions-probe/sessions-response blocks yet).
+
+<!-- fr:journal kind=discovery scope=plan id=ce19471ebeaf created=2026-09-14T02:51:13 phase=2 -->
+### ce19471ebeaf · discovery · RED: tests/test_adapter_claude_sessions.py before cmd_sessions existed (P2.T2.S1) (phase 2)
+
+Before adapters/claude gained cmd_sessions/branch_name_ok/derive_session: uv run --quiet --script tests/test_adapter_claude_sessions.py -> rc=1, 26 tests, 24 failures + 1 error (probe lacked sessions key; adapters/claude sessions exited 2 as an unknown subcommand for every walk/identity/title/sdk/window/tolerance/git-branch-field test). After the implementation: rc=0, 26/26 (one own test-expectation bug fixed along the way: customTitle wins over aiTitle regardless of line order, not just chronologically -- the fixture's own ai-title line comes after its custom-title line).
+
+<!-- fr:journal kind=discovery scope=plan id=7630150c3d77 created=2026-09-14T02:59:41 phase=2 -->
+### 7630150c3d77 · discovery · RED: TestCommandEvidence + TestWorktreePathEvidence before task 3's extractors existed (P2.T3.S1) (phase 2)
+
+Before extract_command_evidence/extract_worktree_path_evidence were filled in (stubs were no-ops): uv run --quiet --script tests/test_adapter_claude_sessions.py -> rc=1, 48 tests, 19 failures (every fr isolation/git checkout|switch|worktree|push/gh pr create shape, the cd/-C dir tracking, the no-space and unbalanced-quote cases, and both worktree-path cases -- the filtered cases like HEAD and "$BR" and the tool_result negative case passed vacuously since an empty branch list was already the no-op's output). After filling in both functions: rc=0, 48/48.
+
+<!-- fr:journal kind=discovery scope=plan id=4958b78199e3 created=2026-09-14T03:22:06 phase=2 -->
+### 4958b78199e3 · discovery · Deviation: the plan brief's own worktree-path example trips test_public_hygiene.sh (P2.T3.S1) (phase 2)
+
+The brief's suggested fixture cwd for the worktree-path evidence test used a path shaped like /work/ + home + /.cache/fr/worktrees/... . test_public_hygiene.sh's home-directory check matches that shape (/home/[A-Za-z0-9._-]+) anywhere in the tree, fixture or not, and also matched it inside my own explanatory code comment on first attempt. Replaced the placeholder path segment with something else (still exercising the same regex/dir/slug behaviour) and rewrote the comment to describe the collision without repeating the offending substring. Full suite (bash tests/run.sh) now 31/31, rc=0.
+
+<!-- fr:journal kind=discovery scope=plan id=4e8abc19c0c9 created=2026-09-14T03:26:20 phase=2 -->
+### 4e8abc19c0c9 · discovery · RED: tests/test_adapter_codex_sessions.py before cmd_sessions existed (P2.T4.S1) (phase 2)
+
+Before adapters/codex gained cmd_sessions/branch_name_ok/derive_session: uv run --quiet --script tests/test_adapter_codex_sessions.py -> rc=1, 21 tests, 17 failures + 3 errors (probe lacked sessions key; adapters/codex sessions exited 2 as an unknown subcommand for every identity/git-branch/no-git/detached-head/subthread/tolerance/window test). One own test-authoring bug found and fixed before this RED run counted: the first identity test asserted a branch was present, but session-meta.json's own captured branch is main, which is filtered -- split into a pure-identity test plus a separate real-branch-name test using an edited git block. After the implementation: rc=0, 21/21.
+
+<!-- fr:journal kind=discovery scope=plan id=987bf877ad1a created=2026-09-14T03:32:54 phase=2 -->
+### 987bf877ad1a · discovery · RED (deliberate): conformance sessions-empty-list tests, verified by breaking claude on purpose (P2.T5.S1) (phase 2)
+
+The new conformance tests (every adapter declaring sessions answers {sessions: []} rc=0 on an empty home and on the ADAPTER_HOME_LAYOUT present-but-empty home; opencode/copilot do not declare sessions; at least claude+codex do) passed first time against the already-implemented adapters, so per the step's own instruction I broke adapters/claude deliberately (replaced its print(json.dumps(...)) call with a no-op pass) and reran: rc=1, 2 errors (both new empty-home/empty-store tests, adapter='claude', each because sessions printed nothing at all rather than a JSON object). Restored via git checkout -- adapters/claude (file was otherwise already committed clean); reran: rc=0, 28/28.
+
+<!-- fr:journal kind=discovery scope=plan id=4d5bd3c67a90 created=2026-09-14T03:42:46 phase=2 -->
+### 4d5bd3c67a90 · discovery · no-refactor-because: P2.T5 (quality-gate pass, T5.S3) (phase 2)
+
+Re-read docs/adapters.md's sessions/Claude Code/Codex sections top to bottom against both adapters' actual code (evidence shapes, dedup rule, filter list, timeout, Bounded/Tolerant/read-only rules, checklist item 7) -- found no drift, so no doc edit was needed. All gates green: bash tests/run.sh 32/32 rc=0; uv run --group dev pytest 311 passed rc=0; ruff check . rc=0; ruff format --check . rc=0 (42 files); shellcheck -s bash -x herdr-setup lib/*.sh tests/*.sh rc=0; fr acceptance check rc=0 (13 rows: 8 ci, 1 skipped, 4 not-implemented -- adapter-sessions-query's notes updated to name what phase 2 verified, status correctly left not-implemented pending phase 4's runner-side 'reported as unsupported' half); reports regenerated via fr acceptance report --deterministic.
