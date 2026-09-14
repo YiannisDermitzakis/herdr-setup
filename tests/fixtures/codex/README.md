@@ -18,7 +18,7 @@ too.
 `session-meta-subthread.json` and `session-meta-no-git.json` were captured
 2026-09-13, the same way, from two further real rollouts on this machine
 (`originator: Codex Desktop`, `cli_version: 0.142.5`): the design doc's
-`sessions` query (docs/superpowers/specs/2026-09-13-session-audit-design.md)
+`sessions` query (docs/superpowers/implemented/specs/2026-09-13-session-audit-design.md)
 needs a first line with `payload.parent_thread_id` set (a subagent/guardian
 thread, skipped by that rule) and a first line with no `payload.git` block at
 all (no branches to report), and neither shape is `session-meta.json`'s own.

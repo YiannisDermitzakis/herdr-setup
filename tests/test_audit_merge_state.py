@@ -5,7 +5,7 @@
 # ///
 """Merge state (lib/audit.py resolve_branches), real repositories plus the fake gh.
 
-docs/superpowers/specs/2026-09-13-session-audit-design.md, "Merge state" is
+docs/superpowers/implemented/specs/2026-09-13-session-audit-design.md, "Merge state" is
 the table, first match wins:
 
     merged     a MERGED pull request whose head is the branch and whose head

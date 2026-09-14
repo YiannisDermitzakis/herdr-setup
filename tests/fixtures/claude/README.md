@@ -12,7 +12,7 @@ two agree with each other, not that either agrees with the real thing.
   See its own section below.
 - `transcript.jsonl` -- line shapes out of the TRANSCRIPT store,
   `<config>/projects/*/*.jsonl`. This is what the NEW, read-only `sessions`
-  query (docs/superpowers/specs/2026-09-13-session-audit-design.md) reads;
+  query (docs/superpowers/implemented/specs/2026-09-13-session-audit-design.md) reads;
   `feed`'s adapter never touches this store. See its own section further
   below.
 

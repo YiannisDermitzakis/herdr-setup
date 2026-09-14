@@ -407,7 +407,7 @@ rows:
       work on, the closed sessions that left unmerged branches, and the open PRs across
       the configured GitHub owners that match no session branch, and it writes nothing.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-13-session-audit-design.md
     levels:
       unit:
       - herdr-setup:tests/test_audit_join.py
@@ -435,7 +435,7 @@ rows:
       and no open or merged PR is counted as gone rather than listed; neither is reported
       as work to act on.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-13-session-audit-design.md
     levels:
       unit:
       - herdr-setup:tests/test_audit_merge_state.py
@@ -459,7 +459,7 @@ rows:
       report incomplete and exits 2, so a source it could not read never becomes an
       empty section.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-13-session-audit-design.md
     levels:
       unit:
       - herdr-setup:tests/test_audit_entrypoint.sh
@@ -488,7 +488,7 @@ rows:
       whose examples are executed; Claude Code and Codex answer it from their own session
       history, and agents without it are reported as unsupported.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-13-session-audit-design.md
     levels:
       unit:
       - herdr-setup:tests/test_feed_sessions.py
@@ -512,7 +512,7 @@ rows:
       creates that directory when missing, warns when it is not on PATH, and refuses
       with exit 4 to replace any other file or link.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-13-session-audit-design.md
     levels:
       unit:
       - herdr-setup:tests/test_install.sh
