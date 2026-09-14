@@ -290,7 +290,8 @@ Rules:
   - anything starting with `-`;
   - anything git's ref-name rules reject: whitespace or control characters,
     any of `~^:?*[\`, `..`, `@{`, `//`, a leading or trailing `/`, a trailing
-    `.`, a trailing `.lock`, or a component starting with `.`;
+    `.`, a component ending in `.lock`, a component starting with `.`, or the
+    single character `@`;
   - template text: anything containing `<>{}|;&()'"` or a backquote.
 
   The runner applies the same filter again (`lib/feed.py`'s `branch_name_ok`),
@@ -318,26 +319,42 @@ Rules:
   the sessions that did start on a branch.
 - **Evidence `command`.** Every `tool_use` block named `Bash`, from its
   `input.command`.
-  - **Parsing.** Each line is tokenised with `shlex` in POSIX mode with
-    punctuation characters, then split into segments at `&&`, `||`, `;` and
-    `|`. A line `shlex` cannot parse falls back to whitespace splitting.
-  - **Directory.** `cd <dir>` sets `dir` for the segments after it in the
-    same command, and `git -C <dir>` sets it for its own segment. A relative
-    path is resolved against the line's `cwd`, and `~` against `$HOME`, as
-    text only.
+  - **Parsing.** Backslash-newline continuations are joined first; the
+    command is then split into physical lines, since `shlex` treats a bare
+    newline as ordinary whitespace and would otherwise fuse two independent
+    lines into one nonsensical segment. Each physical line is tokenised with
+    `shlex` in POSIX mode with punctuation characters, then split into
+    segments at `&&`, `||`, `;`, `|`, `(` and `)` -- the last two so a
+    subshell's command (`(git checkout -b x)`) is read the same as a bare
+    one. A line `shlex` cannot parse falls back to whitespace splitting.
+  - **Directory.** `cd <dir>` sets the CURRENT directory for the segments
+    after it, carried across physical lines within the same command; `git -C
+    <dir>` sets it for its own segment only. A relative path -- for `cd`,
+    `-C`, `--repo`, or a `worktree add` path -- resolves against the CURRENT
+    directory (the latest `cd` already seen in this command, else the
+    line's own `cwd`), and `~` resolves against `$HOME`, as text only.
+    `cd -` and a bare `cd` leave the current directory unknown rather than
+    inventing a path, falling back to the line's own `cwd`.
   - **Shapes read:**
     - `fr isolation up|attach ... --branch <b>` (or `--branch=<b>`), with
       `--repo <path>` as `dir` when present;
-    - `git checkout|switch -b|-c|-B <b>`;
-    - `git worktree add <path> ... -b|-B <b>`, flags in any order, with
+    - `git checkout|switch -b|-c|-B <b>`, with other flags before it
+      skipped, and a `-c <k>=<v>` or `-C <dir>` global option before the
+      subcommand skipped (a `-C` sets `dir`);
+    - `git worktree add <path> ... -b|-B <b>`, flags -- including
+      `--reason <string>`, whose value is skipped too -- in any order, with
       `<path>` as `dir`;
-    - `git push ... -u|--set-upstream <remote> <refspec>`: the source side of
-      the refspec, minus a leading `+`;
+    - `git push ... -u|--set-upstream <remote> <refspec>`, with other option
+      tokens (and the value of one that takes one) skipped before
+      `<remote>`/`<refspec>`: the source side of the refspec, minus a
+      leading `+` and a leading `refs/heads/`;
     - `gh pr create ... --head|-H <b>`, minus an `owner:` prefix.
 - **Evidence `worktree-path`.** An fr worktree path,
-  `.../.cache/fr/worktrees/<repo>/<slug>`. The branch is the slug with `__`
-  turned back into `/`, and `dir` is the worktree path up to and including
-  the slug.
+  `.../.cache/fr/worktrees/<repo>/<slug>`, or the same shape under `~/`
+  (expanded against `$HOME`). The branch is the slug with `__` turned back
+  into `/`, and `dir` is the worktree path up to and including the slug; a
+  slug immediately followed by `;`, `&`, `|`, `(` or `)` does not swallow it
+  into the branch name.
   - **Where it is read.** Only in `cwd` fields and in Bash command text,
     never in tool output. `fr isolation status` output lists every worktree
     on the host and would attribute all of them to whichever session ran it.

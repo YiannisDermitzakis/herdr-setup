@@ -185,9 +185,16 @@ def branch_name_ok(name: str) -> bool:
         return False
     if name.startswith("/") or name.endswith("/"):
         return False
-    if name.endswith(".") or name.endswith(".lock"):
+    if name.endswith("."):
+        return False
+    # git's ref rules reject ".lock" ending any SLASH-SEPARATED COMPONENT,
+    # not just the whole name.
+    if any(part.endswith(".lock") for part in name.split("/")):
         return False
     if any(part.startswith(".") for part in name.split("/")):
+        return False
+    # "@" alone is git's shorthand for the current branch.
+    if name == "@":
         return False
     return not any(c in _TEMPLATE_CHARS for c in name)
 

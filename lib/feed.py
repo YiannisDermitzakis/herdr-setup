@@ -601,9 +601,11 @@ def branch_name_ok(name: str) -> bool:
     Every adapter that reports `command` or `worktree-path` evidence keeps
     its OWN copy too (adapters never import lib/feed.py), and the runner
     re-applies this one regardless -- an adapter that forgets, or a
-    compromised one, cannot inject noise past it. tests/test_adapter_claude.py
-    and this module's own tests both run the shared name list through their
-    own copy, so the two cannot silently drift apart.
+    compromised one, cannot inject noise past it.
+    tests/test_adapter_claude_sessions.py and tests/test_adapter_codex_sessions.py
+    run the shared name list through their own adapter's copy, and this
+    module's own tests/test_feed_sessions.py runs it through this one, so
+    the three cannot silently drift apart.
     """
     if not isinstance(name, str) or not name:
         return False
@@ -623,9 +625,19 @@ def branch_name_ok(name: str) -> bool:
         return False
     if name.startswith("/") or name.endswith("/"):
         return False
-    if name.endswith(".") or name.endswith(".lock"):
+    if name.endswith("."):
+        return False
+    # git's ref rules reject ".lock" ending any SLASH-SEPARATED COMPONENT,
+    # not just the whole name -- "a.lock/b" is invalid even though "a.lock"
+    # is not the final component.
+    if any(part.endswith(".lock") for part in name.split("/")):
         return False
     if any(part.startswith(".") for part in name.split("/")):
+        return False
+    # The single character "@" is git's shorthand for the current branch
+    # (like `@{upstream}`), rejected on its own even though it contains none
+    # of the other banned characters or substrings.
+    if name == "@":
         return False
     return not any(c in _TEMPLATE_CHARS for c in name)
 

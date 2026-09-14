@@ -449,6 +449,8 @@ UNREAL_BRANCH_NAMES = (
     "a.",
     "a.lock",
     "a/.b",
+    "a.lock/b",
+    "@",
     "<branch>",
     "{branch}",
     "a|b",
