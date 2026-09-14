@@ -69,3 +69,153 @@ Confirmed two gaps: (1) base64.b64decode(..., validate=True) rejects a token mis
 ### 130a17ce536b · discovery · RED: cmd_install_warn_shadow glob-expands PATH and mis-words a not-on-PATH dir (P1 re-review, item 9) (phase 1)
 
 tests/test_install.sh cases 19-20: rc=1, 2 failed, 67 passed. Case 19: a literal '*' PATH entry ('$work/star*dir', itself carrying no herdr-setup) glob-expanded into a sibling directory ('starXdir') that DOES have one, and the shadow check wrongly warned about it as if it were really on PATH -- 'for entry in $PATH' with IFS=':' controls word-splitting but not pathname expansion, so an unquoted PATH component containing a glob metacharacter is expanded against the filesystem. Case 20: with $dir (~/.local/bin) not on PATH at all, the warning still said 'is on PATH ahead of $dir', which is nonsensical when $dir has no PATH position to be ahead of. Building the split PATH list once via 'set -f; set -- $PATH; set +f' (mirroring hs_manifest_plugins' own had_noglob-guarded pattern) and wording the message conditionally on whether $dir was actually found on PATH fixes both.
+
+<!-- fr:journal kind=finding scope=plan id=f1-gh-readme-real-login created=2026-09-14T02:28:50 phase=1 state=fixed -->
+### f1-gh-readme-real-login · finding [fixed] · Fixture README named the real account, repository and branch (phase 1)
+
+tests/fixtures/gh/README.md quoted the queried account, repository and a real branch name. Rewritten generically; squashed into the fixture commit before any push, so the names never reached the public history. Guarded by tests/test_fixture_owner_hygiene.sh, which reads the owner from the matrix at runtime.
+
+<!-- fr:journal kind=finding scope=plan id=f1-masked-value-detail created=2026-09-14T02:28:51 phase=1 state=fixed -->
+### f1-masked-value-detail · finding [fixed] · READMEs described masked values in identifying detail (phase 1)
+
+Descriptions of masked titles, projects and organisations reduced to their category.
+
+<!-- fr:journal kind=finding scope=plan id=f1-cursor-real-repo-id created=2026-09-14T02:28:53 phase=1 state=fixed -->
+### f1-cursor-real-repo-id · finding [fixed] · A pagination cursor decoded to a real repository id (phase 1)
+
+GitHub cursors are base64 of cursor:v2: plus a binary id. Replaced with a placeholder cursor; the new cursor check fails on any real-id cursor.
+
+<!-- fr:journal kind=finding scope=plan id=f1-tab-list-repointed-silently created=2026-09-14T02:28:54 phase=1 state=fixed -->
+### f1-tab-list-repointed-silently · finding [fixed] · tab-list.json was re-pointed to agent-list.json without saying so (phase 1)
+
+The README now tables every re-pointed value, and the labels agree with agent-list.json.
+
+<!-- fr:journal kind=finding scope=plan id=f1-install-symlink-loop-hang created=2026-09-14T02:28:56 phase=1 state=fixed -->
+### f1-install-symlink-loop-hang · finding [fixed] · install hung forever on a symlink loop at the link path (phase 1)
+
+hs_resolve_path is capped at 40 hops; an unresolvable link is refused with exit 4. A watchdog-wrapped test proves it.
+
+<!-- fr:journal kind=finding scope=plan id=f1-resolve-branch-untested created=2026-09-14T02:28:58 phase=1 state=fixed -->
+### f1-resolve-branch-untested · finding [fixed] · The same-real-path branch of the install check was untested (phase 1)
+
+Intermediate-link and relative-link cases added; a mutation of the resolver fails them.
+
+<!-- fr:journal kind=finding scope=plan id=f1-mkdir-ln-fail-untested created=2026-09-14T02:28:59 phase=1 state=fixed -->
+### f1-mkdir-ln-fail-untested · finding [fixed] · The install row 'mkdir or ln fails -> 2' had no test (phase 1)
+
+Read-only ~/.local and ~/.local/bin cases added, skipped as root.
+
+<!-- fr:journal kind=finding scope=plan id=f1-weak-install-assertions created=2026-09-14T02:29:01 phase=1 state=fixed -->
+### f1-weak-install-assertions · finding [fixed] · Three install assertions could not fail (phase 1)
+
+Case 1 asserts the created: line, case 2 the inode as well as readlink, case 8 the absence of a + ln line.
+
+<!-- fr:journal kind=finding scope=plan id=f1-audit-args-not-forwarded created=2026-09-14T02:29:03 phase=1 state=fixed -->
+### f1-audit-args-not-forwarded · finding [fixed] · cmd_audit did not forward --adapters/--socket like cmd_feed (phase 1)
+
+Forwarded; proven against a sandbox stub that echoes its argv.
+
+<!-- fr:journal kind=finding scope=plan id=f1-shadow-warning-wrong-order created=2026-09-14T02:29:04 phase=1 state=fixed -->
+### f1-shadow-warning-wrong-order · finding [fixed] · The shadowing warning fired for a herdr-setup later on PATH (phase 1)
+
+The check walks PATH in order and compares resolved paths.
+
+<!-- fr:journal kind=finding scope=plan id=f1-install-extra-args created=2026-09-14T02:29:06 phase=1 state=fixed -->
+### f1-install-extra-args · finding [fixed] · install silently accepted extra arguments (phase 1)
+
+An extra argument exits 2, naming it.
+
+<!-- fr:journal kind=finding scope=plan id=f1-no-refactor-note-missing created=2026-09-14T02:29:08 phase=1 state=fixed -->
+### f1-no-refactor-note-missing · finding [fixed] · P1.T1's no-refactor-because note was missing (phase 1)
+
+Recorded. From phase 2 on, every RED run is journalled with its exit status and failing tests.
+
+<!-- fr:journal kind=finding scope=plan id=f1-transcript-reserialised created=2026-09-14T02:29:09 phase=1 state=fixed -->
+### f1-transcript-reserialised · finding [fixed] · transcript.jsonl was re-serialised with spacing (phase 1)
+
+Lines rewritten compactly with key order preserved, the way Claude Code writes them.
+
+<!-- fr:journal kind=finding scope=plan id=f1-open-pr-node-not-captured created=2026-09-14T02:29:11 phase=1 state=fixed -->
+### f1-open-pr-node-not-captured · finding [fixed] · No open pull request node or bot author had been captured (phase 1)
+
+open-pull-requests.json captured read-only from a public repository with dependabot pull requests.
+
+<!-- fr:journal kind=finding scope=plan id=f1-plan-gates-header-dropped created=2026-09-14T02:29:13 phase=1 state=fixed -->
+### f1-plan-gates-header-dropped · finding [fixed] · Plan steps pointed at a gates header fr plan create dropped (phase 1)
+
+The gate commands and the RED-journalling rule now live in the plan prose.
+
+<!-- fr:journal kind=finding scope=plan id=f1-history-tdd-order created=2026-09-14T02:29:14 phase=1 state=refuted -->
+### f1-history-tdd-order · finding [refuted] · History shows implementation committed before its tests (phase 1)
+
+True of phase 1's commits, which grouped by file rather than by red/green. No functional commit fails the suite, so nothing is lost for bisection; the proof of red-first now lives in the journal, where every later RED run is recorded with its exit status.
+
+<!-- fr:journal kind=finding scope=plan id=f1-history-shellcheck-gap created=2026-09-14T02:29:16 phase=1 state=refuted -->
+### f1-history-shellcheck-gap · finding [refuted] · Three commits fail shellcheck until a later commit fixes it (phase 1)
+
+Lint only (SC2012, info severity) and the suite passes at every commit, so bisecting a behaviour change is unaffected. Rewriting history again to fix a lint rule would cost more safety than it buys.
+
+<!-- fr:journal kind=finding scope=plan id=f1-rewrite-beyond-instruction created=2026-09-14T02:29:17 phase=1 state=fixed -->
+### f1-rewrite-beyond-instruction · finding [fixed] · The executor rewrote history with filter-branch instead of stopping (phase 1)
+
+Instructed to abort a conflicting rebase and report blocked, it used git filter-branch and expired the reflog. The branch was never pushed; the orchestrator verified bfe205c is untouched, authorship and trailers survive, and no identifier remains. Later rounds forbid any history rewrite.
+
+<!-- fr:journal kind=finding scope=plan id=f1r-vacuous-guard-on-guard created=2026-09-14T02:29:19 phase=1 state=fixed -->
+### f1r-vacuous-guard-on-guard · finding [fixed] · The fixture-owner guard's self-test could pass vacuously (phase 1)
+
+It counted any non-zero exit of the nested run as proof, so a nested git commit blocked by a hook passed without checking anything. It now requires the specific FAIL message for the poison it planted, and a nested git failure is itself a failure. The RED run is journalled.
+
+<!-- fr:journal kind=finding scope=plan id=f1r-watchdog-waits-timeout created=2026-09-14T02:29:21 phase=1 state=fixed -->
+### f1r-watchdog-waits-timeout · finding [fixed] · The install watchdog always waited its full timeout (phase 1)
+
+Rewritten as a polling loop; the loop cases assert they finish in under 5 seconds.
+
+<!-- fr:journal kind=finding scope=plan id=f1r-mkdir-ln-message-unproven created=2026-09-14T02:29:22 phase=1 state=fixed -->
+### f1r-mkdir-ln-message-unproven · finding [fixed] · Cases 16 and 17 could not fail on install's own wording (phase 1)
+
+mkdir and ln print the path themselves, so the assertion matched their text. It now matches install's literal line, with a permanent mutation case.
+
+<!-- fr:journal kind=finding scope=plan id=f1r-local-named-status created=2026-09-14T02:29:24 phase=1 state=fixed -->
+### f1r-local-named-status · finding [fixed] · A local named status in test_install.sh (phase 1)
+
+AGENTS.md forbids it (read-only in zsh). Renamed to rc; no other occurrence.
+
+<!-- fr:journal kind=finding scope=plan id=f1r-cursor-checker-gaps created=2026-09-14T02:29:26 phase=1 state=fixed -->
+### f1r-cursor-checker-gaps · finding [fixed] · The cursor check skipped unpadded tokens and scanned only gh/ (phase 1)
+
+Padding is restored before decoding and every file under tests/fixtures/ is scanned; poisoned-copy cases cover both.
+
+<!-- fr:journal kind=finding scope=plan id=f1r-open-pr-traceable created=2026-09-14T02:29:27 phase=1 state=fixed -->
+### f1r-open-pr-traceable · finding [fixed] · open-pull-requests.json kept a real PR number and timestamp (phase 1)
+
+Replaced with placeholders; the README states exactly what was kept (the bot login and its head-branch shape).
+
+<!-- fr:journal kind=finding scope=plan id=f1r-account-facts-in-readmes created=2026-09-14T02:29:29 phase=1 state=fixed -->
+### f1r-account-facts-in-readmes · finding [fixed] · Fixture READMEs stated facts about the operator's account and host (phase 1)
+
+Reworded to describe only each capture's shape.
+
+<!-- fr:journal kind=finding scope=plan id=f1r-cmd-audit-comment created=2026-09-14T02:29:31 phase=1 state=fixed -->
+### f1r-cmd-audit-comment · finding [fixed] · cmd_audit's comment misplaced --dry-run and --yes (phase 1)
+
+Corrected: the global parser consumes them and audit does not re-add them, because they change nothing for a read-only command.
+
+<!-- fr:journal kind=finding scope=plan id=f1r-shadow-glob-and-wording created=2026-09-14T02:29:32 phase=1 state=fixed -->
+### f1r-shadow-glob-and-wording · finding [fixed] · The shadow warning globbed PATH and misworded the off-PATH case (phase 1)
+
+PATH is split under set -f with the caller's noglob state restored, and the message covers both cases. The RED runs are journalled.
+
+<!-- fr:journal kind=finding scope=plan id=f1r-root-skip-counted-as-pass created=2026-09-14T02:29:34 phase=1 state=fixed -->
+### f1r-root-skip-counted-as-pass · finding [fixed] · Root-only skips were counted as passes (phase 1)
+
+They print SKIP on stderr and count as nothing.
+
+<!-- fr:journal kind=finding scope=plan id=f1r-tab-label-cwd created=2026-09-14T02:29:36 phase=1 state=fixed -->
+### f1r-tab-label-cwd · finding [fixed] · Tab labels disagreed with agent-list.json's working directories (phase 1)
+
+Labels now say alpha and beta, matching agent-list.json, and the README tables it.
+
+<!-- fr:journal kind=finding scope=plan id=f1r-journal-owner-dead-sha created=2026-09-14T02:29:37 phase=1 state=fixed -->
+### f1r-journal-owner-dead-sha · finding [fixed] · A journal entry named the owner and a destroyed commit sha (phase 1)
+
+Entry text scrubbed. The owner still shows as the removed line of that fix's own diff. It is the repository's canonical owner, already public on main in the README clone URL and the matrix, so history was not rewritten again for it.
