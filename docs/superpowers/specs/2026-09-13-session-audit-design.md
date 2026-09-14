@@ -155,10 +155,15 @@ not listed: 12 branches gone, 2 unresolved, 4 bot PRs hidden.
   - `session not found in history (outside --since, or SDK-driven)`;
   - `no session history (unsupported)`, when the agent's adapter has no
     `sessions` query;
+  - `session history unavailable (adapter failed)`, when the agent's adapter
+    declared `sessions` but could not answer this run (the report is then
+    incomplete);
   - `no adapter`, when no adapter declares that agent.
 
-  Every state is shown except `gone`, which is counted. `TAB` is the tab label
-  from `herdr tab list`. Section 1 is informational.
+  Every state is shown except `gone`, which is counted. A pane whose every
+  branch is `gone` keeps one row, with the state `only gone branches
+  (counted)`, so no pane Herdr lists is missing. `TAB` is the tab label from
+  `herdr tab list`. Section 1 is informational.
 - **Section 2** has one row per (repository, branch) in state `unmerged` or
   `open-pr`. The session is the newest one that touched the branch, and `+N`
   counts older ones. A branch any open pane's session also touched is excluded,
@@ -177,7 +182,8 @@ not listed: 12 branches gone, 2 unresolved, 4 bot PRs hidden.
 - A run that did not read every source ends with `incomplete: <reasons>`.
 
 Session ids are shortened to 8 characters in text. JSON carries them whole.
-Warnings and errors go to stderr, the report to stdout.
+Every heading is always printed; a section with no rows prints `(none)` under
+it. Warnings and errors go to stderr, the report to stdout.
 
 #### JSON output
 
@@ -190,7 +196,7 @@ Warnings and errors go to stderr, the report to stdout.
             "session_id": "...", "note": null,
             "branches": [{"repo": "example-org/example-repo", "name": "feat/x",
                           "state": "open-pr", "pr": {"number": 12, "draft": true, "url": "..."},
-                          "evidence": ["command", "worktree-path"]}]}],
+                          "evidence": ["command", "worktree-path"], "reason": null}]}],
   "closed_unmerged": [{"repo": "...", "name": "...", "state": "unmerged", "pr": null,
                        "session": {"agent": "claude", "id": "...", "cwd": "...",
                                    "last_active": "...", "title": "..."},
@@ -203,13 +209,16 @@ Warnings and errors go to stderr, the report to stdout.
 }
 ```
 
+A branch's `reason` is null except for an `unresolved` branch, where it says
+why ("counted, with the reason in JSON", under Resolving a branch).
+
 #### Exit codes
 
 | Code | Meaning |
 |---|---|
 | 0 | Sections 2 and 3 are empty: nothing to act on |
 | 1 | Section 2 or section 3 has at least one row |
-| 2 | Error, or an incomplete report. An incomplete report is printed and still exits 2. |
+| 2 | Error, or an incomplete report. An incomplete report is printed and still exits 2. An error the runner did not anticipate is 2 too, with its traceback on stderr: Python's own exit status for it, 1, would read as findings. |
 | 3 | Preflight refusal |
 
 2 takes precedence over 1. A report missing a source can overstate section 3,
@@ -416,6 +425,9 @@ implementation.
 2. **Session history.** Every usable adapter declaring `sessions: true` is
    asked once. A failing adapter is warned about by name, and its agent's
    sessions are missing from this run. The report is then marked incomplete.
+   An adapter whose `probe` fails is warned about by name the same way and
+   also marks the report incomplete: nothing says whether it would have
+   declared `sessions`, and its panes would otherwise read `no adapter`.
 3. **Pane directories.** A pane whose own `cwd` is an fr worktree path gets that
    branch, by the same `worktree-path` rule. This is how an unsupported agent's
    pane still shows what it works on.

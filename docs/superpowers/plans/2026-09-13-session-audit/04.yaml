@@ -145,28 +145,28 @@ state:
       ticked_at: '2026-09-14T11:11:53+00:00'
       note: null
     P4.T2.S2:
-      state: ' '
-      ticked_at: null
+      state: x
+      ticked_at: '2026-09-14T11:22:57+00:00'
       note: null
     P4.T2.S3:
-      state: ' '
-      ticked_at: null
+      state: x
+      ticked_at: '2026-09-14T11:22:59+00:00'
       note: null
     P4.T3.S1:
-      state: ' '
-      ticked_at: null
+      state: x
+      ticked_at: '2026-09-14T11:29:40+00:00'
       note: null
     P4.T3.S2:
-      state: ' '
-      ticked_at: null
+      state: x
+      ticked_at: '2026-09-14T11:29:42+00:00'
       note: null
     P4.T3.S3:
-      state: ' '
-      ticked_at: null
+      state: x
+      ticked_at: '2026-09-14T11:29:44+00:00'
       note: null
     P4.T4.S1:
-      state: ' '
-      ticked_at: null
+      state: x
+      ticked_at: '2026-09-14T11:30:18+00:00'
       note: null
     P4.T5.S1:
       state: ' '
