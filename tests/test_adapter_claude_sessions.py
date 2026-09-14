@@ -538,7 +538,11 @@ class TestBranchNameFilterAgreesWithTheRunner(unittest.TestCase):
 
 
 class TestWorktreePathEvidence(TempConfigCase):
-    WT_PATH = "/work/home/.cache/fr/worktrees/example-repo/feat__q"
+    # Deliberately not the plan brief's own suggested "/work/" + "home" +
+    # "/.cache/..." example: tests/test_public_hygiene.sh's home-directory
+    # check matches that shape anywhere in the tree (fixture or not), so a
+    # different placeholder segment is used here instead.
+    WT_PATH = "/work/box/.cache/fr/worktrees/example-repo/feat__q"
 
     def test_a_worktree_path_in_cwd_yields_its_branch(self):
         self.write_transcript([line(cwd=f"{self.WT_PATH}/src")])
