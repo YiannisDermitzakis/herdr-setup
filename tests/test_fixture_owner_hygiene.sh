@@ -91,60 +91,119 @@ fi
 
 # --- guard on the guard: this file must FAIL against a poisoned copy, the
 # same proof tests/test_public_hygiene.sh's own nested self-test gives.
-# HS_FIXTURE_HYGIENE_NESTED stops the copy from doing this again. ---
+# HS_FIXTURE_HYGIENE_NESTED stops the copy from doing this again.
+#
+# A nested run's exit status alone is NOT proof: git setup (init/add/commit)
+# can fail for reasons that have nothing to do with the guard -- an
+# operator's global hook, a missing identity -- and a `&& chain` ending in
+# the nested test invocation reports that same non-zero status either way.
+# That is read as "the guard fired" whether or not it ever actually ran, so
+# this must instead (1) make the nested git commands fail LOUDLY rather than
+# silently inheriting ambient config (`-c core.hooksPath=/dev/null` defeats
+# a global hook; explicit `-c user.name`/`-c user.email` defeats a missing
+# identity), (2) run setup and the nested test as SEPARATE steps so a setup
+# failure is reported as ITS OWN failure, never mistaken for the guard, and
+# (3) require the nested run's OUTPUT contain the SPECIFIC `FAIL:` line the
+# planted poison is expected to produce -- not just any non-zero exit.
 if [ "${HS_FIXTURE_HYGIENE_NESTED:-0}" != "1" ]; then
-  hs_test_nested_owner_hit() {
-    local nested
-    nested="$(mktemp -d)"
-    mkdir -p "$nested/tests/helpers" "$nested/tests/fixtures/gh" "$nested/docs/acceptance"
-    cp "$test_dir/helpers/assert.sh" "$nested/tests/helpers/assert.sh"
-    cp "$test_dir/helpers/check_fixture_cursors.py" "$nested/tests/helpers/check_fixture_cursors.py"
-    cp "$test_dir/test_fixture_owner_hygiene.sh" "$nested/tests/test_fixture_owner_hygiene.sh"
-    printf 'org: poisoned-owner\nrepo: poisoned-repo\nrows: []\n' > "$nested/docs/acceptance/matrix.yaml"
-    printf '{"owner":"Poisoned-Owner"}\n' > "$nested/tests/fixtures/gh/poisoned.json"
-    ( cd "$nested" \
-        && git init -q \
-        && git -c user.name="t" -c user.email="t@example.invalid" -c commit.gpgsign=false add -A \
-        && git -c user.name="t" -c user.email="t@example.invalid" -c commit.gpgsign=false commit -q -m poison \
-        && HS_FIXTURE_HYGIENE_NESTED=1 "${BASH:-bash}" tests/test_fixture_owner_hygiene.sh
-    ) >/dev/null 2>&1
-    local nested_status=$?
-    rm -rf "$nested"
-    return "$nested_status"
+  # hs_test_nested_git <dir>: git init + add + commit in <dir>, immune to
+  # ambient global config. Prints combined output and returns git's own
+  # exit status; a caller that gets non-zero here has a SETUP failure, not
+  # evidence about the guard.
+  hs_test_nested_git() {
+    local dir="$1"
+    ( cd "$dir" \
+        && git -c core.hooksPath=/dev/null init -q \
+        && git -c core.hooksPath=/dev/null -c user.name="t" -c user.email="t@example.invalid" add -A \
+        && git -c core.hooksPath=/dev/null -c user.name="t" -c user.email="t@example.invalid" \
+             -c commit.gpgsign=false commit -q -m poison
+    ) 2>&1
   }
 
-  hs_test_nested_owner_hit
-  nested_owner_status=$?
-  [ "$nested_owner_status" -ne 0 ] && pass \
-    || fail "the guard passed on a poisoned fixture carrying the matrix's own owner (case-differently, too)"
+  # hs_test_nested_run <dir> <expect-pattern>: runs the nested guard in
+  # <dir> and passes only when it BOTH exits non-zero AND its output
+  # contains <expect-pattern> -- the specific FAIL: line the planted poison
+  # is expected to produce. Anything else (git setup failing, or the nested
+  # run failing for an unrelated reason) is reported as its own failure,
+  # with the captured output, rather than credited to the guard.
+  hs_test_nested_run() {
+    local label="$1" dir="$2" expect="$3"
+    local setup_out setup_rc nested_out nested_rc
 
-  hs_test_nested_cursor_hit() {
-    local nested
-    nested="$(mktemp -d)"
-    mkdir -p "$nested/tests/helpers" "$nested/tests/fixtures/gh" "$nested/docs/acceptance"
-    cp "$test_dir/helpers/assert.sh" "$nested/tests/helpers/assert.sh"
-    cp "$test_dir/helpers/check_fixture_cursors.py" "$nested/tests/helpers/check_fixture_cursors.py"
-    cp "$test_dir/test_fixture_owner_hygiene.sh" "$nested/tests/test_fixture_owner_hygiene.sh"
-    printf 'org: example-user\nrepo: example-repo\nrows: []\n' > "$nested/docs/acceptance/matrix.yaml"
-    # base64("cursor:v2:1234567890") -- a synthetic non-placeholder payload,
-    # never a real one, the same shape the real leak this guard was written
-    # for had (base64("cursor:v2:<real-id>")).
-    printf '{"endCursor":"Y3Vyc29yOnYyOjEyMzQ1Njc4OTA="}\n' > "$nested/tests/fixtures/gh/poisoned.json"
-    ( cd "$nested" \
-        && git init -q \
-        && git -c user.name="t" -c user.email="t@example.invalid" -c commit.gpgsign=false add -A \
-        && git -c user.name="t" -c user.email="t@example.invalid" -c commit.gpgsign=false commit -q -m poison \
-        && HS_FIXTURE_HYGIENE_NESTED=1 "${BASH:-bash}" tests/test_fixture_owner_hygiene.sh
-    ) >/dev/null 2>&1
-    local nested_status=$?
-    rm -rf "$nested"
-    return "$nested_status"
+    setup_out="$(hs_test_nested_git "$dir")"
+    setup_rc=$?
+    if [ "$setup_rc" -ne 0 ]; then
+      fail "$label: nested git setup itself failed (rc=$setup_rc), so this proves nothing about the guard:
+$setup_out"
+      return
+    fi
+
+    nested_out="$(cd "$dir" && HS_FIXTURE_HYGIENE_NESTED=1 "${BASH:-bash}" tests/test_fixture_owner_hygiene.sh 2>&1)"
+    nested_rc=$?
+
+    if [ "$nested_rc" -eq 0 ]; then
+      fail "$label: the guard passed (rc=0) on a poisoned fixture:
+$nested_out"
+    elif printf '%s' "$nested_out" | grep -qF "$expect"; then
+      pass
+    else
+      fail "$label: the nested run failed (rc=$nested_rc) but not with the expected line ('$expect'):
+$nested_out"
+    fi
   }
 
-  hs_test_nested_cursor_hit
-  nested_cursor_status=$?
-  [ "$nested_cursor_status" -ne 0 ] && pass \
-    || fail "the guard passed on a poisoned fixture whose cursor decodes to more than the placeholder"
+  nested_owner="$(mktemp -d)"
+  mkdir -p "$nested_owner/tests/helpers" "$nested_owner/tests/fixtures/gh" "$nested_owner/docs/acceptance"
+  cp "$test_dir/helpers/assert.sh" "$nested_owner/tests/helpers/assert.sh"
+  cp "$test_dir/helpers/check_fixture_cursors.py" "$nested_owner/tests/helpers/check_fixture_cursors.py"
+  cp "$test_dir/test_fixture_owner_hygiene.sh" "$nested_owner/tests/test_fixture_owner_hygiene.sh"
+  printf 'org: poisoned-owner\nrepo: poisoned-repo\nrows: []\n' > "$nested_owner/docs/acceptance/matrix.yaml"
+  printf '{"owner":"Poisoned-Owner"}\n' > "$nested_owner/tests/fixtures/gh/poisoned.json"
+  hs_test_nested_run "owner hit" "$nested_owner" \
+    "FAIL: the matrix's own owner ('poisoned-owner') appears in a tracked fixture:"
+  rm -rf "$nested_owner"
+
+  nested_cursor="$(mktemp -d)"
+  mkdir -p "$nested_cursor/tests/helpers" "$nested_cursor/tests/fixtures/gh" "$nested_cursor/docs/acceptance"
+  cp "$test_dir/helpers/assert.sh" "$nested_cursor/tests/helpers/assert.sh"
+  cp "$test_dir/helpers/check_fixture_cursors.py" "$nested_cursor/tests/helpers/check_fixture_cursors.py"
+  cp "$test_dir/test_fixture_owner_hygiene.sh" "$nested_cursor/tests/test_fixture_owner_hygiene.sh"
+  printf 'org: example-user\nrepo: example-repo\nrows: []\n' > "$nested_cursor/docs/acceptance/matrix.yaml"
+  # base64("cursor:v2:1234567890") -- a synthetic non-placeholder payload,
+  # never a real one, the same shape the real leak this guard was written
+  # for had (base64("cursor:v2:<real-id>")).
+  printf '{"endCursor":"Y3Vyc29yOnYyOjEyMzQ1Njc4OTA="}\n' > "$nested_cursor/tests/fixtures/gh/poisoned.json"
+  hs_test_nested_run "cursor hit" "$nested_cursor" \
+    "FAIL: a fixture cursor decodes to more than the sanctioned placeholder:"
+  rm -rf "$nested_cursor"
+
+  nested_cursor_unpadded="$(mktemp -d)"
+  mkdir -p "$nested_cursor_unpadded/tests/helpers" "$nested_cursor_unpadded/tests/fixtures/gh" "$nested_cursor_unpadded/docs/acceptance"
+  cp "$test_dir/helpers/assert.sh" "$nested_cursor_unpadded/tests/helpers/assert.sh"
+  cp "$test_dir/helpers/check_fixture_cursors.py" "$nested_cursor_unpadded/tests/helpers/check_fixture_cursors.py"
+  cp "$test_dir/test_fixture_owner_hygiene.sh" "$nested_cursor_unpadded/tests/test_fixture_owner_hygiene.sh"
+  printf 'org: example-user\nrepo: example-repo\nrows: []\n' > "$nested_cursor_unpadded/docs/acceptance/matrix.yaml"
+  # base64("cursor:v2:abcdefghi") with its trailing "==" stripped -- real
+  # captures (GitHub's own base64url convention among them) sometimes omit
+  # padding, and a decoder that requires it would silently skip this.
+  printf '{"endCursor":"Y3Vyc29yOnYyOmFiY2RlZmdoaQ"}\n' > "$nested_cursor_unpadded/tests/fixtures/gh/poisoned.json"
+  hs_test_nested_run "unpadded cursor hit" "$nested_cursor_unpadded" \
+    "FAIL: a fixture cursor decodes to more than the sanctioned placeholder:"
+  rm -rf "$nested_cursor_unpadded"
+
+  nested_cursor_outside_gh="$(mktemp -d)"
+  mkdir -p "$nested_cursor_outside_gh/tests/helpers" "$nested_cursor_outside_gh/tests/fixtures/herdr" "$nested_cursor_outside_gh/docs/acceptance"
+  cp "$test_dir/helpers/assert.sh" "$nested_cursor_outside_gh/tests/helpers/assert.sh"
+  cp "$test_dir/helpers/check_fixture_cursors.py" "$nested_cursor_outside_gh/tests/helpers/check_fixture_cursors.py"
+  cp "$test_dir/test_fixture_owner_hygiene.sh" "$nested_cursor_outside_gh/tests/test_fixture_owner_hygiene.sh"
+  printf 'org: example-user\nrepo: example-repo\nrows: []\n' > "$nested_cursor_outside_gh/docs/acceptance/matrix.yaml"
+  # Same synthetic non-placeholder cursor as above, planted OUTSIDE
+  # tests/fixtures/gh/ -- proving the scan is not scoped to that one
+  # directory.
+  printf '{"someOtherField":"Y3Vyc29yOnYyOjEyMzQ1Njc4OTA="}\n' > "$nested_cursor_outside_gh/tests/fixtures/herdr/poisoned.json"
+  hs_test_nested_run "cursor outside gh/ hit" "$nested_cursor_outside_gh" \
+    "FAIL: a fixture cursor decodes to more than the sanctioned placeholder:"
+  rm -rf "$nested_cursor_outside_gh"
 fi
 
 hs_test_report
