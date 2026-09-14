@@ -813,6 +813,24 @@ class TestRun(unittest.TestCase):
         self.assertTrue(keys)
         self.assertEqual(len(keys), len(set(keys)), keys)
 
+    def test_one_pull_request_is_reported_once_whatever_the_case_of_its_repository(self):
+        # GitHub's names compare ignoring case: two owners' copies spelled
+        # example-org/example-repo and EXAMPLE-ORG/EXAMPLE-REPO are one PR.
+        prs = full_world().prs
+        answers = {
+            "example-user": prs,
+            "example-org": [{**pr, "repo": pr["repo"].upper()} for pr in prs],
+        }
+        stages = self.stages([])
+        stages["open_prs"] = lambda login: answers[login]
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.multiple(audit, **stages):
+            audit.main(["--json", "--include-bots"], out=out, err=err, now=lambda: GENERATED)
+        rows = json.loads(out.getvalue())["unmatched_prs"]
+        keys = [(row["repo"].lower(), row["number"]) for row in rows]
+        self.assertTrue(keys)
+        self.assertEqual(len(keys), len(set(keys)), keys)
+
     def test_without_flags_the_defaults_reach_them(self):
         _, out, _, _ = self.run_audit([])
         self.assertEqual(self.received["owners"], [(([],), {})])

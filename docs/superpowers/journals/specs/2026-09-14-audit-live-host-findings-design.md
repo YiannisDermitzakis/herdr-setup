@@ -63,7 +63,7 @@ tests/test_contract.py with the new test_it_states_the_runners_own_sessions_time
 <!-- fr:journal kind=decision scope=spec id=d-ancestry-one-merged-read created=2026-09-14T20:51:07 -->
 ### d-ancestry-one-merged-read · decision · Ancestry is answered with one for-each-ref --merged per repository
 
-The spec names one for-each-ref for refs. Keeping merge-base --is-ancestor per undecided local branch would still make the git process count grow with branches (the RED scenario ran 97 merge-base calls), which the spec's own proof forbids. for-each-ref --format=%(refname) --merged=<default ref> refs/heads lists exactly the branches merge-base --is-ancestor calls contained, once per (main checkout, default ref). A missing or broken branch ref still raises GitError naming the repository, as merge-base did.
+The spec names one for-each-ref for refs. Keeping merge-base --is-ancestor per undecided local branch would still make the git process count grow with branches (the RED scenario ran 97 merge-base calls), which the spec's own proof forbids. for-each-ref --format=%(refname) --merged=<default ref> refs/heads lists the branches merge-base --is-ancestor calls contained, once per (main checkout, default ref). A missing or broken branch ref still raises GitError naming the repository. A tip naming a missing object or a blob does NOT fail through --merged, which skips it silently; merge-base exited 128 on it. So the branches the merged read leaves out have their tips checked with one cat-file --batch-check per checkout, and such a branch raises GitError for that branch only. A readable tip whose parent object is missing is not detected, an accepted limit (corrected in review round 2, see r2-disc-ancestry-decision-corrected).
 
 <!-- fr:journal kind=discovery scope=spec id=disc-broken-ref-still-refused-only-when-asked created=2026-09-14T20:51:27 -->
 ### disc-broken-ref-still-refused-only-when-asked · discovery · One ref read keeps a broken ref an error only for the branch that names it
@@ -104,3 +104,83 @@ tests/test_audit_github.py rc=0 (Ran 30, OK), tests/test_fake_gh.py rc=0 (Ran 30
 ### green-fix4-refactor · discovery · GREEN fix 4; refactor: the scope rule is three helpers, worktree-path reads cwd only
 
 tests/test_adapter_claude_sessions.py rc=0 (Ran 110, OK), TestBranchNameFilterAgreesWithTheRunner included, so the adapter's name-filter copy still agrees with lib/feed.py's. The rule lives in _within, _same_repository_fr_worktree and _in_own_repository; _process_bash_command applies it to every shape and records a cd or git -C target as worktree-path evidence, so extract_worktree_path_evidence no longer scans command text and the shape matchers' return values are unchanged. _resolve_dir now expands a leading $HOME or ${HOME} like ~, matching the prefixes WORKTREE_PATH_RE already accepted; any other variable leaves the directory unknown. Refactor after green: the WORKTREE_PATH_RE comment and docs/adapters.md (Where it is read, Scope, Directory) now state the rule.
+
+<!-- fr:journal kind=discovery scope=spec id=r2-red-home-cwd-credits-fr-worktrees created=2026-09-14T23:02:36 -->
+### r2-red-home-cwd-credits-fr-worktrees · discovery · RED (review Important 1): a home-directory cwd credits fr worktrees beneath it
+
+tests/test_adapter_claude_sessions.py TestEvidenceIsLimitedToTheSessionsOwnRepository against HEAD 5bfd51e: rc=1, Ran 12, failures=4. test_a_home_directory_session_is_credited_with_no_ones_worktrees, extended with branch-creating commands in ~/.cache/fr/worktrees/example-repo/feat__z from cwd HOME, credited feat/z-checkout (and the push and switch): a directory beneath the cwd was admitted before the repository component rule was consulted.
+
+<!-- fr:journal kind=discovery scope=spec id=r2-red-git-corrupt-tip-not-refused created=2026-09-14T23:02:39 -->
+### r2-red-git-corrupt-tip-not-refused · discovery · RED (review Important 2): a corrupt branch tip is read as unmerged
+
+tests/test_audit_git.py TestCorruptBranchTips against HEAD 5bfd51e: rc=1, Ran 2, failures=2. test_a_tip_naming_a_missing_object_raises_for_that_branch_only and test_a_tip_naming_a_blob_raises_for_that_branch_only both got 'GitError not raised': for-each-ref --merged silently leaves such a tip out, where merge-base --is-ancestor exited 128.
+
+<!-- fr:journal kind=discovery scope=spec id=r2-red-generic-components-match created=2026-09-14T23:02:41 -->
+### r2-red-generic-components-match · discovery · RED (review Minor 5): fr path components and a worktree cwd's prefix match as repositories
+
+Same run (rc=1, Ran 12, failures=4). test_a_cwd_inside_an_fr_worktree_belongs_to_that_worktrees_repository credited feat/named-box, feat/named-fr and feat/w beside feat/other, from a cwd inside example-repo's fr worktree. test_a_repository_named_like_an_fr_path_component_is_not_credited credited feat/named-fr and feat/named-work: a repository named fr matched the .cache/fr component of the cwd.
+
+<!-- fr:journal kind=discovery scope=spec id=r2-red-gh-repo-flag-escapes created=2026-09-14T23:02:46 -->
+### r2-red-gh-repo-flag-escapes · discovery · RED (review Minor 7): gh pr create --repo naming another repository still counts
+
+Same run (rc=1, Ran 12, failures=4). test_gh_pr_create_with_a_repo_flag_counts_only_for_its_own_repository credited feat/other-repo (-R example-org/example-repo-2) and feat/other-repo-equals (--repo=example-org/example-repo-2) from cwd /work/example-repo.
+
+<!-- fr:journal kind=discovery scope=spec id=r2-disc-ancestry-decision-corrected created=2026-09-14T23:06:33 -->
+### r2-disc-ancestry-decision-corrected · discovery · Correction: d-ancestry-one-merged-read overstated what --merged refuses
+
+Review round 1 found the decision's claim wrong. It said a missing or broken branch ref still raises GitError as merge-base did, but a tip naming a missing object or a blob is silently left out by for-each-ref --merged, so the branch read as unmerged, where merge-base --is-ancestor exited 128 (reviewer probe probe_ancestry.out, cases missing-object and points-at-blob). fr journal add cannot rewrite an entry with the same id, so the decision's text was corrected in place in the journal file, and this entry records why. The fix: the per-checkout refs read now carries %(objectname), and the branches --merged left out have their tips checked with one cat-file --batch-check per checkout; only a branch whose tip does not peel to a commit raises. A missing PARENT of a readable tip is an accepted, documented limit (git fsck's job).
+
+<!-- fr:journal kind=discovery scope=spec id=r2-disc-archived-spec-left-as-written created=2026-09-14T23:06:35 -->
+### r2-disc-archived-spec-left-as-written · discovery · The archived spec's 120 s is superseded, not edited
+
+Review round 1, Minor 8. docs/superpowers/implemented/specs/2026-09-13-session-audit-design.md still states a 120 s sessions timeout in its Failing rule. It is left as written because an archived spec is the historical record of what was built then; this spec's Change 2 now says the 120 s is superseded by this amendment, and docs/adapters.md and lib/feed.py carry the live 600 s.
+
+<!-- fr:journal kind=discovery scope=spec id=r2-green-corrupt-tip created=2026-09-14T23:08:30 -->
+### r2-green-corrupt-tip · discovery · GREEN (review Important 2): one cat-file batch per checkout refuses a non-commit tip
+
+tests/test_audit_git.py rc=0 (Ran 22, OK: TestCorruptBranchTips both pass, every earlier git-layer test unmodified and green); tests/test_audit_git_calls.py rc=0 (Ran 3, OK); tests/test_audit_merge_state.py rc=0 (Ran 26, OK). The refs read now uses --format=%(refname) %(objectname); GitCache.not_commits feeds <oid>^{commit} for the branches the --merged read left out to ONE git cat-file --batch-check per (main checkout, default ref), and a stdout line that is not '<oid> commit <size>' marks that branch only. cat-file joins READ_ONLY_SUBCOMMANDS (it reports type and size only).
+
+<!-- fr:journal kind=discovery scope=spec id=r2-disc-tests-changed-for-tip-check created=2026-09-14T23:08:34 -->
+### r2-disc-tests-changed-for-tip-check · discovery · Changed tests for the tip check: one format string and one per-work-tree bound
+
+tests/test_audit_merge_state.py test_one_resolution_per_repository_and_branch_however_many_name_it matched the refs read by its exact argv, which now carries %(objectname): the expected line is updated, its counts (one refs read, one --merged read, nothing naming the branch) are unchanged. tests/test_audit_git_calls.py CALLS_PER_TOPLEVEL goes from 5 to 6 for the tip check, still a constant per work tree, and test_one_ref_read_per_repository_names_its_heads_and_its_remote now also asserts exactly one cat-file per checkout, so a per-branch tip check fails it.
+
+<!-- fr:journal kind=discovery scope=spec id=r2-green-scope-rules created=2026-09-14T23:08:37 -->
+### r2-green-scope-rules · discovery · GREEN (review Important 1, Minors 5 and 7): the scope rules in adapters/claude
+
+tests/test_adapter_claude_sessions.py rc=0 (Ran 117, OK). _in_own_repository sends any directory inside an fr worktree through the same-repository rule even when it is beneath the cwd, and admits any other directory beneath the cwd (the decided /work + cd other-repo case, test_a_branch_created_in_a_checkout_beneath_a_non_repository_cwd_still_counts). _session_repositories names the session's repository: a cwd inside an fr worktree belongs to that worktree's repo only, and otherwise fr's .cache/fr/worktrees components and everything below them are left out. gh pr create --repo|-R OWNER/NAME counts only when NAME is the session's repository (_names_own_repository).
+
+<!-- fr:journal kind=discovery scope=spec id=r2-mut-important-1 created=2026-09-14T23:09:30 -->
+### r2-mut-important-1 · discovery · Mutation proof (review Important 1): beneath-cwd admission of fr worktrees
+
+rv/mutate.py on a copy of the fixed tree, mutation r2-i1-fr-worktree-beneath-cwd-admitted (the fr-worktree check in _in_own_repository also admits a directory beneath the cwd, restoring the old rule): TestEvidenceIsLimitedToTheSessionsOwnRepository rc=1, Ran 12, failures=1, test_a_home_directory_session_is_credited_with_no_ones_worktrees. KILLED.
+
+<!-- fr:journal kind=discovery scope=spec id=r2-red-mut-minor-1 created=2026-09-14T23:09:33 -->
+### r2-red-mut-minor-1 · discovery · RED by mutation (review Minor 1): -C reach alone
+
+The guard passed before any code change, so its RED is a mutation. Reviewer mutation m4-reached-C-off (reached(...) for git -C replaced by pass) on the fixed tree: rc=1, Ran 12, failures=1, test_its_own_fr_worktree_reached_only_by_dash_cap_c_counts. KILLED; in review round 1 the same mutation SURVIVED.
+
+<!-- fr:journal kind=discovery scope=spec id=r2-red-mut-minor-2 created=2026-09-14T23:09:35 -->
+### r2-red-mut-minor-2 · discovery · RED by mutation (review Minor 2): exact component match
+
+The guard passed before any code change. Mutation r2-m2-substring (repo checked with 'in own_cwd', a substring match, instead of against _session_repositories): rc=1, Ran 12, failures=3, test_the_repository_must_equal_a_cwd_component_not_be_part_of_one, test_a_cwd_inside_an_fr_worktree_belongs_to_that_worktrees_repository, test_a_repository_named_like_an_fr_path_component_is_not_credited. KILLED.
+
+<!-- fr:journal kind=discovery scope=spec id=r2-red-mut-minor-3 created=2026-09-14T23:09:38 -->
+### r2-red-mut-minor-3 · discovery · RED by mutation (review Minor 3): whole-component HOME expansion
+
+The guard passed before any code change. Reviewer mutation m4-home-loose (raw.startswith(prefix) instead of raw == prefix or raw.startswith(prefix + '/')): rc=1, Ran 12, failures=1, test_only_a_whole_home_variable_is_expanded (cwd is HOME's parent, so a loosely expanded $HOMEX/sub lands beneath it). KILLED; in review round 1 it SURVIVED.
+
+<!-- fr:journal kind=discovery scope=spec id=r2-red-mut-minor-4 created=2026-09-14T23:09:41 -->
+### r2-red-mut-minor-4 · discovery · RED by mutation (review Minor 4): case-insensitive PR dedup
+
+The guard passed before any code change. Reviewer mutation m3-dedup-case (dedup key record['repo'] without .lower()): tests/test_audit_report.py TestRun rc=1, Ran 8, failures=1, test_one_pull_request_is_reported_once_whatever_the_case_of_its_repository. KILLED; in review round 1 the report tests let it survive.
+
+<!-- fr:journal kind=discovery scope=spec id=r2-mut-minors-5-7-important-2 created=2026-09-14T23:09:44 -->
+### r2-mut-minors-5-7-important-2 · discovery · Mutation proofs (review Minors 5 and 7, Important 2)
+
+r2-m5-fr-components-kept (_session_repositories ignores the fr path, fr_path = None): rc=1, Ran 12, failures=2, test_a_cwd_inside_an_fr_worktree_belongs_to_that_worktrees_repository and test_a_repository_named_like_an_fr_path_component_is_not_credited. r2-m7-gh-repo-ignored (the gh --repo check replaced by if False): rc=1, Ran 12, failures=1, test_gh_pr_create_with_a_repo_flag_counts_only_for_its_own_repository. r2-i2-tip-check-off (the not_commits raise replaced by if False): tests/test_audit_git.py TestCorruptBranchTips rc=1, Ran 2, failures=2, both tip tests. All KILLED. Summary in the reviewer scratchpad, rv/mut/r2-summary.txt.
+
+<!-- fr:journal kind=discovery scope=spec id=r2-disc-spec-drift-and-limits created=2026-09-14T23:09:47 -->
+### r2-disc-spec-drift-and-limits · discovery · Spec corrected (review Minors 6 and 8) and one wording kept to the code
+
+Change 1 now states the three per-checkout reads (refs with object names, one --merged, one cat-file batch check), the missing-parent limit, and that each clone is its own checkout read once, not once for all clones. The review asked to say GitHub facts are shared per repository; resolve_branches groups by main checkout, so repo_branches and compare run once per checkout and the report reconciles clones afterwards, and the spec says that instead. Change 2 says the archived 120 s is superseded and left as written. Change 4 names the session's repository, both command rules, gh --repo, the HOME expansion, and two known limits: cd .. from a subdirectory cwd is dropped, and a generic component such as work still matches.
