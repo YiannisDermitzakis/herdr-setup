@@ -717,8 +717,8 @@ cmd_feed() {
 # pull requests -- read-only (design doc, Commands > audit).
 #
 # hs_require_socket runs FIRST and unconditionally, exactly like cmd_feed's
-# own gate and for the same reason: audit needs `herdr agent list` (and,
-# once implemented, `herdr tab list`), and a mismatched or unreachable Herdr
+# own gate and for the same reason: audit needs `herdr agent list` and
+# `herdr tab list`, and a mismatched or unreachable Herdr
 # answers every call with an error object that must not be read as "no
 # panes, nothing to report" -- the design doc's own order-of-work section
 # names this gate as audit's first, unconditional step.

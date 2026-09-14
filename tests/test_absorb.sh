@@ -502,7 +502,11 @@ assert_status "absorb returns 2 when a manifest rename fails" 2 "$status"
   || fail "a failed rename still left a plugins.list behind"
 [ ! -e "$write_sandbox/manifest/config.toml" ] && pass \
   || fail "a failed rename still left a config.toml behind"
-[ -s "$err" ] && fail_check=0 || fail_check=1
+if [ -s "$err" ]; then
+  fail_check=0
+else
+  fail_check=1
+fi
 [ "$fail_check" -eq 0 ] && pass || fail "a failed absorb write was refused silently"
 leftover="$(find "$write_sandbox/manifest" -maxdepth 1 -name '.herdr-setup-absorb.*' 2>/dev/null)"
 [ -z "$leftover" ] && pass || fail "a failed absorb write left its temp file behind: $leftover"

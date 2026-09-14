@@ -132,11 +132,12 @@ $ herdr-setup absorb
 The reverse of `apply`, and the reason this tool is usable day to day:
 change Herdr interactively on any host, `absorb`, commit, `apply` elsewhere.
 Rewrites `manifest/plugins.list` and `manifest/config.toml` straight from the
+host's own `plugins.json` and `config.toml`, touching only the checkout.
 
 A line may name a ref or omit it. `owner/repo v1.2.3` pins a branch or tag.
 `owner/repo` alone means the repository's default branch, which is what Herdr
 installs from when given no `--ref`, and what it records for such a plugin.
-host's own `plugins.json` and `config.toml`, touching only the checkout.
+
 Refuses to run — and writes nothing — when the manifest has uncommitted
 changes, or when it cannot tell whether it does: git failing for any reason
 is treated as dirty, never as clean, and so is a `manifest/` git is ignoring,
@@ -203,16 +204,20 @@ Reports three sections:
 
 1. **open in Herdr**: every agent pane Herdr lists, with the branches its
    session worked on and their state (`open PR #n`, `merged PR #n`,
-   `contained`, `unmerged`, `unresolved`), or why it has none — no adapter for
-   its agent, no session history for that agent (unsupported), no session
-   reported to Herdr, or a session outside the window;
+   `contained`, `unmerged`, `unresolved`), or why it has none: `no adapter`,
+   `no session history (unsupported)`, `session history unavailable (adapter
+   failed)`, `session not reported to Herdr`, `session not found in history`
+   (outside `--since`, or SDK-driven), or `no branch evidence`. A pane whose
+   every branch is gone shows `only gone branches (counted)`;
 2. **closed, with unmerged branches**: branches with work not in the default
-   branch, or with an open pull request, that no open pane's session touched,
-   with the newest session that did and a `+N` count of older ones;
+   branch, or with an open pull request, that no open pane touched, with the
+   newest session that did and a `+N` count of older ones. Clones of one
+   GitHub repository count as that one repository;
 3. **open PRs no session is working on**: open pull requests in your GitHub
    owners' non-archived repositories (the `gh` user and its organisations, or
-   the `--owner` list) whose head branch no session in the window touched.
-   Drafts are labelled; bot pull requests are hidden and counted.
+   the `--owner` list) whose head branch no session in the window, and no open
+   pane's own directory, touched. Drafts are labelled; bot pull requests are
+   hidden and counted.
 
 It reads Herdr's agent and tab lists, the session history of every adapter
 that offers it (Claude Code and Codex today), the local git repositories those
@@ -229,7 +234,8 @@ accepted and change nothing.
 Exit `0` when sections 2 and 3 are empty, `1` when either has a row. Exit `2`
 on an error — `git` or `gh` missing, `gh` not logged in, a `gh` or `git` call
 failing — with one line and no report; and also when the report is incomplete
-because an adapter could not answer, in which case the report is still printed
+because an adapter's probe failed or its session history could not be read,
+in which case the report is still printed
 and ends with an `incomplete:` line. `2` wins over `1`: a report missing a
 source could overstate section 3. Exit `3` under a protocol mismatch or with no
 Herdr server.

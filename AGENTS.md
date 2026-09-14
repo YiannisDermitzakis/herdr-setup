@@ -50,7 +50,8 @@ and what the Python does decides between them. `hs_py` runs `lib/hs.py`, where
 structured work is batched behind subcommands for coherence, not for speed. A
 program that spawns other programs gets a door of its own: `hs_feed` runs
 `lib/feed.py`, which spawns adapters, and `hs_audit` runs `lib/audit.py`, which
-spawns adapters, `git` and `gh`. Nothing reaches the interpreter any other way.
+spawns adapters, `git` and `gh`. The entrypoint reaches the Python in `lib/`
+only through these three doors.
 
 **Development tools are pinned too**: `uv run --group dev pytest`,
 `uv run --group dev ruff check`, and
