@@ -9,7 +9,11 @@ requires-python = ">=3.13"
 dependencies = []
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.9"]
+# shellcheck is pinned EXACTLY: a runner image's shellcheck (0.9.0) and a
+# developer's (0.11.0) gave different verdicts on the same line, so the gate
+# meant different things in two places. shellcheck-py ships the binary as a
+# wheel, so `uv run --group dev shellcheck` is the same everywhere.
+dev = ["pytest>=8", "ruff>=0.9", "shellcheck-py==0.11.0.1"]
 
 [tool.uv]
 package = false
@@ -29,7 +33,11 @@ line-length = 100
 # A future non-Python file under adapters/ -- a README, matching what
 # lib/feed.py's own discover() already ignores -- must not be swept in and
 # handed to ruff as if it were Python, so `.md` is carved back out.
-extend-include = ["adapters/*"]
+#
+# The fake gh in tests/helpers/ is a PEP 723 script with no suffix for the
+# same reason (it is found on PATH by command name), so it is named here too
+# rather than left unlinted.
+extend-include = ["adapters/*", "tests/helpers/fake-gh"]
 extend-exclude = ["adapters/*.md"]
 
 [tool.ruff.lint]

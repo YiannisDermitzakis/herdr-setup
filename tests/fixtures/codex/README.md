@@ -6,14 +6,42 @@ of a rollout file, so that is exactly what this fixture holds.
 
 ## Provenance
 
-Captured 2026-09-08 by reading the first line of a real
-`~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-<timestamp>-<id>.jsonl` file on
-this machine, produced by Codex CLI 0.142.5 (`originator: codex-tui`). The
+`session-meta.json` was captured 2026-09-08 by reading the first line of a
+real `~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-<timestamp>-<id>.jsonl` file
+on this machine, produced by Codex CLI 0.142.5 (`originator: codex-tui`). The
 file's later lines (the actual turn-by-turn transcript) are not captured,
 because `adapters/codex` never reads past the first line -- reading further
 is the resource-cost trap the phase's own bound on scan depth (newest 30 day
 directories) exists to avoid, and it applies to a single file's own length
 too.
+
+`session-meta-subthread.json` and `session-meta-no-git.json` were captured
+2026-09-13, the same way, from two further real rollouts on this machine
+(`originator: Codex Desktop`, `cli_version: 0.142.5`): the design doc's
+`sessions` query (docs/superpowers/specs/2026-09-13-session-audit-design.md)
+needs a first line with `payload.parent_thread_id` set (a subagent/guardian
+thread, skipped by that rule) and a first line with no `payload.git` block at
+all (no branches to report), and neither shape is `session-meta.json`'s own.
+
+| File | What it captures |
+|---|---|
+| `session-meta.json` | An ordinary interactive thread, with a `git` block. |
+| `session-meta-subthread.json` | `payload.parent_thread_id` set -- a guardian sub-thread of another thread, `thread_source: "subagent"`. No `git` block either, in the real capture; not the point of this file, so left as captured. |
+| `session-meta-no-git.json` | An ordinary interactive thread (`thread_source: "user"`) with no `payload.git` key at all -- a rollout Codex wrote outside any git working tree. |
+
+### What was masked, for the two 2026-09-13 captures
+
+Same rule as `session-meta.json`'s own table below: every key kept, only
+values changed.
+
+| field | why it matters | replaced with |
+|---|---|---|
+| `payload.session_id` | identifies a real conversation | the same placeholder UUID used throughout this fixture set, `00000000-0000-4000-8000-000000000001` |
+| `payload.id` (subthread only) | the subagent thread's own real id, distinct from `session_id` | a second placeholder, `00000000-0000-4000-8000-000000000002` -- kept DIFFERENT from `session_id`, because the real capture has them different (unlike `session-meta.json` and `session-meta-no-git.json`, where the real capture has `session_id == id`, and both got the SAME placeholder) |
+| `payload.parent_thread_id` (subthread only) | the real capture has this equal to `payload.session_id` | the same placeholder as `session_id`, `00000000-0000-4000-8000-000000000001`, preserving that equality |
+| `payload.cwd` | a real path naming a personal directory outside any git repository (Codex Desktop's own scratch layout, not a checkout) | `/work/alpha` (subthread) / `/work/beta` (no-git), the placeholder style used throughout `tests/fixtures/` |
+| `payload.base_instructions.text` | a lengthy system prompt in each case (a guardian risk-judgment prompt for the subthread; the standard interactive CLI prompt for the no-git file) -- public and generic, but not this adapter's to redistribute, and not something it reads at all | a one-line placeholder naming which prompt was removed, the same move `session-meta.json`'s own table describes |
+| `timestamp` (envelope and payload), `type`, `originator`, `cli_version`, `source`, `thread_source`, `model_provider` | shape only, no identity | kept as captured |
 
 ## What was masked
 
@@ -57,3 +85,8 @@ caller supplies its own (masked or synthetic) timestamp and id there.
   `tests/test_adapter_codex.py` are written inline, the way
   `tests/test_feed_probe.py` writes its own broken adapters rather than
   capturing brokenness.
+- `payload.git.branch` being `null` (a detached HEAD) was not seen in any of
+  the three real captures here, only a present `git` block (`session-meta.json`)
+  or an absent one entirely (`session-meta-no-git.json`). A `null` branch is
+  therefore a construction, the same way the malformed first-line cases
+  above are.

@@ -42,6 +42,7 @@ import contextlib
 import json
 import os
 import random
+import re
 import socket
 import subprocess
 import sys
@@ -54,10 +55,25 @@ from pathlib import Path
 REQUIRED_PROBE_KEYS = ("agent", "source", "available", "confidence")
 VALID_CONFIDENCE = ("exact", "heuristic")
 
+# The four `branches[].evidence` values the `sessions` query may report --
+# docs/adapters.md's own table. A branch whose evidence is anything else is
+# dropped by parse_sessions rather than passed on as something the audit
+# runner (phase 3) would have to recognise on its own.
+EVIDENCE = ("session-meta", "git-branch-field", "command", "worktree-path")
+
+# `last_active` and `branches[].seen_at` must already be exactly
+# second-precision UTC (docs/adapters.md's own wording) -- an adapter
+# converts an offset and strips a fraction itself; parse_sessions does not
+# do that work on an adapter's behalf, it only checks the adapter did.
+TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
 # An adapter is a small local script. These bound a broken one; they are not
-# a performance budget.
+# a performance budget. `sessions` gets the longest budget of the three: it
+# walks a whole session store rather than answering about one process or one
+# batch of panes.
 PROBE_TIMEOUT = 10.0
 RESOLVE_TIMEOUT = 30.0
+SESSIONS_TIMEOUT = 120.0
 
 REPORT_METHOD = "pane.report_agent_session"
 
@@ -99,6 +115,7 @@ class Adapter:
     confidence: str
     command: str
     unverified: bool
+    sessions: bool
     probe: dict
 
     @property
@@ -160,6 +177,8 @@ def validate_probe(obj) -> dict:
         raise AdapterError("probe key 'unverified' must be true or false")
     if "command" in obj and (not isinstance(obj["command"], str) or not obj["command"]):
         raise AdapterError("probe key 'command' must be a non-empty string")
+    if "sessions" in obj and not isinstance(obj["sessions"], bool):
+        raise AdapterError("probe key 'sessions' must be true or false")
     return obj
 
 
@@ -196,8 +215,14 @@ def probe(path, timeout: float = PROBE_TIMEOUT) -> dict:
     return validate_probe(obj)
 
 
-def usable_adapters(adapter_dir, warn=warn, timeout: float = PROBE_TIMEOUT) -> list[Adapter]:
+def usable_adapters(
+    adapter_dir, warn=warn, timeout: float = PROBE_TIMEOUT, skipped: list | None = None
+) -> list[Adapter]:
     """Discover and probe every adapter, and return the ones the run will use.
+
+    `skipped`, when given, also receives `(adapter name, reason)` for every
+    probe that failed. `feed` only warns; `audit` must also mark its report
+    incomplete, and reads that from here rather than from warning text.
 
     The skip policy, in the order it matters:
 
@@ -217,6 +242,8 @@ def usable_adapters(adapter_dir, warn=warn, timeout: float = PROBE_TIMEOUT) -> l
             obj = probe(path, timeout=timeout)
         except AdapterError as exc:
             warn(f"adapter {path.name}: skipped: {exc}")
+            if skipped is not None:
+                skipped.append((path.name, str(exc)))
             continue
         if not obj["available"]:
             continue
@@ -234,6 +261,7 @@ def usable_adapters(adapter_dir, warn=warn, timeout: float = PROBE_TIMEOUT) -> l
                 confidence=obj["confidence"],
                 command=obj.get("command") or obj["agent"],
                 unverified=unverified,
+                sessions=bool(obj.get("sessions", False)),
                 probe=obj,
             )
         )
@@ -553,6 +581,237 @@ def candidates_by_pane(results: list) -> dict[str, list]:
         ]
         by_pane[str(pane_id)] = kept
     return by_pane
+
+
+# --------------------------------------------------------------------------
+# The `sessions` query (docs/adapters.md, "The sessions query")
+# --------------------------------------------------------------------------
+#
+# An adapter that opts in (`probe`'s `sessions: true`) answers a second,
+# unrelated question: not "which session is this pane in", but "what has
+# this agent worked on recently, and on what branches". phase 3's audit
+# runner is the only caller; `feed`'s own run() never touches this.
+
+# Named after docs/adapters.md's own bullet list, one set or literal per
+# rule, so a future change to any one rule touches one line here and one
+# bullet there, never a shared regex neither reads back to the document.
+_UNREAL_EXACT_NAMES = frozenset({"", "main", "master", "HEAD"})
+_UNREAL_PREFIX = "worktree-agent-"
+# git's own ref-name rules: these characters, these substrings, a leading or
+# trailing `/`, a trailing `.` or `.lock`, and a component starting with `.`.
+_GIT_INVALID_CHARS = set("~^:?*[\\")
+_GIT_INVALID_SUBSTRINGS = ("..", "@{", "//")
+# Template placeholders left behind by a shell prompt or documentation, not a
+# git rule -- `<branch>`, `{branch}`, `"$BR"`, a shell-quoted `'a'` -- the
+# trap the plan prose names as "transcripts mention branches that never
+# existed". None of these characters is otherwise valid in a branch name
+# either, so dropping them costs nothing real.
+_TEMPLATE_CHARS = set("<>{}|;&()'\"`")
+
+
+def branch_name_ok(name: str) -> bool:
+    """Whether `name` could plausibly be a real branch, never mind if it exists.
+
+    This is the runner's copy of the rule docs/adapters.md states in full.
+    Every adapter that reports `command` or `worktree-path` evidence keeps
+    its OWN copy too (adapters never import lib/feed.py), and the runner
+    re-applies this one regardless -- an adapter that forgets, or a
+    compromised one, cannot inject noise past it.
+    tests/test_adapter_claude_sessions.py and tests/test_adapter_codex_sessions.py
+    run the shared name list through their own adapter's copy, and this
+    module's own tests/test_feed_sessions.py runs it through this one, so
+    the three cannot silently drift apart.
+    """
+    if not isinstance(name, str) or not name:
+        return False
+    if name in _UNREAL_EXACT_NAMES:
+        return False
+    if name.startswith(_UNREAL_PREFIX):
+        return False
+    if "$" in name:
+        return False
+    if name.startswith("-"):
+        return False
+    if any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F for c in name):
+        return False
+    if any(c in _GIT_INVALID_CHARS for c in name):
+        return False
+    if any(sub in name for sub in _GIT_INVALID_SUBSTRINGS):
+        return False
+    if name.startswith("/") or name.endswith("/"):
+        return False
+    if name.endswith("."):
+        return False
+    # git's ref rules reject ".lock" ending any SLASH-SEPARATED COMPONENT,
+    # not just the whole name -- "a.lock/b" is invalid even though "a.lock"
+    # is not the final component.
+    if any(part.endswith(".lock") for part in name.split("/")):
+        return False
+    if any(part.startswith(".") for part in name.split("/")):
+        return False
+    # The single character "@" is git's shorthand for the current branch
+    # (like `@{upstream}`), rejected on its own even though it contains none
+    # of the other banned characters or substrings.
+    if name == "@":
+        return False
+    return not any(c in _TEMPLATE_CHARS for c in name)
+
+
+def parse_sessions(obj) -> tuple[list[dict], int, int]:
+    """Validate and normalise a `sessions` answer into the runner's own shape.
+
+    Returns `(sessions, dropped_sessions, dropped_branches)`. Raises
+    AdapterError only when there is nothing to salvage at all -- the
+    top-level object is not a dict, or `sessions` is missing or not a list.
+    Below that, the query's own "tolerant" rule (docs/adapters.md) applies:
+    a single broken SESSION is dropped and counted rather than failing the
+    whole answer, and a broken BRANCH within an otherwise-good session is
+    dropped and counted SEPARATELY -- it is exactly the kind of per-item
+    noise an adapter walking a real session store will occasionally
+    produce, but a dropped branch must never be invisible: an adapter
+    emitting a malformed `seen_at` on every branch would otherwise lose all
+    of them and still look like a session with clean, empty history.
+
+    `branch_name_ok` is re-applied here even though every adapter is
+    supposed to have applied its own copy already: this function is the one
+    place that can make that promise true regardless of the adapter. The
+    same is true of TIMESTAMP_RE: `last_active` and `seen_at` must already
+    be exactly second-precision UTC (docs/adapters.md), and a value that is
+    not is treated as malformed -- the session is dropped and counted for
+    `last_active`, the one branch dropped and counted for `seen_at`.
+    """
+    if not isinstance(obj, dict):
+        raise AdapterError(f"sessions must print a JSON object, got {type(obj).__name__}")
+    raw_sessions = obj.get("sessions")
+    if not isinstance(raw_sessions, list):
+        raise AdapterError("sessions is missing the required 'sessions' list")
+
+    dropped_sessions = 0
+    dropped_branches = 0
+    result: list[dict] = []
+    for raw in raw_sessions:
+        if not isinstance(raw, dict):
+            dropped_sessions += 1
+            continue
+        required_keys = ("id", "cwd", "last_active")
+        if not all(isinstance(raw.get(k), str) and raw.get(k) for k in required_keys):
+            dropped_sessions += 1
+            continue
+        if not TIMESTAMP_RE.match(raw["last_active"]):
+            dropped_sessions += 1
+            continue
+        raw_branches = raw.get("branches")
+        if not isinstance(raw_branches, list):
+            dropped_sessions += 1
+            continue
+
+        branches: list[dict] = []
+        for raw_branch in raw_branches:
+            if not isinstance(raw_branch, dict):
+                dropped_branches += 1
+                continue
+            name = raw_branch.get("name")
+            branch_dir = raw_branch.get("dir")
+            evidence = raw_branch.get("evidence")
+            seen_at = raw_branch.get("seen_at")
+            if not isinstance(name, str) or not name or not branch_name_ok(name):
+                dropped_branches += 1
+                continue
+            if not isinstance(branch_dir, str) or not branch_dir:
+                dropped_branches += 1
+                continue
+            if evidence not in EVIDENCE:
+                dropped_branches += 1
+                continue
+            if not isinstance(seen_at, str) or not seen_at or not TIMESTAMP_RE.match(seen_at):
+                dropped_branches += 1
+                continue
+            branches.append(
+                {"name": name, "dir": branch_dir, "evidence": evidence, "seen_at": seen_at}
+            )
+
+        session = {
+            "id": raw["id"],
+            "cwd": raw["cwd"],
+            "last_active": raw["last_active"],
+            "branches": branches,
+        }
+        title = raw.get("title")
+        if isinstance(title, str) and title:
+            session["title"] = title
+        result.append(session)
+
+    return result, dropped_sessions, dropped_branches
+
+
+def sessions(
+    adapter: Adapter,
+    since: int,
+    *,
+    include_sdk: bool = False,
+    timeout: float = SESSIONS_TIMEOUT,
+    warn=warn,
+) -> tuple[list[dict], int, int]:
+    """Ask `adapter` for its sessions from the last `since` days.
+
+    Runs `<adapter> sessions --since <since>`, adding `--include-sdk` only
+    when asked for it -- an adapter that cannot tell an automated session
+    from a human one is allowed to ignore the flag, but this runner never
+    sends it unless the caller wants it. Raises AdapterError on every way
+    the call can fail: a non-zero exit, no output, output that is not JSON,
+    or a timeout.
+
+    Returns `(sessions, dropped_sessions, dropped_branches)`. The list has
+    already passed parse_sessions, so a caller gets validated sessions,
+    never a raw blob it must re-check -- but neither count is silently
+    swallowed: this is the one place that knows the adapter's own name, so
+    either count being non-zero is warned about by name, and if every
+    SESSION was malformed (nothing survived at all), it raises rather than
+    returning `[]`. An empty `sessions` list has to mean "no sessions in the
+    window" (docs/adapters.md's own Failing rule) -- an adapter whose every
+    entry was malformed and still got `[]` back would be silently
+    indistinguishable from that. A session surviving with every branch
+    dropped is NOT this case -- "no branches" is itself a valid answer -- so
+    only `dropped_sessions` (not `dropped_branches`) can raise.
+    """
+    args = [str(adapter.path), "sessions", "--since", str(since)]
+    if include_sdk:
+        args.append("--include-sdk")
+    try:
+        proc = subprocess.run(  # noqa: S603
+            args,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AdapterError(f"sessions did not answer within {timeout:g}s") from exc
+    except OSError as exc:
+        raise AdapterError(f"sessions could not be run: {exc}") from exc
+
+    if proc.returncode != 0:
+        detail = flatten(proc.stderr) or flatten(proc.stdout) or "no output"
+        raise AdapterError(f"sessions exited {proc.returncode}: {detail}")
+    if not proc.stdout.strip():
+        raise AdapterError("sessions printed nothing")
+    try:
+        obj = json.loads(proc.stdout)
+    except ValueError as exc:
+        raise AdapterError(f"sessions printed something that is not JSON: {exc}") from exc
+
+    parsed, dropped_sessions, dropped_branches = parse_sessions(obj)
+    if dropped_sessions or dropped_branches:
+        session_word = "session" if dropped_sessions == 1 else "sessions"
+        branch_word = "branch" if dropped_branches == 1 else "branches"
+        warn(
+            f"adapter {adapter.name}: sessions: {dropped_sessions} malformed {session_word}, "
+            f"{dropped_branches} malformed {branch_word} dropped"
+        )
+        if dropped_sessions and not parsed:
+            raise AdapterError(
+                f"sessions: every session was malformed ({dropped_sessions} dropped)"
+            )
+    return parsed, dropped_sessions, dropped_branches
 
 
 # --------------------------------------------------------------------------

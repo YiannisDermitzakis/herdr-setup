@@ -68,5 +68,8 @@ jobs:
         # every test file does; the `# shellcheck source=` directive next to
         # each such line (and disable= directives elsewhere, each with a
         # comment naming the reason) is what makes that actually resolve.
-        # Both ubuntu-latest and macos-latest runner images ship shellcheck.
-        run: shellcheck -s bash -x herdr-setup lib/*.sh tests/*.sh
+        # shellcheck is pinned through uv's dev group, like pytest and ruff,
+        # never taken from the runner image: the image's shellcheck (0.9.0)
+        # and a developer's (0.11.0) disagreed on a real check (SC2015), so an
+        # unpinned gate passed locally and failed here.
+        run: uv run --group dev shellcheck -s bash -x herdr-setup lib/*.sh tests/*.sh

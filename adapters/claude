@@ -38,12 +38,15 @@ Never opens the Herdr socket. The runner decides; this adapter only answers.
 
 from __future__ import annotations
 
+import argparse
 import calendar
 import json
 import os
 import re
+import shlex
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 AGENT = "claude"
@@ -55,6 +58,28 @@ SOURCE = "herdr:claude"
 START_TIME_SLACK_SECONDS = 5
 
 SLUG_RE = re.compile(r"[^A-Za-z0-9]")
+
+# An entrypoint an automated caller drove rather than a person -- see
+# cmd_sessions and docs/adapters.md's "sessions" section, "SDK sessions".
+SDK_ENTRYPOINT_PREFIX = "sdk-"
+
+# `--since <days>` is by file MODIFICATION TIME (docs/adapters.md's own
+# "Bounded" rule), not by any timestamp recorded inside the file. Named and
+# shaped identically in adapters/codex, by convention -- adapters never
+# import each other, any more than they import lib/feed.py.
+SECONDS_PER_DAY = 86400
+
+# The runner's own copy of this rule lives in lib/feed.py's branch_name_ok,
+# and re-applies it regardless of what this adapter does. This copy exists
+# because adapters never import lib/feed.py (docs/adapters.md, checklist
+# item 7) -- it must read as the SAME rule, and
+# tests/test_adapter_claude_sessions.py proves the two agree over one shared
+# name list.
+_UNREAL_EXACT_NAMES = frozenset({"", "main", "master", "HEAD"})
+_UNREAL_PREFIX = "worktree-agent-"
+_GIT_INVALID_CHARS = set("~^:?*[\\")
+_GIT_INVALID_SUBSTRINGS = ("..", "@{", "//")
+_TEMPLATE_CHARS = set("<>{}|;&()'\"`")
 
 
 def config_dir() -> Path:
@@ -140,6 +165,718 @@ def candidate_for(pane: dict) -> dict | None:
     return candidate
 
 
+def branch_name_ok(name: str) -> bool:
+    """This adapter's own copy of lib/feed.py's branch_name_ok -- see above."""
+    if not isinstance(name, str) or not name:
+        return False
+    if name in _UNREAL_EXACT_NAMES:
+        return False
+    if name.startswith(_UNREAL_PREFIX):
+        return False
+    if "$" in name:
+        return False
+    if name.startswith("-"):
+        return False
+    if any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F for c in name):
+        return False
+    if any(c in _GIT_INVALID_CHARS for c in name):
+        return False
+    if any(sub in name for sub in _GIT_INVALID_SUBSTRINGS):
+        return False
+    if name.startswith("/") or name.endswith("/"):
+        return False
+    if name.endswith("."):
+        return False
+    # git's ref rules reject ".lock" ending any SLASH-SEPARATED COMPONENT,
+    # not just the whole name.
+    if any(part.endswith(".lock") for part in name.split("/")):
+        return False
+    if any(part.startswith(".") for part in name.split("/")):
+        return False
+    # "@" alone is git's shorthand for the current branch.
+    if name == "@":
+        return False
+    return not any(c in _TEMPLATE_CHARS for c in name)
+
+
+# --------------------------------------------------------------------------
+# The `sessions` query (docs/adapters.md, "The sessions query" > "Claude Code")
+# --------------------------------------------------------------------------
+
+
+def projects_dir() -> Path:
+    return config_dir() / "projects"
+
+
+def since_cutoff(days: int) -> float:
+    """The epoch-seconds mtime cutoff `--since <days>` names: now minus `days`."""
+    return time.time() - days * SECONDS_PER_DAY
+
+
+def top_level_transcripts() -> list[Path]:
+    """Every top-level transcript file: `<config>/projects/*/*.jsonl`.
+
+    Exactly two path components below `projects/` -- a project slug, then a
+    file -- so a subagent transcript one level deeper
+    (`<slug>/<session-id>/subagents/*.jsonl`) is never matched by this glob
+    at all, without needing its own exclusion rule.
+    """
+    root = projects_dir()
+    if not root.is_dir():
+        return []
+    return sorted(root.glob("*/*.jsonl"))
+
+
+def read_transcript_lines(path: Path):
+    """Yield each usable JSON object out of a transcript file, in order.
+
+    Tolerant per the query's own contract: an unreadable file yields
+    nothing (its session is then skipped for having no lines at all,
+    covering the chmod-000 case), a truncated or unparseable line is
+    skipped without disturbing the lines around it, and a line whose
+    `isSidechain` is true is dropped here so no evidence extractor
+    downstream has to remember to check it. Bytes are decoded with
+    `errors="replace"` rather than raising -- a bad byte in one line must
+    not cost the file's other, well-formed lines.
+
+    Reads from an OPEN file, one line at a time, rather than `read_bytes()`
+    into memory whole -- a real 30-day window can hold hundreds of
+    transcripts, some tens of MB each, and this adapter has no reason to
+    hold all of that at once (review item 11). `derive_session`'s own early
+    return for a filtered SDK session, once it has enough to decide, closes
+    this generator (and so the underlying file) before the rest is ever
+    read.
+    """
+    try:
+        handle = path.open("rb")
+    except OSError:
+        return
+    with handle:
+        for raw_line in handle:
+            if not raw_line.strip():
+                continue
+            try:
+                obj = json.loads(raw_line.decode("utf-8", errors="replace"))
+            except ValueError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            if obj.get("isSidechain") is True:
+                continue
+            yield obj
+
+
+def _record_branch(
+    hits: dict[tuple[str, str], dict], *, name, branch_dir, evidence, seen_at
+) -> None:
+    """Add one piece of branch evidence, deduped per (name, dir), latest `seen_at` wins.
+
+    Applies branch_name_ok itself: a name this adapter would drop anyway
+    never occupies a dedup slot a real name might otherwise need.
+    """
+    if not isinstance(name, str) or not branch_name_ok(name):
+        return
+    if not isinstance(branch_dir, str) or not branch_dir:
+        return
+    if not isinstance(seen_at, str) or not seen_at:
+        return
+    key = (name, branch_dir)
+    existing = hits.get(key)
+    if existing is None or seen_at > existing["seen_at"]:
+        hits[key] = {"name": name, "dir": branch_dir, "evidence": evidence, "seen_at": seen_at}
+
+
+# An fr worktree path: .../.cache/fr/worktrees/<repo>/<slug>, or the same
+# shape under `~/`. Group 1 is the whole path up to and including the slug
+# (the evidence's own `dir`, `~` expanded separately below); group 2 is the
+# slug alone, whose `__` becomes `/` to recover the branch name. The repo and
+# slug components exclude `;&|()<>` as well as `/`, whitespace and quotes,
+# so a slug directly followed by a separator, a closing paren or a redirect
+# (`cd .../feat__x; ls`, `cd .../feat__x&&ls`, `cat .../feat__x>out`) does
+# not swallow it into the branch name. `~`, `$HOME` and `${HOME}` are all
+# accepted as the home-directory prefix, expanded to `$HOME` below.
+# docs/adapters.md's own wording, verbatim: "Only in cwd fields and in Bash
+# command text, never in tool output" -- see _bash_commands below, which
+# only ever looks at a `tool_use` Bash block, never a `tool_result`.
+WORKTREE_PATH_RE = re.compile(
+    r"((?:~|\$\{HOME\}|\$HOME|/[^\s\"';&|()<>]*?)/\.cache/fr/worktrees/"
+    r"[^/\s\"';&|()<>]+/([^/\s\"';&|()<>]+))"
+)
+
+# The three home-directory prefixes WORKTREE_PATH_RE accepts, longest first
+# so `${HOME}` is not mistaken for a bare `$HOME` with `{HOME}` left over.
+_HOME_PREFIXES = ("${HOME}", "$HOME", "~")
+
+# && || ; | & all end one pipeline segment and start the next -- `&` runs a
+# job in the background but in the SAME directory, so it is a plain
+# separator like the rest. `(` and `)` are handled separately, in
+# _process_bash_command's own token walk, because a subshell needs a
+# directory SCOPE (a `cd` inside `(...)` must not leak past the `)`), not
+# just a segment boundary.
+_SEGMENT_SEPARATORS = frozenset({"&&", "||", ";", "|", "&"})
+
+# `git worktree add` options that consume a value and are therefore never
+# themselves the path (from `git worktree add -h`; `-b`/`-B` are handled
+# separately since they also name the branch).
+_WORKTREE_ADD_VALUE_FLAGS = frozenset({"--reason"})
+
+# `git push` options that consume a value, so the token after them is never
+# mistaken for <remote> or <refspec> (from `git push -h`).
+_PUSH_VALUE_FLAGS = frozenset(
+    {"--repo", "--recurse-submodules", "--receive-pack", "--exec", "-o", "--push-option"}
+)
+
+
+def tokenize_command(text: str) -> list[str]:
+    """One Bash command line, tokenised the way docs/adapters.md prescribes.
+
+    `shlex` in POSIX mode with punctuation characters splits shell operators
+    (`&&`, `;`, ...) into their own tokens even with no surrounding
+    whitespace (`a&&git ...`). A line shlex cannot parse at all -- most
+    commonly an unbalanced quote, which a real transcript can easily contain
+    since it is capturing a HUMAN's shell command, not one this tool wrote --
+    falls back to plain whitespace splitting rather than losing the line.
+    """
+    try:
+        lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        return list(lexer)
+    except ValueError:
+        return text.split()
+
+
+# A heredoc marker: `<<TAG`, `<<-TAG`, `<<'TAG'` or `<<"TAG"`. Group 1 is the
+# `-` (strips leading tabs from the terminator) if present; group 3 is TAG.
+_HEREDOC_RE = re.compile(r"<<(-)?\s*(['\"]?)([A-Za-z0-9_]+)\2")
+
+
+def _physical_lines(command_text: str) -> list[str]:
+    """A Bash command's own physical lines, backslash-newline joined first.
+
+    `shlex` treats a bare newline as ordinary whitespace, so tokenising a
+    whole multi-line command in one pass fuses two independent lines into
+    one nonsensical segment -- `git fetch` then `git checkout -b x` on the
+    next line becomes a single `['git','fetch','git','checkout','-b','x']`
+    segment that matches no shape at all, and `cd <dir>` on its own line
+    swallows every token after it, including the next line's real command.
+    Each physical line is tokenised on its own instead (_process_bash_command
+    carries `cd` state across them, since they are still one command).
+
+    A heredoc's BODY is data, not commands: every line after a `<<TAG`
+    marker (on the line that carries the marker itself, which IS still
+    read normally -- only what follows it is skipped) up to and including
+    the line matching TAG exactly (leading tabs stripped first for the
+    `<<-` form) is dropped entirely. A marker whose terminator never
+    arrives skips to the end of the command, the same as a real shell
+    reading an unterminated heredoc from a script that stops there.
+    """
+    joined = command_text.replace("\\\n", "")
+    raw_lines = joined.split("\n")
+    lines: list[str] = []
+    index = 0
+    total = len(raw_lines)
+    while index < total:
+        raw_line = raw_lines[index]
+        if raw_line.strip():
+            lines.append(raw_line)
+        index += 1
+        match = _HEREDOC_RE.search(raw_line)
+        if match is None:
+            continue
+        dash = match.group(1) == "-"
+        tag = match.group(3)
+        while index < total:
+            body_line = raw_lines[index]
+            index += 1
+            terminator = body_line.lstrip("\t") if dash else body_line
+            if terminator == tag:
+                break
+        else:
+            index = total
+    return lines
+
+
+def _resolve_dir(raw: str | None, current_dir: str | None) -> str | None:
+    """A `cd`/`-C`/`--repo`/`worktree add` path argument, resolved as TEXT only.
+
+    No filesystem access: a relative path joins `current_dir` -- the
+    directory a `cd` earlier in this SAME command has already resolved to,
+    or the line's own `cwd` if there has been none yet -- and a leading `~`
+    joins `$HOME`, exactly docs/adapters.md's own wording, "as text only".
+    `current_dir` missing leaves a relative path unresolved rather than
+    guessing at one.
+    """
+    if not raw:
+        return current_dir
+    if raw.startswith("~"):
+        home = os.environ.get("HOME")
+        if home:
+            raw = home + raw[1:]
+    if raw.startswith("/"):
+        return os.path.normpath(raw)
+    if not current_dir:
+        return raw
+    return os.path.normpath(os.path.join(current_dir, raw))
+
+
+def _flag_value(tokens: list[str], *names: str) -> str | None:
+    """The value of the first `--name value` or `--name=value` flag found."""
+    for index, token in enumerate(tokens):
+        for name in names:
+            if token == name and index + 1 < len(tokens):
+                return tokens[index + 1]
+            if token.startswith(name + "="):
+                return token[len(name) + 1 :]
+    return None
+
+
+# `git` global options that take no value and change nothing this adapter
+# cares about -- skipped so the real subcommand behind them is still found.
+_GIT_NOOP_GLOBAL_FLAGS = frozenset({"--no-pager", "-P", "--paginate", "-p", "--no-replace-objects"})
+
+
+def _strip_git_global_options(segment: list[str]) -> tuple[list[str], str | None]:
+    """Consume `git`'s own global options before the subcommand.
+
+    `git -c k=v checkout -b x`, `git -C <dir> switch -c x`,
+    `git --no-pager checkout -b x` and `git --work-tree=<dir> checkout -b x`
+    all name `checkout`/`switch` as their real subcommand, not the global
+    option in front of it -- without this, the shape checks below never see
+    past it. Returns the remaining tokens (starting with the subcommand,
+    `git` itself dropped) and a directory override if one was present
+    (`-C <dir>` or `--work-tree=<dir>`; `--git-dir=<dir>` is skipped but
+    never sets `dir` -- it names git's metadata store, not a working tree).
+    `segment[0]` is assumed to already be `git`.
+    """
+    index = 1
+    dir_override: str | None = None
+    while index < len(segment):
+        token = segment[index]
+        if token == "-C" and index + 1 < len(segment):
+            dir_override = segment[index + 1]
+            index += 2
+            continue
+        if token == "-c" and index + 1 < len(segment):
+            index += 2
+            continue
+        if token.startswith("--work-tree="):
+            dir_override = token[len("--work-tree=") :]
+            index += 1
+            continue
+        if token.startswith("--git-dir="):
+            index += 1
+            continue
+        if token in _GIT_NOOP_GLOBAL_FLAGS:
+            index += 1
+            continue
+        break
+    return segment[index:], dir_override
+
+
+def _match_command_shape(segment: list[str], *, segment_dir, current_dir) -> tuple[str, str] | None:
+    """One (name, dir) pair out of a single `git` or `fr` command, or None.
+
+    `gh` has its own _match_gh_shape, since it needs no global-option
+    stripping. A `git` segment has already had ITS global options stripped
+    by the caller (docs/adapters.md's shape names, e.g. "git checkout",
+    start right after them). One check per shape docs/adapters.md lists, in
+    the order it lists them. Each shape names its OWN dir when it carries
+    one (`--repo`, the `worktree add` path); everything else falls back to
+    `segment_dir`, which the caller has already worked out from `cd`/`-C`.
+    """
+    if not segment:
+        return None
+
+    if (
+        segment[0] == "fr"
+        and len(segment) >= 3
+        and segment[1] == "isolation"
+        and segment[2] in ("up", "attach")
+    ):
+        branch = _flag_value(segment, "--branch")
+        if not branch:
+            return None
+        repo = _flag_value(segment, "--repo")
+        return branch, (_resolve_dir(repo, current_dir) if repo else segment_dir)
+
+    if segment[0] == "checkout" or segment[0] == "switch":
+        rest = segment[1:]
+        branch = None
+        for index, token in enumerate(rest):
+            if token in ("-b", "-c", "-B") and index + 1 < len(rest):
+                branch = rest[index + 1]
+                break
+        if branch is None:
+            return None
+        return branch, segment_dir
+
+    if segment[0] == "worktree" and len(segment) >= 2 and segment[1] == "add":
+        branch = None
+        positionals: list[str] = []
+        rest = segment[2:]
+        index = 0
+        while index < len(rest):
+            token = rest[index]
+            if token in ("-b", "-B") and index + 1 < len(rest):
+                branch = rest[index + 1]
+                index += 2
+                continue
+            if token in _WORKTREE_ADD_VALUE_FLAGS and index + 1 < len(rest):
+                index += 2
+                continue
+            if not token.startswith("-"):
+                positionals.append(token)
+            index += 1
+        if branch and positionals:
+            return branch, _resolve_dir(positionals[0], current_dir)
+        return None
+
+    if segment[0] == "push":
+        rest = segment[1:]
+        if any(tok in ("-d", "--delete") for tok in rest):
+            # Deleting a branch is the opposite of evidence someone is
+            # working on it.
+            return None
+        flag_index = next(
+            (i for i, tok in enumerate(rest) if tok in ("-u", "--set-upstream")), None
+        )
+        if flag_index is None:
+            return None
+        positionals: list[str] = []
+        index = flag_index + 1
+        while index < len(rest) and len(positionals) < 2:
+            token = rest[index]
+            if token.startswith("-"):
+                index += 2 if token in _PUSH_VALUE_FLAGS else 1
+                continue
+            positionals.append(token)
+            index += 1
+        if len(positionals) < 2:
+            return None
+        refspec = positionals[1]
+        source = refspec[1:] if refspec.startswith("+") else refspec
+        source = source.split(":", 1)[0]
+        if source.startswith("refs/heads/"):
+            source = source[len("refs/heads/") :]
+        return source, segment_dir
+
+    return None
+
+
+def _match_gh_shape(segment: list[str], *, segment_dir) -> tuple[str, str] | None:
+    if segment[:2] != ["pr", "create"]:
+        return None
+    value = _flag_value(segment, "--head", "-H")
+    if not value:
+        return None
+    branch = value.split(":", 1)[1] if ":" in value else value
+    return branch, segment_dir
+
+
+def _process_bash_command(
+    command_text: str,
+    *,
+    base_cwd: str | None,
+    seen_at: str,
+    branch_hits: dict[tuple[str, str], dict],
+) -> None:
+    """Walk one Bash command's tokens, recording every shape it matches.
+
+    Tokens are walked directly here rather than pre-split into an anonymous
+    list of segments, because `(` and `)` need a DIRECTORY SCOPE, not just a
+    segment boundary: a `cd` inside `(...)` must not leak out past the
+    matching `)` (`(cd /work/sub) && git checkout -b x` reports the LINE's
+    own directory, not `/work/sub`). `current_dir` is a plain variable this
+    closure mutates; `dir_stack` remembers what it was before each `(`, to
+    restore at its `)`.
+    """
+    current_dir = base_cwd
+    dir_stack: list[str | None] = []
+
+    def flush(segment: list[str]) -> None:
+        nonlocal current_dir
+        if not segment:
+            return
+        if segment[0] == "cd":
+            # `cd -` (the previous directory) and a bare `cd` (home) are
+            # both directories this adapter cannot know without a real
+            # shell -- falling back to the line's own cwd is honest
+            # uncertainty, not a guess at a specific path.
+            if len(segment) >= 2 and segment[1] != "-":
+                current_dir = _resolve_dir(segment[1], current_dir)
+            else:
+                current_dir = base_cwd
+            return
+
+        segment_dir = current_dir
+        hit = None
+        if segment[0] == "git" and len(segment) >= 2:
+            rest, dir_override = _strip_git_global_options(segment)
+            if dir_override is not None:
+                segment_dir = _resolve_dir(dir_override, current_dir)
+            hit = _match_command_shape(rest, segment_dir=segment_dir, current_dir=current_dir)
+        elif segment[0] == "fr":
+            hit = _match_command_shape(segment, segment_dir=segment_dir, current_dir=current_dir)
+        elif segment[0] == "gh" and len(segment) >= 2:
+            hit = _match_gh_shape(segment[1:], segment_dir=segment_dir)
+
+        if hit is not None:
+            name, branch_dir = hit
+            _record_branch(
+                branch_hits, name=name, branch_dir=branch_dir, evidence="command", seen_at=seen_at
+            )
+
+    for physical_line in _physical_lines(command_text):
+        segment: list[str] = []
+        for token in tokenize_command(physical_line):
+            if token in _SEGMENT_SEPARATORS:
+                flush(segment)
+                segment = []
+            elif token == "(":
+                flush(segment)
+                segment = []
+                dir_stack.append(current_dir)
+            elif token == ")":
+                flush(segment)
+                segment = []
+                if dir_stack:
+                    current_dir = dir_stack.pop()
+            else:
+                segment.append(token)
+        # A physical line boundary is itself a segment boundary -- `cd`
+        # state is carried across lines (see _physical_lines), but a
+        # trailing command on one line is still its own segment.
+        flush(segment)
+
+
+def _bash_commands(line: dict) -> list[str]:
+    """Every Bash `tool_use` block's `input.command` string in `line`.
+
+    Only an `assistant` line carries a `tool_use` block at all; a
+    `tool_result` (the reply, on a later `user` line) is a different block
+    entirely and this never looks at one -- see WORKTREE_PATH_RE's own note.
+    """
+    if line.get("type") != "assistant":
+        return []
+    message = line.get("message")
+    if not isinstance(message, dict):
+        return []
+    content = message.get("content")
+    if not isinstance(content, list):
+        return []
+    commands = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "tool_use" or block.get("name") != "Bash":
+            continue
+        block_input = block.get("input")
+        if not isinstance(block_input, dict):
+            continue
+        command_text = block_input.get("command")
+        if isinstance(command_text, str) and command_text:
+            commands.append(command_text)
+    return commands
+
+
+def extract_command_evidence(
+    line: dict, branch_hits: dict[tuple[str, str], dict], *, seen_at: str
+) -> None:
+    """Evidence `command`: every Bash `tool_use` block's `input.command`.
+
+    `seen_at` is the caller's already-normalised (second-precision UTC)
+    reading of this line's own `timestamp` -- computed once in
+    derive_session's own loop and passed in here, so this function and
+    extract_worktree_path_evidence cannot each normalise the same value a
+    different way.
+    """
+    line_cwd = line.get("cwd")
+    base_cwd = line_cwd if isinstance(line_cwd, str) and line_cwd else None
+    for command_text in _bash_commands(line):
+        _process_bash_command(
+            command_text, base_cwd=base_cwd, seen_at=seen_at, branch_hits=branch_hits
+        )
+
+
+def extract_worktree_path_evidence(
+    line: dict, branch_hits: dict[tuple[str, str], dict], *, seen_at: str
+) -> None:
+    """Evidence `worktree-path`, read from a line's own `cwd` and Bash command text.
+
+    `seen_at` is the caller's already-normalised reading of this line's own
+    `timestamp` -- see extract_command_evidence's docstring.
+    """
+    texts = []
+    cwd = line.get("cwd")
+    if isinstance(cwd, str) and cwd:
+        texts.append(cwd)
+    texts.extend(_bash_commands(line))
+    for text in texts:
+        for path, slug in WORKTREE_PATH_RE.findall(text):
+            prefix = next((p for p in _HOME_PREFIXES if path.startswith(p)), None)
+            if prefix is not None:
+                home = os.environ.get("HOME")
+                if not home:
+                    continue
+                path = home + path[len(prefix) :]
+            branch = slug.replace("__", "/")
+            _record_branch(
+                branch_hits, name=branch, branch_dir=path, evidence="worktree-path", seen_at=seen_at
+            )
+
+
+def normalize_timestamp(text: str) -> str | None:
+    """A timestamp normalised to second-precision UTC, `Z`-suffixed.
+
+    docs/adapters.md requires `last_active` and `branches[].seen_at` to
+    already be exactly this shape -- the runner's own `TIMESTAMP_RE`
+    (lib/feed.py) drops anything that is not, rather than doing this
+    conversion on an adapter's behalf. A numeric offset (`+02:00`) is
+    converted to UTC and a fractional-second suffix (`.987`) is dropped. A
+    timestamp with NO zone is read as UTC (docs/adapters.md states this
+    rule explicitly). A date-only value (`2026-09-12`, no time component)
+    is NOT a timestamp and returns None, the same as anything else that
+    cannot be parsed at all -- `fromisoformat` would otherwise happily read
+    it as midnight, inventing a time nothing recorded.
+
+    Also returns None, rather than raising, for an instant so far outside
+    the representable range that converting it to UTC overflows (a very
+    early date at a positive offset can move before `datetime.min`) -- the
+    query's own Tolerant rule forbids one unusable timestamp crashing the
+    whole answer.
+    """
+    if "T" not in text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    try:
+        parsed = parsed.astimezone(UTC)
+    except OverflowError:
+        return None
+    return parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _file_mtime_z(path: Path) -> str | None:
+    try:
+        epoch = path.stat().st_mtime
+    except OSError:
+        return None
+    return datetime.fromtimestamp(epoch, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def derive_session(path: Path, *, include_sdk: bool) -> dict | None:
+    """One session record out of one transcript file, or None to report nothing.
+
+    None covers every reason a whole session is left out: no readable lines
+    at all, no `cwd` ever seen, or an SDK entrypoint without `--include-sdk`
+    -- all real answers, not failures, so a broken transcript beside a good
+    one never takes the query down (cmd_sessions never sees the difference
+    between "unreadable" and "not this session's business").
+    """
+    cwd: str | None = None
+    last_active: str | None = None
+    entrypoint: str | None = None
+    custom_title: str | None = None
+    ai_title: str | None = None
+    branch_hits: dict[tuple[str, str], dict] = {}
+    saw_a_line = False
+
+    for line in read_transcript_lines(path):
+        saw_a_line = True
+        line_cwd = line.get("cwd")
+        if isinstance(line_cwd, str) and line_cwd:
+            cwd = line_cwd
+        raw_timestamp = line.get("timestamp")
+        # Normalised once here, and reused everywhere below, so `last_active`
+        # and every evidence extractor's `seen_at` agree on the same second-
+        # precision UTC value for this line -- docs/adapters.md requires an
+        # adapter to do this itself, not leave it to the runner.
+        timestamp = (
+            normalize_timestamp(raw_timestamp)
+            if isinstance(raw_timestamp, str) and raw_timestamp
+            else None
+        )
+        if timestamp:
+            last_active = timestamp
+        line_entrypoint = line.get("entrypoint")
+        if entrypoint is None and isinstance(line_entrypoint, str) and line_entrypoint:
+            entrypoint = line_entrypoint
+            # A real transcript's `entrypoint` is a session-level constant,
+            # repeated on every line -- so the FIRST one seen already
+            # decides an SDK skip, and there is no reason to keep reading
+            # (and evidence-extracting through) a whole transcript this
+            # query is about to discard anyway (review item 11). Closing
+            # over `read_transcript_lines`'s generator here also closes its
+            # open file promptly rather than waiting for the loop to finish
+            # exhausting it on its own.
+            if entrypoint.startswith(SDK_ENTRYPOINT_PREFIX) and not include_sdk:
+                return None
+
+        line_type = line.get("type")
+        if line_type == "custom-title" and isinstance(line.get("customTitle"), str):
+            custom_title = line["customTitle"]
+        elif line_type == "ai-title" and isinstance(line.get("aiTitle"), str):
+            ai_title = line["aiTitle"]
+
+        git_branch = line.get("gitBranch")
+        if isinstance(git_branch, str) and git_branch and isinstance(line_cwd, str) and line_cwd:
+            _record_branch(
+                branch_hits,
+                name=git_branch,
+                branch_dir=line_cwd,
+                evidence="git-branch-field",
+                seen_at=timestamp or "",
+            )
+
+        extract_command_evidence(line, branch_hits, seen_at=timestamp or "")
+        extract_worktree_path_evidence(line, branch_hits, seen_at=timestamp or "")
+
+    if not saw_a_line or not cwd:
+        return None
+    if last_active is None:
+        last_active = _file_mtime_z(path)
+        if last_active is None:
+            return None
+
+    session = {
+        "id": path.stem,
+        "cwd": cwd,
+        "last_active": last_active,
+        "branches": list(branch_hits.values()),
+    }
+    title = custom_title or ai_title
+    if title:
+        session["title"] = title
+    return session
+
+
+def cmd_sessions(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="adapters/claude sessions", add_help=False)
+    parser.add_argument("--since", type=int, required=True)
+    parser.add_argument("--include-sdk", action="store_true")
+    args = parser.parse_args(argv)
+
+    cutoff = since_cutoff(args.since)
+    sessions: list[dict] = []
+    for path in top_level_transcripts():
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < cutoff:
+            continue
+        session = derive_session(path, include_sdk=args.include_sdk)
+        if session is not None:
+            sessions.append(session)
+
+    print(json.dumps({"sessions": sessions}))
+    return 0
+
+
 def cmd_probe() -> int:
     available = sessions_dir().is_dir()
     print(
@@ -149,6 +886,7 @@ def cmd_probe() -> int:
                 "source": SOURCE,
                 "available": available,
                 "confidence": "exact",
+                "sessions": True,
             }
         )
     )
@@ -172,7 +910,11 @@ def main(argv: list[str]) -> int:
         return cmd_probe()
     if len(argv) == 1 and argv[0] == "resolve":
         return cmd_resolve()
-    sys.stderr.write("usage: adapters/claude probe|resolve\n")
+    if argv and argv[0] == "sessions":
+        return cmd_sessions(argv[1:])
+    sys.stderr.write(
+        "usage: adapters/claude probe|resolve|sessions --since <days> [--include-sdk]\n"
+    )
     return 2
 
 

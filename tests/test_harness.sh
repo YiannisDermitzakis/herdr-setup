@@ -61,8 +61,11 @@ if [ -f "$repo_root/tests/run.sh" ] && [ -f "$repo_root/tests/helpers/fake-herdr
   cp "$repo_root/tests/run.sh" "$suite/run.sh"
   cp "$repo_root/tests/helpers/fake-herdr" "$suite/helpers/fake-herdr"
   cp "$repo_root/tests/helpers/assert.sh" "$suite/helpers/assert.sh"
+  # run.sh and assert.sh refuse to run unless both fakes resolve.
+  cp "$repo_root/tests/helpers/fake-gh" "$suite/helpers/fake-gh"
   ln -s fake-herdr "$suite/helpers/herdr"
-  chmod +x "$suite/run.sh" "$suite/helpers/fake-herdr"
+  ln -s fake-gh "$suite/helpers/gh"
+  chmod +x "$suite/run.sh" "$suite/helpers/fake-herdr" "$suite/helpers/fake-gh"
 fi
 
 if [ "$missing_runner" -eq 1 ]; then

@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "helpers"))
 
 from feedlib import (  # noqa: E402
     REPO_ROOT,
+    TEST_ADAPTER_TIMEOUT,
     codex_session_meta,
     isolate_environment,
     load_feed,
@@ -74,26 +75,26 @@ class TestProbe(TempHomeCase):
         self.assertTrue(os.access(ADAPTER, os.X_OK), ADAPTER)
 
     def test_probe_satisfies_the_general_contract(self):
-        feed.validate_probe(feed.probe(ADAPTER))
+        feed.validate_probe(feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT))
 
     def test_probe_declares_codex_heuristic(self):
         (self.config_dir / "sessions").mkdir(parents=True)
-        obj = feed.probe(ADAPTER)
+        obj = feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(obj["agent"], "codex")
         self.assertEqual(obj["source"], "herdr:codex")
         self.assertEqual(obj["confidence"], "heuristic")
 
     def test_available_true_when_the_config_dir_has_a_sessions_directory(self):
         (self.config_dir / "sessions").mkdir(parents=True)
-        self.assertIs(feed.probe(ADAPTER)["available"], True)
+        self.assertIs(feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)["available"], True)
 
     def test_available_false_when_there_is_no_sessions_directory(self):
-        self.assertIs(feed.probe(ADAPTER)["available"], False)
+        self.assertIs(feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)["available"], False)
 
     def test_never_writes_anything(self):
         (self.config_dir / "sessions").mkdir(parents=True)
         before = list(self.config_dir.rglob("*"))
-        feed.probe(ADAPTER)
+        feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(list(self.config_dir.rglob("*")), before)
 
 
@@ -104,7 +105,7 @@ class TestResolve(TempHomeCase):
         )
         session_id = codex_session_meta()["payload"]["id"]
 
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         candidates = feed.candidates_by_pane(results)["w2:p2"]
 
         self.assertEqual(len(candidates), 1)
@@ -115,7 +116,7 @@ class TestResolve(TempHomeCase):
         write_codex_rollout(
             self.config_dir, 2026, 9, 6, "rollout-2026-09-06T22-29-39-a.jsonl", cwd="/work/beta"
         )
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(feed.candidates_by_pane(results).get("w2:p2", []), [])
 
     def test_a_candidate_never_claims_exact_even_when_it_is_the_only_one(self):
@@ -129,7 +130,7 @@ class TestResolve(TempHomeCase):
         write_codex_rollout(
             self.config_dir, 2026, 9, 6, "rollout-2026-09-06T22-29-39-a.jsonl", cwd="/work/alpha"
         )
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         candidates = feed.candidates_by_pane(results)["w2:p2"]
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["confidence"], "heuristic")
@@ -157,7 +158,7 @@ class TestResolve(TempHomeCase):
             session_id="00000000-0000-4000-8000-0000000000b2",
             timestamp="2026-09-06T22:00:00.000Z",
         )
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         candidates = feed.candidates_by_pane(results)["w2:p2"]
         self.assertEqual(
             [c["session_id"] for c in candidates],
@@ -172,7 +173,7 @@ class TestResolve(TempHomeCase):
         write_codex_rollout(
             self.config_dir, 2026, 9, 6, "rollout-2026-09-06T22-29-39-a.jsonl", cwd="/work/alpha"
         )
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(len(feed.candidates_by_pane(results)["w2:p2"]), 1)
 
     def test_a_rollout_whose_first_line_is_json_but_not_session_meta_is_skipped(self):
@@ -182,7 +183,7 @@ class TestResolve(TempHomeCase):
             json.dumps({"type": "turn_context", "payload": {"cwd": "/work/alpha"}}) + "\n",
             encoding="utf-8",
         )
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(feed.candidates_by_pane(results).get("w2:p2", []), [])
 
     def test_only_the_first_line_of_a_rollout_file_is_ever_read(self):
@@ -197,7 +198,7 @@ class TestResolve(TempHomeCase):
             extra_lines=["not json at all, and huge enough to matter if ever read"],
         )
         self.assertIn("not json", path.read_text(encoding="utf-8"))
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(len(feed.candidates_by_pane(results)["w2:p2"]), 1)
 
     def test_the_label_is_built_from_the_rollout_timestamp(self):
@@ -210,7 +211,7 @@ class TestResolve(TempHomeCase):
             cwd="/work/alpha",
             timestamp="2026-09-06T19:29:39.421Z",
         )
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         candidate = feed.candidates_by_pane(results)["w2:p2"][0]
         self.assertIn("2026-09-06", candidate.get("label", ""))
 
@@ -221,6 +222,7 @@ class TestResolve(TempHomeCase):
         results = feed.resolve(
             ADAPTER,
             [pane(pane_id="w2:p2", cwd="/work/alpha"), pane(pane_id="w9:p9", cwd="/work/z")],
+            timeout=TEST_ADAPTER_TIMEOUT,
         )
         by_pane = feed.candidates_by_pane(results)
         self.assertEqual(len(by_pane.get("w2:p2", [])), 1)
@@ -244,7 +246,7 @@ class TestResolve(TempHomeCase):
                 session_id=f"00000000-0000-4000-8000-0000000000{day:02x}",
                 timestamp=f"2025-01-{day:02d}T00:00:00.000Z",
             )
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         candidates = feed.candidates_by_pane(results)["w2:p2"]
         self.assertEqual(len(candidates), 30, "only the newest 30 day directories may be scanned")
         oldest_id = f"00000000-0000-4000-8000-0000000000{1:02x}"
@@ -255,12 +257,12 @@ class TestResolve(TempHomeCase):
             self.config_dir, 2026, 9, 6, "rollout-2026-09-06T22-29-39-a.jsonl", cwd="/work/alpha"
         )
         before = sorted(str(p) for p in self.config_dir.rglob("*"))
-        feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         after = sorted(str(p) for p in self.config_dir.rglob("*"))
         self.assertEqual(before, after)
 
     def test_it_answers_an_empty_pane_list_without_falling_over(self):
-        results = feed.resolve(ADAPTER, [])
+        results = feed.resolve(ADAPTER, [], timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(feed.candidates_by_pane(results), {})
 
 

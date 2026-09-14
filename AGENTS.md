@@ -8,7 +8,7 @@ it and carry no content of their own.
 
 A host-side tool for reproducing and syncing a Herdr configuration across machines.
 It is a bash entrypoint plus a small set of Python helpers. It has no build step.
-Its prerequisites are Herdr, git, and uv.
+Its prerequisites are Herdr, git, and uv, plus gh for `audit` only.
 
 ## Hard rules
 
@@ -45,8 +45,14 @@ it, and it never asks the host for an interpreter of its own.
 **This tool runs seldom.** It is invoked by hand when a host is set up, or when
 it has drifted, and it is idle the rest of the time. Startup cost is not a design
 consideration: prefer the robust and obvious construction over the fast one.
-`hs_py` is the only sanctioned door to the interpreter, and structured work is
-batched behind subcommands of `lib/hs.py` for coherence, not for speed.
+There are three sanctioned doors to the interpreter, all in `lib/common.sh`,
+and what the Python does decides between them. `hs_py` runs `lib/hs.py`, where
+structured work is batched behind subcommands for coherence, not for speed. A
+program that spawns other programs gets a door of its own: `hs_feed` runs
+`lib/feed.py`, which spawns adapters, and `hs_audit` runs `lib/audit.py`, which
+spawns adapters, `git` and `gh`. The entrypoint reaches the Python in `lib/`
+only through these three doors.
 
-**Development tools are pinned too**: `uv run --group dev pytest` and
-`uv run --group dev ruff check`.
+**Development tools are pinned too**: `uv run --group dev pytest`,
+`uv run --group dev ruff check`, and
+`uv run --group dev shellcheck -s bash -x herdr-setup lib/*.sh tests/*.sh`.

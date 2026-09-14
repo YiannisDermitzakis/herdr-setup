@@ -1,0 +1,869 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.13"
+# dependencies = []
+# ///
+# tests/helpers/fake-gh
+#
+# A stand-in for the real `gh` command line, so no test can reach GitHub. The
+# `gh` symlink beside this file is what PATH resolution finds (tests/run.sh and
+# feedlib.isolate_environment put this directory first), exactly as `herdr`
+# finds fake-herdr.
+#
+# It answers from a STATE FILE rather than from canned responses, because the
+# audit asks questions whose answers depend on each other (a ref that exists
+# gets a compare status; one that does not gets a NOT_FOUND error), and a pile
+# of canned responses cannot keep those consistent. The RESPONSE SHAPES are
+# pinned to the captures in tests/fixtures/gh/ by tests/test_fake_gh.py, which
+# drives every operation and compares key structure and leaf types with the
+# capture of the same operation. A fake whose shapes are written from a guess
+# agrees with code written from the same guess and with nothing else.
+#
+# State (FAKE_GH_STATE names a JSON file):
+#
+#   {"user": "example-user",
+#    "orgs": ["example-org"],
+#    "repos": {"example-org/example-repo": {
+#        "default": "main",            (null: GitHub reports no default branch)
+#        "archived": false,
+#        "refs": {"feat/x": "<oid>"},  (the branches that exist ON GITHUB)
+#        "compare": {"feat/x": "AHEAD"},
+#        "prs": [{"number", "title", "url", "head", "head_repo" (null: fork
+#                 deleted), "state" (OPEN|MERGED|CLOSED), "draft",
+#                 "updated_at", "author" (null, or {"login", "__typename"})}]}}}
+#
+# What it answers:
+#
+#   gh auth status [--hostname github.com] [--active]
+#   gh api user [--jq .login]
+#   gh api [--paginate] user/orgs      pages printed back to back, as real gh
+#                                      prints each page as its own JSON array
+#   gh api graphql -f query=... [-f name=value]... [-F name=value]...
+#
+# GraphQL is PARSED, not pattern-matched: the query text is tokenised, its
+# declared variables are type-checked, and the answer is the state projected
+# through the query's own selection set, aliases included. So the fake returns
+# what the query asked for and only that -- a field the audit forgot to select
+# is missing from the answer here just as it would be on GitHub -- and a field
+# this fake does not model is refused loudly (exit 2), never invented.
+#
+# Real-gh behaviours reproduced, because each one is a way to be wrong:
+#
+#   - `-F` type-infers: `true`, `false`, `null` and integers become JSON
+#     values; `-f` always sends a string. A `String!` variable given a number
+#     is a GraphQL error. So a branch named 123 sent with -F fails here, the
+#     same way it would fail against GitHub (spec: "GitHub queries").
+#   - A GraphQL answer carrying `errors` is printed on stdout anyway, with
+#     `gh: <message>` on stderr and exit 1 (captured 2026-09-13).
+#   - `ref(qualifiedName:)` for a missing ref is null WITHOUT an error;
+#     `compare(headRef:)` against a missing ref is null data plus a NOT_FOUND
+#     error located at the field, exit 1 -- byte-identical to
+#     tests/fixtures/gh/compare-missing-ref.{stdout,stderr,exit} for the same
+#     query text.
+#   - Pagination is real: endCursor is an opaque token naming the connection
+#     it came from and an offset. A cursor from another connection, or
+#     garbage, is an error, not page one.
+#
+# Constructions, not captures (nothing on the capture host showed these):
+#   the `auth status` wording; the unknown-owner answer (repositoryOwner null,
+#   no error); the unknown-repository NOT_FOUND wording; the variable-coercion
+#   error body beyond its message; the invalid-cursor error; the
+#   FAKE_GH_GRAPHQL_ERRORS error entry; how pages of `user/orgs` are separated
+#   (nothing -- the strictest reading of "each page is a separate JSON array").
+#
+# Switches. A fake that can only succeed can only prove the happy path, so each
+# of these exists to make one failure reachable from a test:
+#
+#   FAKE_GH_STATE=<file>
+#       The state above. Unset or unreadable: exit 2 for any call that needs
+#       it -- a test that forgot its state must not be answered "nothing".
+#   FAKE_GH_LOG=<file>
+#       Append each call's argv as ONE JSON array per line. JSON rather than
+#       space-joined text because a GraphQL query spans many lines; a test
+#       counts calls by counting lines, and reads variables back exactly.
+#   FAKE_GH_FAIL=<argv prefix>
+#       Exit 1 with a plain, non-JSON stderr line when the call's argv, joined
+#       by spaces, starts with the prefix at a word boundary ("api user" does
+#       not match "api user/orgs"). For a GraphQL call the words
+#       "api graphql <OperationName>" are matched too, so one operation can be
+#       failed while the others answer. This is how `gh` fails when it is not
+#       GitHub that is wrong: a network error, a missing scope.
+#   FAKE_GH_UNAUTH=1
+#       `auth status` fails, as it does with an expired or invalid token.
+#   FAKE_GH_GRAPHQL_ERRORS=1
+#       Every GraphQL answer carries its data PLUS an `errors` entry and exits
+#       0: the shape a caller that checks only the exit status reads as a
+#       success. A construction the spec requires ("Testing", fake gh), not a
+#       capture: the real gh exits 1 whenever an answer carries errors. It is
+#       here so the caller's `errors` check is proven on its own, not only
+#       behind the exit status.
+#   FAKE_GH_PAGE_SIZE=<n>
+#       Page every connection (and user/orgs) at n items instead of the
+#       query's own `first:`, so a test can force pagination with a handful of
+#       items rather than a hundred.
+#
+# Refused outright, whatever the switches say: any query text containing the
+# word `mutation` (exit 1), checked before every switch, FAKE_GH_FAIL
+# included, so no switch can mask it. The audit is read-only, and this is the
+# tripwire that proves no call it makes could write.
+
+from __future__ import annotations
+
+import base64
+import binascii
+import bisect
+import contextlib
+import io
+import json
+import os
+import re
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+CAPTURES = Path(__file__).resolve().parent.parent / "fixtures" / "gh"
+HOST = "github.com"
+USER_ORGS_PER_PAGE = 30
+
+# The environment the switches are read from. The CLI runs with the process
+# environment; handle() swaps in the mapping it is given, so a test can run
+# the fake in-process against exactly the environment a subprocess would see.
+ENV = os.environ
+
+
+class Refused(Exception):
+    """Something this fake does not model. Exit 2, loudly."""
+
+
+class NotFound(Exception):
+    """A GraphQL NOT_FOUND: the field's value becomes null plus an error."""
+
+
+class ArgumentError(Exception):
+    """A GraphQL argument GitHub would reject: null plus an error."""
+
+
+def refuse(message: str):
+    raise Refused(message)
+
+
+# --------------------------------------------------------------------------
+# Switches
+# --------------------------------------------------------------------------
+
+
+def log_call(argv: list[str]) -> None:
+    path = ENV.get("FAKE_GH_LOG", "")
+    if path:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(argv) + "\n")
+
+
+def failing(words: str) -> bool:
+    prefix = ENV.get("FAKE_GH_FAIL", "")
+    return bool(prefix) and (words + " ").startswith(prefix + " ")
+
+
+def page_size(default: int) -> int:
+    raw = ENV.get("FAKE_GH_PAGE_SIZE", "")
+    if not raw:
+        return default
+    if not raw.isdigit() or int(raw) < 1:
+        refuse(f"FAKE_GH_PAGE_SIZE must be a positive integer, got {raw!r}")
+    return int(raw)
+
+
+def load_state() -> dict:
+    path = ENV.get("FAKE_GH_STATE", "")
+    if not path:
+        refuse("FAKE_GH_STATE is not set; this fake answers from a state file and has none")
+    try:
+        state = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        refuse(f"FAKE_GH_STATE {path}: {exc}")
+    if not isinstance(state, dict):
+        refuse(f"FAKE_GH_STATE {path}: the state must be a JSON object")
+    return state
+
+
+# --------------------------------------------------------------------------
+# gh auth status
+# --------------------------------------------------------------------------
+
+
+def auth_status(rest: list[str]) -> int:
+    hostname = None
+    index = 0
+    while index < len(rest):
+        word = rest[index]
+        if word in ("--hostname", "-h") and index + 1 < len(rest):
+            hostname = rest[index + 1]
+            index += 2
+        elif word.startswith("--hostname="):
+            hostname = word.split("=", 1)[1]
+            index += 1
+        elif word in ("--active", "-a"):
+            # This fake has one account, so checking only the active one is
+            # the same check; the flag is accepted because the audit sends it.
+            index += 1
+        else:
+            refuse(f"auth status: flag {word!r} is not faked")
+    if ENV.get("FAKE_GH_UNAUTH") == "1":
+        sys.stderr.write(
+            f"{HOST}\n"
+            f"  X Failed to log in to {HOST} account example-user (keyring)\n"
+            "  - The token in keyring is invalid.\n"
+            f"  - To re-authenticate, run: gh auth login -h {HOST}\n"
+        )
+        return 1
+    if hostname not in (None, HOST):
+        sys.stderr.write(f"You are not logged into any accounts on {hostname}\n")
+        return 1
+    sys.stdout.write(f"{HOST}\n  - Logged in to {HOST} account example-user (keyring)\n")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# gh api (REST)
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class ApiCall:
+    endpoint: str | None = None
+    fields: list[tuple[str, object]] = field(default_factory=list)
+    jq: str | None = None
+    hostname: str | None = None
+    paginate: bool = False
+
+
+def infer(value: str):
+    """`gh api -F`'s type inference, per `gh api --help`."""
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    if value == "null":
+        return None
+    # ASCII digits only, like Go's strconv: Python's \d also matches other
+    # scripts' digits, which gh would send as a string.
+    if re.fullmatch(r"[+-]?[0-9]+", value):
+        return int(value)
+    if value.startswith("@") or re.search(r"\{(owner|repo|branch)\}", value):
+        refuse(f"-F {value!r}: file and placeholder values are not faked")
+    return value
+
+
+def parse_api(rest: list[str]) -> ApiCall:
+    call = ApiCall()
+    value_flags = {
+        "-f": "raw",
+        "--raw-field": "raw",
+        "-F": "typed",
+        "--field": "typed",
+        "-q": "jq",
+        "--jq": "jq",
+        "--hostname": "hostname",
+    }
+    index = 0
+    while index < len(rest):
+        word = rest[index]
+        name, value = word, None
+        if word.startswith("--") and "=" in word:
+            name, value = word.split("=", 1)
+        if name == "--paginate" and value is None:
+            call.paginate = True
+            index += 1
+            continue
+        if name in value_flags:
+            if value is None:
+                if index + 1 >= len(rest):
+                    refuse(f"{name} needs a value")
+                value = rest[index + 1]
+                index += 2
+            else:
+                index += 1
+            kind = value_flags[name]
+            if kind in ("raw", "typed"):
+                if "=" not in value:
+                    refuse(f"{name} {value!r}: expected key=value")
+                key, raw = value.split("=", 1)
+                call.fields.append((key, raw if kind == "raw" else infer(raw)))
+            elif kind == "jq":
+                call.jq = value
+            else:
+                call.hostname = value
+            continue
+        if word.startswith("-"):
+            refuse(f"api: flag {word!r} is not faked")
+        if call.endpoint is not None:
+            refuse(f"api: a second endpoint {word!r}")
+        call.endpoint = word
+        index += 1
+    if call.endpoint is None:
+        refuse("api: no endpoint")
+    if call.hostname not in (None, HOST):
+        refuse(f"api: only {HOST} is faked, not {call.hostname!r}")
+    return call
+
+
+def compact(obj) -> str:
+    return json.dumps(obj, separators=(",", ":"))
+
+
+def rest_user(call: ApiCall) -> int:
+    if call.fields or call.paginate:
+        refuse("api user: fields and --paginate are not faked")
+    state = load_state()
+    login = state.get("user")
+    if not isinstance(login, str):
+        refuse("state: 'user' must be a login")
+    template = json.loads((CAPTURES / "user.json").read_text(encoding="utf-8"))
+    captured_login = template["login"]
+    answer = {
+        key: value.replace(captured_login, login) if isinstance(value, str) else value
+        for key, value in template.items()
+    }
+    if call.jq is None:
+        sys.stdout.write(compact(answer) + "\n")
+    elif call.jq == ".login":
+        sys.stdout.write(login + "\n")
+    else:
+        refuse(f"api user: --jq {call.jq!r} is not faked")
+    return 0
+
+
+def rest_user_orgs(call: ApiCall) -> int:
+    if call.fields or call.jq is not None:
+        refuse("api user/orgs: fields and --jq are not faked")
+    state = load_state()
+    orgs = state.get("orgs", [])
+    if not isinstance(orgs, list) or not all(isinstance(o, str) for o in orgs):
+        refuse("state: 'orgs' must be a list of logins")
+    template = json.loads((CAPTURES / "user-orgs.json").read_text(encoding="utf-8"))[0]
+    captured_login = template["login"]
+    entries = [
+        {
+            key: value.replace(captured_login, login) if isinstance(value, str) else value
+            for key, value in template.items()
+        }
+        for login in orgs
+    ]
+    size = page_size(USER_ORGS_PER_PAGE)
+    pages = [entries[i : i + size] for i in range(0, len(entries), size)] or [[]]
+    if not call.paginate:
+        pages = pages[:1]
+    sys.stdout.write("".join(compact(page) for page in pages) + "\n")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# GraphQL: tokenise and parse
+# --------------------------------------------------------------------------
+
+TOKEN_RE = re.compile(
+    r"""
+    (?P<skip>[\s,]+|\#[^\n]*)
+  | (?P<punct>\.\.\.|[{}()\[\]:!$=])
+  | (?P<name>[_A-Za-z][_0-9A-Za-z]*)
+  | (?P<number>-?\d+(?:\.\d+)?)
+  | (?P<string>"(?:[^"\\\n]|\\.)*")
+    """,
+    re.VERBOSE,
+)
+
+
+@dataclass
+class Token:
+    kind: str
+    value: str
+    line: int
+    column: int
+
+
+@dataclass
+class Field:
+    alias: str | None
+    name: str
+    args: dict
+    selections: list[Field] | None
+    line: int
+    column: int
+
+    @property
+    def key(self) -> str:
+        return self.alias or self.name
+
+
+@dataclass
+class Operation:
+    name: str
+    variables: dict  # name -> (type, line, column)
+    selections: list[Field]
+
+
+def tokenise(text: str) -> list[Token]:
+    line_starts = [0] + [m.end() for m in re.finditer("\n", text)]
+    tokens = []
+    position = 0
+    while position < len(text):
+        match = TOKEN_RE.match(text, position)
+        if match is None:
+            refuse(f"graphql: cannot tokenise the query at offset {position}")
+        kind = match.lastgroup
+        if kind != "skip":
+            line = bisect.bisect_right(line_starts, position)
+            column = position - line_starts[line - 1] + 1
+            tokens.append(Token(kind, match.group(), line, column))
+        position = match.end()
+    return tokens
+
+
+class Parser:
+    def __init__(self, text: str):
+        self.tokens = tokenise(text)
+        self.index = 0
+
+    def peek(self, value: str | None = None) -> Token | None:
+        token = self.tokens[self.index] if self.index < len(self.tokens) else None
+        if value is not None and (token is None or token.value != value):
+            return None
+        return token
+
+    def take(self, kind: str | None = None, value: str | None = None) -> Token:
+        token = self.peek()
+        if token is None or (kind and token.kind != kind) or (value and token.value != value):
+            where = f"line {token.line}" if token else "the end"
+            refuse(f"graphql: expected {value or kind} at {where}")
+        self.index += 1
+        return token
+
+    def operation(self) -> Operation:
+        self.take("name", "query")
+        name = self.take("name").value
+        variables = {}
+        if self.peek("("):
+            self.take("punct", "(")
+            while not self.peek(")"):
+                dollar = self.take("punct", "$")
+                var = self.take("name").value
+                self.take("punct", ":")
+                if self.peek("["):
+                    refuse("graphql: list-typed variables are not faked")
+                var_type = self.take("name").value
+                if self.peek("!"):
+                    self.take("punct", "!")
+                    var_type += "!"
+                if self.peek("="):
+                    refuse("graphql: variable defaults are not faked")
+                variables[var] = (var_type, dollar.line, dollar.column)
+            self.take("punct", ")")
+        selections = self.selection_set()
+        if self.peek() is not None:
+            refuse("graphql: only one operation per document is faked")
+        return Operation(name, variables, selections)
+
+    def selection_set(self) -> list[Field]:
+        self.take("punct", "{")
+        fields = []
+        while not self.peek("}"):
+            if self.peek("..."):
+                refuse("graphql: fragments are not faked")
+            first = self.take("name")
+            alias, name = None, first.value
+            if self.peek(":"):
+                self.take("punct", ":")
+                alias, name = first.value, self.take("name").value
+            args = {}
+            if self.peek("("):
+                self.take("punct", "(")
+                while not self.peek(")"):
+                    arg = self.take("name").value
+                    self.take("punct", ":")
+                    args[arg] = self.value()
+                self.take("punct", ")")
+            selections = self.selection_set() if self.peek("{") else None
+            fields.append(Field(alias, name, args, selections, first.line, first.column))
+        self.take("punct", "}")
+        return fields
+
+    def value(self):
+        token = self.take()
+        if token.value == "$":
+            return ("var", self.take("name").value)
+        if token.value == "[":
+            items = []
+            while not self.peek("]"):
+                items.append(self.value())
+            self.take("punct", "]")
+            return ("list", items)
+        if token.kind == "name":
+            literal = {"true": True, "false": False, "null": None}
+            if token.value in literal:
+                return ("const", literal[token.value])
+            return ("const", token.value)
+        if token.kind == "number":
+            if "." in token.value:
+                refuse("graphql: float arguments are not faked")
+            return ("const", int(token.value))
+        if token.kind == "string":
+            return ("const", json.loads(token.value))
+        refuse(f"graphql: unexpected {token.value!r} at line {token.line}")
+
+
+def resolve_value(node, variables: dict):
+    kind, payload = node
+    if kind == "var":
+        if payload not in variables:
+            refuse(f"graphql: ${payload} is used but not declared")
+        return variables[payload]
+    if kind == "list":
+        return [resolve_value(item, variables) for item in payload]
+    return payload
+
+
+# --------------------------------------------------------------------------
+# GraphQL: the state as a graph
+# --------------------------------------------------------------------------
+
+
+def encode_cursor(connection: str, offset: int) -> str:
+    return base64.b64encode(f"fake-gh:{connection}:{offset}".encode()).decode()
+
+
+def decode_cursor(cursor, connection: str) -> int:
+    try:
+        text = base64.b64decode(str(cursor), validate=True).decode()
+    except (binascii.Error, ValueError):
+        text = ""
+    prefix = f"fake-gh:{connection}:"
+    rest = text[len(prefix) :] if text.startswith(prefix) else ""
+    if not rest.isdigit():
+        raise ArgumentError(f"`{cursor}` does not appear to be a valid cursor.")
+    return int(rest)
+
+
+def connection(items: list, args: dict, name: str) -> dict:
+    first = args.get("first")
+    if not isinstance(first, int) or not 1 <= first <= 100:
+        raise ArgumentError(f"`first` on the {name} connection must be between 1 and 100.")
+    size = page_size(first)
+    after = args.get("after")
+    offset = 0 if after is None else decode_cursor(after, name)
+    page = items[offset : offset + size]
+    end = offset + len(page)
+    return {
+        "pageInfo": {
+            "hasNextPage": end < len(items),
+            "endCursor": encode_cursor(name, end) if page else None,
+        },
+        "totalCount": len(items),
+        "nodes": page,
+    }
+
+
+def pr_node(pr: dict) -> dict:
+    try:
+        author = pr["author"]
+        head_repo = pr["head_repo"]
+        return {
+            "number": pr["number"],
+            "title": pr["title"],
+            "url": pr["url"],
+            "headRefName": pr["head"],
+            "isDraft": pr["draft"],
+            "updatedAt": pr["updated_at"],
+            "state": pr["state"],
+            "author": None
+            if author is None
+            else {"login": author["login"], "__typename": author["__typename"]},
+            "headRepository": None if head_repo is None else {"nameWithOwner": head_repo},
+        }
+    except (KeyError, TypeError) as exc:
+        refuse(f"state: a pull request is missing {exc}")
+
+
+def repository_object(key: str, repo: dict) -> dict:
+    owner, name = key.split("/", 1)
+    refs = repo.get("refs", {})
+    compare_status = repo.get("compare", {})
+    prs = sorted(repo.get("prs", []), key=lambda p: p.get("number", 0))
+    default = repo.get("default", "main")
+
+    def ref(args):
+        qualified = args.get("qualifiedName")
+        prefix = "refs/heads/"
+        # Only a fully qualified name resolves: a short name is ambiguous with
+        # a tag on GitHub, and the audit must never rely on that guess.
+        if isinstance(qualified, str) and qualified.startswith(prefix):
+            branch = qualified[len(prefix) :]
+            if branch in refs:
+                return {"target": {"oid": refs[branch]}}
+        return None
+
+    def pull_requests(args):
+        states = args.get("states")
+        if isinstance(states, str):
+            states = [states]
+        head = args.get("headRefName")
+        chosen = [
+            pr_node(pr)
+            for pr in prs
+            if (states is None or pr.get("state") in states)
+            and (head is None or pr.get("head") == head)
+        ]
+        label = f"pullRequests:{key}:{','.join(states or [])}:{head or ''}"
+        return connection(chosen, args, label)
+
+    def compare(args):
+        head = args.get("headRef")
+        if head not in refs:
+            raise NotFound(f"Could not resolve head ref '{head}'.")
+        if head not in compare_status:
+            refuse(f"state: {key} has a ref {head!r} but no compare status for it")
+        return {"status": compare_status[head]}
+
+    return {
+        "name": name,
+        "nameWithOwner": f"{owner}/{name}",
+        "isArchived": bool(repo.get("archived", False)),
+        "defaultBranchRef": None if default is None else {"name": default, "compare": compare},
+        "ref": ref,
+        "pullRequests": pull_requests,
+    }
+
+
+def query_root(state: dict) -> dict:
+    repos = state.get("repos", {})
+    if not isinstance(repos, dict):
+        refuse("state: 'repos' must be an object keyed by owner/name")
+
+    def repository_owner(args):
+        login = str(args.get("login"))
+        known = [state.get("user")] + list(state.get("orgs", [])) + [k.split("/")[0] for k in repos]
+        canonical = next(
+            (k for k in known if isinstance(k, str) and k.lower() == login.lower()), None
+        )
+        if canonical is None:
+            return None
+        owned = [
+            (key, repo)
+            for key, repo in sorted(repos.items())
+            if key.split("/")[0].lower() == login.lower()
+        ]
+
+        def repositories(conn_args):
+            archived = conn_args.get("isArchived")
+            kept = [
+                repository_object(key, repo)
+                for key, repo in owned
+                if archived is None or bool(repo.get("archived", False)) == archived
+            ]
+            return connection(kept, conn_args, f"repositories:{canonical}")
+
+        return {"login": canonical, "repositories": repositories}
+
+    def repository(args):
+        wanted = f"{args.get('owner')}/{args.get('name')}"
+        for key, repo in repos.items():
+            if key.lower() == wanted.lower():
+                return repository_object(key, repo)
+        raise NotFound(f"Could not resolve to a Repository with the name '{wanted}'.")
+
+    return {"repositoryOwner": repository_owner, "repository": repository}
+
+
+def select(obj: dict, selections: list[Field], variables: dict, path: list, errors: list) -> dict:
+    out = {}
+    for fld in selections:
+        here = [*path, fld.key]
+        if fld.name not in obj:
+            where = ".".join(map(str, path)) or "the root"
+            refuse(f"graphql: field {fld.name!r} is not faked at {where}")
+        raw = obj[fld.name]
+        try:
+            value = (
+                raw({k: resolve_value(v, variables) for k, v in fld.args.items()})
+                if callable(raw)
+                else raw
+            )
+        except NotFound as exc:
+            location = [{"line": fld.line, "column": fld.column}]
+            errors.append(
+                {"type": "NOT_FOUND", "path": here, "locations": location, "message": str(exc)}
+            )
+            out[fld.key] = None
+            continue
+        except ArgumentError as exc:
+            location = [{"line": fld.line, "column": fld.column}]
+            errors.append({"path": here, "locations": location, "message": str(exc)})
+            out[fld.key] = None
+            continue
+        out[fld.key] = project(value, fld, variables, here, errors)
+    return out
+
+
+def project(value, fld: Field, variables: dict, path: list, errors: list):
+    if value is None:
+        return None
+    if isinstance(value, list):
+        if fld.selections is None:
+            return value
+        return [
+            None if item is None else select(item, fld.selections, variables, [*path, i], errors)
+            for i, item in enumerate(value)
+        ]
+    if isinstance(value, dict):
+        if fld.selections is None:
+            refuse(f"graphql: field {fld.name!r} needs a selection set")
+        return select(value, fld.selections, variables, path, errors)
+    if fld.selections is not None:
+        refuse(f"graphql: scalar field {fld.name!r} cannot have a selection set")
+    return value
+
+
+def coerce_variables(operation: Operation, provided: dict) -> tuple[dict, list]:
+    values, errors = {}, []
+    for name, (var_type, line, column) in operation.variables.items():
+        if var_type not in ("String", "String!"):
+            refuse(f"graphql: variable type {var_type} is not faked")
+        present = name in provided
+        value = provided.get(name)
+        if value is None and not var_type.endswith("!"):
+            values[name] = None
+            continue
+        if isinstance(value, str):
+            values[name] = value
+            continue
+        explanation = (
+            "Expected value to not be null"
+            if value is None
+            else f"Could not coerce value {json.dumps(value)} to String"
+        )
+        errors.append(
+            {
+                "extensions": {
+                    "value": value if present else None,
+                    "problems": [{"path": [], "explanation": explanation}],
+                },
+                "locations": [{"line": line, "column": column}],
+                "message": f"Variable ${name} of type {var_type} was provided invalid value",
+            }
+        )
+    return values, errors
+
+
+def graphql(call: ApiCall) -> int:
+    if call.jq is not None or call.paginate:
+        refuse("api graphql: --jq and --paginate are not faked")
+    fields = dict(call.fields)
+    query = fields.pop("query", None)
+    operation_name = fields.pop("operationName", None)
+    if not isinstance(query, str):
+        refuse("api graphql: no query field")
+    named = re.match(r"\s*query\s+([_A-Za-z]\w*)", query)
+    if named is None:
+        refuse("api graphql: every query must be a named `query` operation")
+    if failing(f"api graphql {named.group(1)}"):
+        sys.stderr.write(f"gh: api graphql {named.group(1)} failed (FAKE_GH_FAIL)\n")
+        return 1
+    operation = Parser(query).operation()
+    if operation_name is not None and operation_name != operation.name:
+        refuse(f"api graphql: operationName {operation_name!r} is not {operation.name!r}")
+
+    variables, errors = coerce_variables(operation, fields)
+    if errors:
+        body = {"errors": errors}
+    else:
+        root = query_root(load_state())
+        data = select(root, operation.selections, variables, [], errors)
+        body = {"data": data}
+        if ENV.get("FAKE_GH_GRAPHQL_ERRORS") == "1":
+            errors.append(
+                {
+                    "type": "FORBIDDEN",
+                    "path": [],
+                    "message": "Resource not accessible by integration",
+                }
+            )
+            body["errors"] = errors
+            sys.stdout.write(compact(body) + "\n")
+            return 0
+        if errors:
+            body["errors"] = errors
+    sys.stdout.write(compact(body) + "\n")
+    if errors:
+        sys.stderr.write("gh: " + "\n".join(e["message"] for e in errors) + "\n")
+        return 1
+    return 0
+
+
+# --------------------------------------------------------------------------
+# Dispatch
+# --------------------------------------------------------------------------
+
+
+def names_a_mutation(argv: list[str]) -> bool:
+    """Whether any query field of a `gh api graphql` call contains `mutation`."""
+    if argv[:2] != ["api", "graphql"]:
+        return False
+    for word in argv:
+        for prefix in ("query=", "--raw-field=query=", "--field=query="):
+            if word.startswith(prefix) and re.search(r"\bmutation\b", word[len(prefix) :]):
+                return True
+    return False
+
+
+def dispatch(argv: list[str]) -> int:
+    log_call(argv)
+    # The tripwire comes before every switch: FAKE_GH_FAIL must not be able
+    # to turn a refused mutation into an ordinary-looking failure.
+    if names_a_mutation(argv):
+        sys.stderr.write("fake gh: refusing a GraphQL mutation; nothing under test may write\n")
+        return 1
+    if failing(" ".join(argv)):
+        sys.stderr.write(f"gh: {ENV['FAKE_GH_FAIL']} failed (FAKE_GH_FAIL)\n")
+        return 1
+    if argv[:2] == ["auth", "status"]:
+        return auth_status(argv[2:])
+    if argv[:1] == ["api"]:
+        call = parse_api(argv[1:])
+        if call.endpoint == "user":
+            return rest_user(call)
+        if call.endpoint == "user/orgs":
+            return rest_user_orgs(call)
+        if call.endpoint == "graphql":
+            return graphql(call)
+        refuse(f"api: endpoint {call.endpoint!r} is not faked")
+    refuse(f"not faked: gh {' '.join(argv)}")
+    return 2
+
+
+def handle(argv: list[str], env, stdin: str = "") -> tuple[str, str, int]:
+    """The whole fake as one call: (stdout, stderr, exit status).
+
+    The CLI below is exactly this plus writing the result out, so a test that
+    runs the fake in-process (tests/helpers/auditlib.in_process_gh) gets the
+    same text and the same status as one that finds `gh` on PATH. `stdin` is
+    there for the shape of a process call; nothing this fake answers reads it.
+    """
+    global ENV
+    out, err = io.StringIO(), io.StringIO()
+    previous, ENV = ENV, env
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = dispatch(list(argv))
+            except Refused as exc:
+                sys.stderr.write(f"fake gh: {exc}\n")
+                code = 2
+    finally:
+        ENV = previous
+    return out.getvalue(), err.getvalue(), code
+
+
+if __name__ == "__main__":
+    stdout, stderr, code = handle(sys.argv[1:], os.environ)
+    sys.stdout.write(stdout)
+    sys.stderr.write(stderr)
+    sys.exit(code)

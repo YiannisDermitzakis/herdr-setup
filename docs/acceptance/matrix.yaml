@@ -31,7 +31,7 @@ rows:
     acceptance: diff reports plugins, config and integration state in full even when
       the Herdr command line and the running server speak different protocol versions.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-08-herdr-setup-design.md
     levels:
       unit:
       - herdr-setup:tests/test_diff_plugins.sh
@@ -58,7 +58,7 @@ rows:
       mismatch and the restart needed, instead of parsing a JSON error object as an
       empty result.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-08-herdr-setup-design.md
     levels:
       unit:
       - herdr-setup:tests/test_preflight.sh
@@ -136,7 +136,7 @@ rows:
     acceptance: diff reports each manifest plugin as missing, matching its pinned ref,
       or moved, and lists host plugins the manifest does not name as unmanaged.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-08-herdr-setup-design.md
     levels:
       unit:
       - herdr-setup:tests/test_diff_plugins.sh
@@ -162,7 +162,7 @@ rows:
     acceptance: On a host missing every manifest plugin, apply installs them at their
       pinned refs and a following diff reports a match.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-08-herdr-setup-design.md
     levels:
       unit:
       - herdr-setup:tests/test_apply_plugins.sh
@@ -194,7 +194,7 @@ rows:
     acceptance: apply updates the operator's own config lines while leaving plugin-written
       marked blocks exactly where they were.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-08-herdr-setup-design.md
     levels:
       unit:
       - herdr-setup:tests/test_blocks.sh
@@ -242,7 +242,7 @@ rows:
     acceptance: absorb followed by apply against an unchanged host makes no further
       change, and absorb refuses to run when the manifest has uncommitted edits.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-08-herdr-setup-design.md
     levels:
       unit:
       - herdr-setup:tests/test_absorb.sh
@@ -286,7 +286,7 @@ rows:
     acceptance: onboard lists the agents present on the host, reports an integration
       Herdr calls outdated with both versions, and installs a refresh only when accepted.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-08-herdr-setup-design.md
     levels:
       unit:
       - herdr-setup:tests/test_onboard_detect.sh
@@ -348,7 +348,7 @@ rows:
       a record per pane; a following server restart brings each pane back running its
       agent's resume command rather than a bare shell.
     origin:
-    - herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md
+    - herdr-setup:docs/superpowers/implemented/specs/2026-09-08-herdr-setup-design.md
     levels:
       unit:
       - herdr-setup:tests/test_feed_probe.py
@@ -385,7 +385,7 @@ rows:
       each pane back" are not something a fake herdr and fixture session stores can
       prove, and Copilot stays unverified until a host with the real CLI confirms a
       resume. That live half is the spec's post-merge test plan
-      (herdr-setup:docs/superpowers/specs/2026-09-08-herdr-setup-design.md#test-plan),
+      (herdr-setup:docs/superpowers/implemented/specs/2026-09-08-herdr-setup-design.md#test-plan),
       run once by the operator, not automated here -- `skipped` records that the
       verification exists and does not run in CI, which is the honest status per this
       file's own schema, not a debt phase 10 left behind.
@@ -401,3 +401,128 @@ rows:
       opened -- a hot write-ahead log is the realistic case, since opencode runs in
       WAL mode and this adapter opens `mode=ro` -- now one sentence and exit 2
       (herdr-setup:tests/test_adapter_opencode.py).
+  - id: audit-reports-stranded-work
+    capability: Session audit
+    acceptance: audit reports the agent sessions open in Herdr with the branches they
+      work on, the closed sessions that left unmerged branches, and the open PRs across
+      the configured GitHub owners that match no session branch, and it writes nothing.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
+    levels:
+      unit:
+      - herdr-setup:tests/test_audit_join.py
+      - herdr-setup:tests/test_audit_report.py
+      - herdr-setup:tests/test_audit_entrypoint.sh
+    status: ci
+    notes: Implemented in the 2026-09-13-session-audit plan, phase 4. Section 1 (every
+      Herdr pane with its session's branches, a worktree-path branch from the pane's own
+      cwd, or the note saying why it has none) is verified by herdr-setup:tests/test_audit_join.py
+      against the fake herdr and inline adapters; sections 2 and 3 (unmerged and open-pr
+      branches no open pane touched, newest session with +N; open pull requests matching
+      no session branch in the base or head repository, bots hidden and counted, drafts
+      labelled), the text and JSON shapes and the exit codes by herdr-setup:tests/test_audit_report.py.
+      herdr-setup:tests/test_audit_entrypoint.sh runs the whole chain through herdr-setup
+      audit with the real claude and codex adapters, a real git repository and the fake
+      gh -- all three sections, exit 1 with findings and 0 on a clean state, --json agreeing
+      with the text, and nothing written -- the fake gh saw no mutation and only auth
+      status and GraphQL queries, and the repository's refs and status and the session
+      stores' listings and modification times are unchanged. Both run in CI (tests/run.sh
+      and pytest). The live comparison with a hand audit on the Herdr host is the spec's
+      post-merge Test Plan, run by the operator; it is not automated here.
+  - id: audit-merge-state-sees-squash-merges
+    capability: Session audit
+    acceptance: A branch merged by squash counts as merged, and a branch with no ref
+      and no open or merged PR is counted as gone rather than listed; neither is reported
+      as work to act on.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
+    levels:
+      unit:
+      - herdr-setup:tests/test_audit_merge_state.py
+      - herdr-setup:tests/test_audit_report.py
+      - herdr-setup:tests/test_audit_entrypoint.sh
+    status: ci
+    notes: Phase 3 of the 2026-09-13-session-audit plan verifies merge state against
+      real git repositories and the fake gh (herdr-setup:tests/test_audit_merge_state.py)
+      -- a squash-merged branch resolves to merged because a MERGED pull request with
+      the same head and head repository is checked before ancestry, a fork's same-named
+      or head-less pull request never counts, and a branch with no local ref, no GitHub
+      ref and no open or merged pull request resolves to gone. Phase 4 verifies the
+      report half (herdr-setup:tests/test_audit_report.py) -- gone is hidden from section
+      1 and counted in the footer, and section 2 lists only unmerged and open-pr -- and
+      herdr-setup:tests/test_audit_entrypoint.sh proves it end to end -- a squash-merged
+      branch appears nowhere in the report and a deleted one is counted as "1 branch gone".
+  - id: audit-fails-closed
+    capability: Session audit
+    acceptance: audit exits 3 when Herdr is unreachable and 2 with no report when git
+      or gh is missing or a GitHub call fails; an adapter that cannot answer marks the
+      report incomplete and exits 2, so a source it could not read never becomes an
+      empty section.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
+    levels:
+      unit:
+      - herdr-setup:tests/test_audit_entrypoint.sh
+      - herdr-setup:tests/test_audit_github.py
+      - herdr-setup:tests/test_audit_git.py
+      - herdr-setup:tests/test_audit_join.py
+      - herdr-setup:tests/test_audit_report.py
+    status: ci
+    notes: Implemented in the 2026-09-13-session-audit plan, phases 1, 3 and 4.
+      herdr-setup:tests/test_audit_entrypoint.sh proves exit 3 through the entrypoint
+      under a protocol mismatch and with no Herdr server, before any gh call; exit 2 with
+      nothing on stdout and one stderr line when a GraphQL call fails and when gh is not
+      authenticated (before any GraphQL call); and an adapter whose sessions query fails
+      still printing the report, ending incomplete and exiting 2. ToolError for git or gh
+      missing from PATH and for gh auth status failing, and GhError for any non-zero gh
+      exit or errors array, are verified by herdr-setup:tests/test_audit_github.py;
+      GitError for git failing inside an existing repository by herdr-setup:tests/test_audit_git.py;
+      run() turning each of ToolError, GhError, GitError and HerdrError into one line and
+      exit 2 with no table, and an incomplete report into exit 2 whatever its findings, by
+      herdr-setup:tests/test_audit_report.py; a failing adapter or probe recorded as
+      incomplete, and a failing Herdr call raising rather than becoming an empty pane
+      list, by herdr-setup:tests/test_audit_join.py.
+  - id: adapter-sessions-query
+    capability: Session audit
+    acceptance: The adapter contract documents an optional read-only sessions query
+      whose examples are executed; Claude Code and Codex answer it from their own session
+      history, and agents without it are reported as unsupported.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
+    levels:
+      unit:
+      - herdr-setup:tests/test_feed_sessions.py
+      - herdr-setup:tests/test_adapter_claude_sessions.py
+      - herdr-setup:tests/test_adapter_codex_sessions.py
+      - herdr-setup:tests/test_contract.py
+      - herdr-setup:tests/test_audit_join.py
+    status: ci
+    notes: Phase 2 of the 2026-09-13-session-audit plan lands and verifies the contract
+      -- docs/adapters.md's sessions-probe/sessions-response examples execute
+      (herdr-setup:tests/test_contract.py), lib/feed.py validates and re-filters branch
+      names (herdr-setup:tests/test_feed_sessions.py), Claude Code and Codex both answer
+      real session history (herdr-setup:tests/test_adapter_claude_sessions.py,
+      herdr-setup:tests/test_adapter_codex_sessions.py), and a conformance pass covers
+      every adapter's probe. Phase 4 verifies the last clause -- the audit asks only adapters
+      declaring sessions, and a pane whose agent's adapter has no sessions query is
+      reported "no session history (unsupported)" (herdr-setup:tests/test_audit_join.py).
+  - id: install-adds-never-overwrites
+    capability: Install
+    acceptance: install puts herdr-setup on PATH by symlinking it into ~/.local/bin,
+      creates that directory when missing, warns when it is not on PATH, and refuses
+      with exit 4 to replace any other file or link.
+    origin:
+    - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
+    levels:
+      unit:
+      - herdr-setup:tests/test_install.sh
+      - herdr-setup:tests/test_entrypoint.sh
+    status: ci
+    notes: Implemented in the 2026-09-13-session-audit plan, phase 1 (cmd_install,
+      herdr-setup). tests/test_install.sh covers every row of the install table (fresh
+      install, idempotent re-run by inode, a symlink/dangling-symlink/symlink-loop/
+      file/directory in the way, a read-only ~/.local or ~/.local/bin making mkdir/ln
+      itself fail, --dry-run both clean and refused, order-aware PATH and shadowing
+      warnings that compare resolved real paths, an unexpected argument, and installing
+      through an intermediate or relative symlink); tests/test_entrypoint.sh proves
+      install is dispatched and needs no Herdr at all.

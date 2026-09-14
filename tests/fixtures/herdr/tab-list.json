@@ -1,0 +1,35 @@
+{
+  "id": "cli:tab:list",
+  "result": {
+    "type": "tab_list",
+    "tabs": [
+      {
+        "agent_status": "working",
+        "focused": false,
+        "label": "9 · alpha › claude › add the health endpoint",
+        "number": 9,
+        "pane_count": 1,
+        "tab_id": "w2:t9",
+        "workspace_id": "w2"
+      },
+      {
+        "agent_status": "idle",
+        "focused": false,
+        "label": "2 · beta › claude › fix-image-size-check",
+        "number": 2,
+        "pane_count": 1,
+        "tab_id": "w2:t2",
+        "workspace_id": "w2"
+      },
+      {
+        "agent_status": "idle",
+        "focused": false,
+        "label": "7 · beta › claude › check-engine-version",
+        "number": 7,
+        "pane_count": 1,
+        "tab_id": "w2:t7",
+        "workspace_id": "w2"
+      }
+    ]
+  }
+}

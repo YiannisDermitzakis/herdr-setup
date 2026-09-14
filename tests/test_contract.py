@@ -34,7 +34,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "helpers"))
 
-from feedlib import REPO_ROOT, isolate_environment, load_feed, write_opencode_db  # noqa: E402
+from feedlib import (  # noqa: E402
+    REPO_ROOT,
+    TEST_ADAPTER_TIMEOUT,
+    isolate_environment,
+    load_feed,
+    write_opencode_db,
+)
 
 isolate_environment()
 
@@ -66,7 +72,14 @@ class TestTheDocumentIsPresent(unittest.TestCase):
     def test_it_carries_every_marked_example(self):
         self.assertEqual(
             sorted(blocks()),
-            ["minimal-adapter", "probe", "resolve-request", "resolve-response"],
+            [
+                "minimal-adapter",
+                "probe",
+                "resolve-request",
+                "resolve-response",
+                "sessions-probe",
+                "sessions-response",
+            ],
         )
 
     def test_it_states_the_rule_that_the_adapter_never_reports(self):
@@ -132,9 +145,26 @@ class TestValidateProbe(unittest.TestCase):
             ("available", "true"),
             ("unverified", "yes"),
             ("command", ""),
+            ("sessions", "yes"),
         ):
             with self.assertRaises(feed.AdapterError, msg=f"{key}={value!r} must be rejected"):
                 feed.validate_probe(dict(self.example, **{key: value}))
+
+
+class TestTheSessionsExamples(unittest.TestCase):
+    """The `sessions` query's own marked examples, run through the real code."""
+
+    def test_the_sessions_probe_example_declares_sessions_true(self):
+        example = json.loads(blocks()["sessions-probe"])
+        self.assertIs(feed.validate_probe(example)["sessions"], True)
+
+    def test_the_sessions_response_example_survives_parse_sessions(self):
+        example = json.loads(blocks()["sessions-response"])
+        sessions, dropped_sessions, dropped_branches = feed.parse_sessions(example)
+        self.assertEqual(dropped_sessions, 0)
+        self.assertEqual(dropped_branches, 0)
+        self.assertGreaterEqual(len(sessions), 1)
+        self.assertGreaterEqual(len(sessions[0]["branches"]), 1)
 
 
 class TestTheDocumentedShapes(unittest.TestCase):
@@ -274,8 +304,22 @@ class TestTheWorkedAdapter(unittest.TestCase):
 # "present" pass with a message naming exactly what to add, rather than
 # silently skipping itself out of the loop.
 
+
+def _claude_home_layout(home: Path) -> None:
+    """`available: true` (a `sessions` dir) AND a genuinely empty PROJECT dir.
+
+    The `sessions` query never reads `.claude/sessions` at all -- it walks
+    `.claude/projects/*/*.jsonl`. Creating only the former would make the
+    "present but empty" sessions conformance test (below) pass by short-
+    circuiting on a MISSING `projects` directory entirely, never actually
+    walking an existing-but-empty one. review item 8.
+    """
+    (home / ".claude" / "sessions").mkdir(parents=True)
+    (home / ".claude" / "projects" / "empty-project").mkdir(parents=True)
+
+
 ADAPTER_HOME_LAYOUT = {
-    "claude": lambda home: (home / ".claude" / "sessions").mkdir(parents=True),
+    "claude": _claude_home_layout,
     "codex": lambda home: (home / ".codex" / "sessions").mkdir(parents=True),
     "opencode": lambda home: write_opencode_db(
         home / ".local" / "share" / "opencode" / "opencode.db", []
@@ -308,7 +352,7 @@ class TestConformanceAcrossAllAdapters(unittest.TestCase):
         for path in self.adapters:
             with self.subTest(adapter=path.name), tempfile.TemporaryDirectory() as tmp:
                 os.environ["HOME"] = tmp
-                obj = feed.probe(path)
+                obj = feed.probe(path, timeout=TEST_ADAPTER_TIMEOUT)
                 feed.validate_probe(obj)
                 self.assertIs(
                     obj["available"], False, f"{path.name} must report unavailable on an empty home"
@@ -327,9 +371,80 @@ class TestConformanceAcrossAllAdapters(unittest.TestCase):
                 home = Path(tmp)
                 os.environ["HOME"] = str(home)
                 ADAPTER_HOME_LAYOUT[path.name](home)
-                obj = feed.probe(path)
+                obj = feed.probe(path, timeout=TEST_ADAPTER_TIMEOUT)
                 feed.validate_probe(obj)
                 self.assertIs(obj["available"], True, f"{path.name} must report available")
+
+    def _run_sessions(self, path: Path, home: Path) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env["HOME"] = str(home)
+        return subprocess.run(
+            [str(path), "sessions", "--since", "30"],
+            capture_output=True,
+            text=True,
+            timeout=TEST_ADAPTER_TIMEOUT,
+            env=env,
+        )
+
+    def _adapters_declaring_sessions(self) -> list[Path]:
+        return [
+            path
+            for path in self.adapters
+            if feed.probe(path, timeout=TEST_ADAPTER_TIMEOUT).get("sessions") is True
+        ]
+
+    def test_every_adapter_declaring_sessions_answers_an_empty_list_on_an_empty_home(self):
+        for path in self.adapters:
+            with self.subTest(adapter=path.name), tempfile.TemporaryDirectory() as tmp:
+                os.environ["HOME"] = tmp
+                if not feed.probe(path, timeout=TEST_ADAPTER_TIMEOUT).get("sessions"):
+                    continue
+                proc = self._run_sessions(path, Path(tmp))
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(json.loads(proc.stdout), {"sessions": []})
+
+    def test_every_adapter_declaring_sessions_answers_an_empty_list_on_a_present_but_empty_store(
+        self,
+    ):
+        """Present (probe's `available: true`) but genuinely empty is still `[]`, exit 0.
+
+        Distinct from the no-home case above: this is the "installed, used
+        once long enough ago that nothing falls in the window, or simply has
+        no history yet" case, exercised on the SAME fixture layout
+        test_every_adapter_is_available_when_its_agent_is_present uses.
+        """
+        for path in self.adapters:
+            with self.subTest(adapter=path.name), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp)
+                os.environ["HOME"] = str(home)
+                ADAPTER_HOME_LAYOUT[path.name](home)
+                if not feed.probe(path, timeout=TEST_ADAPTER_TIMEOUT).get("sessions"):
+                    continue
+                proc = self._run_sessions(path, home)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(json.loads(proc.stdout), {"sessions": []})
+
+    def test_opencode_and_copilot_do_not_declare_sessions(self):
+        for path in self.adapters:
+            if path.name not in ("opencode", "copilot"):
+                continue
+            with tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp)
+                os.environ["HOME"] = str(home)
+                ADAPTER_HOME_LAYOUT[path.name](home)
+                obj = feed.probe(path, timeout=TEST_ADAPTER_TIMEOUT)
+                self.assertNotIn(
+                    "sessions", obj, f"{path.name} must not declare a sessions capability"
+                )
+
+    def test_at_least_claude_and_codex_declare_sessions(self):
+        """A guard on the guard: the two tests above pass vacuously if nothing declares it."""
+        declaring = {
+            path.name
+            for path in self.adapters
+            if feed.probe(path, timeout=TEST_ADAPTER_TIMEOUT).get("sessions")
+        }
+        self.assertTrue({"claude", "codex"} <= declaring, declaring)
 
 
 if __name__ == "__main__":

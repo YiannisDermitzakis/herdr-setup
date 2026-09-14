@@ -23,15 +23,26 @@ you ask whether it has fallen behind.
 
 ## Install
 
-Clone the repository and put the `herdr-setup` entrypoint on `PATH`:
+Clone the repository, then let the entrypoint put itself on `PATH`:
 
 ```
 git clone https://github.com/YiannisDermitzakis/herdr-setup.git
-export PATH="$PWD/herdr-setup:$PATH"
+cd herdr-setup
+./herdr-setup install
 ```
 
-It finds its own `lib/` and `adapters/` next to itself, following symlinks, so
-a symlink from a directory already on `PATH` works too.
+`install` makes `~/.local/bin/herdr-setup` a symlink to this checkout's
+entrypoint, creating `~/.local/bin` when it is missing. It only ever adds.
+When anything other than a link to this entrypoint is already at that path —
+a file, a directory, or a link to another checkout — it refuses with exit `4`
+and leaves it alone; remove it yourself to switch checkouts. Run it again and
+it says the link is already there. It warns, without failing, when
+`~/.local/bin` is not on your `PATH`, or when another `herdr-setup` earlier on
+`PATH` shadows the link. `install --dry-run` prints the commands it would run
+and writes nothing.
+
+The entrypoint finds its own `lib/` and `adapters/` next to itself, following
+symlinks, so the link is all it needs.
 
 ### Prerequisites
 
@@ -43,10 +54,25 @@ a symlink from a directory already on `PATH` works too.
   Python. Every Python file here carries its own PEP 723 interpreter
   requirement, so two hosts run the exact same interpreter regardless of
   what they happen to have installed system-wide.
+- **[gh](https://cli.github.com/)**, the GitHub CLI, logged in to github.com.
+  Only `audit` needs it: it reads pull requests through `gh api`.
 
 The shell floor is bash 3.2, which is what macOS ships.
 
 ## Commands
+
+### `install` — put `herdr-setup` on `PATH`
+
+```
+$ ./herdr-setup install
+$ ./herdr-setup install --dry-run   # print the mkdir and ln it would run, do nothing
+```
+
+Symlinks `~/.local/bin/herdr-setup` to this checkout's entrypoint (see
+[Install](#install)). It touches no Herdr state and needs no Herdr server. It
+never overwrites or removes a file. Exit `0` when the link is installed or was
+already there, `4` when something else is at the link path, `2` when
+`~/.local/bin` exists but is not a directory, or creating it or the link fails.
 
 ### `diff` — report drift (read-only)
 
@@ -106,11 +132,12 @@ $ herdr-setup absorb
 The reverse of `apply`, and the reason this tool is usable day to day:
 change Herdr interactively on any host, `absorb`, commit, `apply` elsewhere.
 Rewrites `manifest/plugins.list` and `manifest/config.toml` straight from the
+host's own `plugins.json` and `config.toml`, touching only the checkout.
 
 A line may name a ref or omit it. `owner/repo v1.2.3` pins a branch or tag.
 `owner/repo` alone means the repository's default branch, which is what Herdr
 installs from when given no `--ref`, and what it records for such a plugin.
-host's own `plugins.json` and `config.toml`, touching only the checkout.
+
 Refuses to run — and writes nothing — when the manifest has uncommitted
 changes, or when it cannot tell whether it does: git failing for any reason
 is treated as dirty, never as clean, and so is a `manifest/` git is ignoring,
@@ -162,6 +189,57 @@ pane. A pane deliberately skipped is a decision the run made, told you about,
 and exited `0` on; the next run can still feed it. Exit `3` under a protocol
 mismatch.
 
+### `audit` — find stranded work (read-only)
+
+```
+$ herdr-setup audit
+$ herdr-setup audit --since 7             # session history window in days (default 30)
+$ herdr-setup audit --owner example-org   # replace the owner list; repeatable
+$ herdr-setup audit --include-sdk         # include sessions an automated caller drove
+$ herdr-setup audit --include-bots        # list bot-authored pull requests too
+$ herdr-setup audit --json                # one JSON object instead of the tables
+```
+
+Reports three sections:
+
+1. **open in Herdr**: every agent pane Herdr lists, with the branches its
+   session worked on and their state (`open PR #n`, `merged PR #n`,
+   `contained`, `unmerged`, `unresolved`), or why it has none: `no adapter`,
+   `no session history (unsupported)`, `session history unavailable (adapter
+   failed)`, `session not reported to Herdr`, `session not found in history`
+   (outside `--since`, or SDK-driven), or `no branch evidence`. A pane whose
+   every branch is gone shows `only gone branches (counted)`;
+2. **closed, with unmerged branches**: branches with work not in the default
+   branch, or with an open pull request, that no open pane touched, with the
+   newest session that did and a `+N` count of older ones. Clones of one
+   GitHub repository count as that one repository;
+3. **open PRs no session is working on**: open pull requests in your GitHub
+   owners' non-archived repositories (the `gh` user and its organisations, or
+   the `--owner` list) whose head branch no session in the window, and no open
+   pane's own directory, touched. Drafts are labelled; bot pull requests are
+   hidden and counted.
+
+It reads Herdr's agent and tab lists, the session history of every adapter
+that offers it (Claude Code and Codex today), the local git repositories those
+sessions worked in, and GitHub through `gh api`. Merge state asks GitHub for a
+merged pull request before it asks git about ancestry, because a squash merge
+is never an ancestor of the default branch. A branch with no ref and no pull
+request left is counted as gone, not listed.
+
+It never writes anything: no file, no git ref, no `git fetch`, no GitHub
+mutation, and no Herdr call beyond the two lists. It never closes a pull
+request, deletes a branch, or resumes a session. `--dry-run` and `--yes` are
+accepted and change nothing.
+
+Exit `0` when sections 2 and 3 are empty, `1` when either has a row. Exit `2`
+on an error — `git` or `gh` missing, `gh` not logged in, a `gh` or `git` call
+failing — with one line and no report; and also when the report is incomplete
+because an adapter's probe failed or its session history could not be read,
+in which case the report is still printed
+and ends with an `incomplete:` line. `2` wins over `1`: a report missing a
+source could overstate section 3. Exit `3` under a protocol mismatch or with no
+Herdr server.
+
 ## The adapter seam
 
 An adapter answers one question about one coding agent — which session is
@@ -182,11 +260,11 @@ the CLI and confirms a resume.
 
 | Code | Meaning |
 |---|---|
-| 0 | Clean: no drift, or the command succeeded |
-| 1 | Drift found (`diff`), or a pane could not be reported (`feed`) |
-| 2 | Error: a missing dependency, an unparseable manifest, a git failure |
+| 0 | Clean: no drift, nothing to act on, or the command succeeded |
+| 1 | Drift found (`diff`), a pane could not be reported (`feed`), or stranded work or an unmatched pull request found (`audit`) |
+| 2 | Error: a missing dependency, an unparseable manifest, a git or gh failure; or an incomplete `audit` report, which is still printed |
 | 3 | Preflight refusal: no Herdr, no server, or a protocol version mismatch |
-| 4 | A destructive write was refused: a dirty manifest (`absorb`), or a config write that would remove lines (`apply`) without `--yes` or a terminal answer |
+| 4 | A write was refused: a dirty manifest (`absorb`), a config write that would remove lines (`apply`) without `--yes` or a terminal answer, or something other than a link to this checkout already at `~/.local/bin/herdr-setup` (`install`) |
 
 ## What this tool does not do
 

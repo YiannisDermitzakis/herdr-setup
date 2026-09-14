@@ -1,0 +1,26 @@
+{
+  "data": {
+    "repositoryOwner": {
+      "repositories": {
+        "pageInfo": {
+          "hasNextPage": true,
+          "endCursor": "Y3Vyc29yOnYyOnBsYWNlaG9sZGVy"
+        },
+        "nodes": [
+          {
+            "name": "example-repo-1",
+            "pullRequests": {
+              "nodes": []
+            }
+          },
+          {
+            "name": "example-repo-2",
+            "pullRequests": {
+              "nodes": []
+            }
+          }
+        ]
+      }
+    }
+  }
+}
