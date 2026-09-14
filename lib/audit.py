@@ -14,8 +14,10 @@ Layer by layer, each failing closed:
 - **The GitHub layer.** `gh api` calls, each read-only: a non-zero exit, and an
   `errors` array returned with exit 0, both raise GhError. `require_tools`,
   `owners`, `open_prs`, `repo_branches`, `compare`.
-- **The git layer.** One read-only git question per function, its exit status
-  read explicitly: `repo_for`, `local_ref`, `is_ancestor`, `local_default`.
+- **The git layer.** Read-only git questions, each exit status read
+  explicitly: `repo_for`, `local_ref`, `is_ancestor`, `local_default`, all
+  answered through a `GitCache` that asks each directory, repository and ref
+  set once per run.
 - **Merge state.** `classify`, the spec's table as a pure function of gathered
   facts, and `resolve_branches`, which gathers them once per (repository,
   branch).
@@ -780,37 +782,163 @@ def _remote_and_slug(toplevel: str) -> tuple[str | None, str | None]:
     return remote, github_slug(proc.stdout)
 
 
-def repo_for(directory: str | None, fallback: str | None) -> Repo | None:
-    """The repository `directory` is in, else the one `fallback` is in, else None."""
-    for candidate in (directory, fallback):
-        toplevel = _toplevel(candidate)
-        if toplevel is not None:
-            remote, slug = _remote_and_slug(toplevel)
-            return Repo(toplevel, _main_checkout(toplevel), slug, remote)
-    return None
+# The one thing `for-each-ref` says about a ref it cannot read: it exits 0,
+# leaves the ref out, and warns naming it. _git runs with LC_ALL=C, so these
+# stay the words git prints.
+_BROKEN_REF_RE = re.compile(r"warning: ignoring broken ref (?P<ref>\S+)")
 
 
-def _ref_exists(repo: Repo, ref: str) -> bool:
-    """Whether the fully qualified `ref` exists, telling broken from absent.
+@dataclass(frozen=True)
+class RefSet:
+    """The refs one `for-each-ref` listed, and the ones it said it could not read."""
+
+    names: frozenset[str]
+    broken: frozenset[str]
+
+
+def _for_each_ref(toplevel: str, args: tuple[str, ...]) -> RefSet:
+    """Run one `for-each-ref`, telling a broken ref from an absent one.
 
     `show-ref --verify --quiet` and `rev-parse --verify --quiet` both exit 1
     for a ref git cannot read, exactly as for one that is not there.
-    `for-each-ref` also exits 0 for it, but says `ignoring broken ref` on
-    stderr -- so anything on stderr is an error, never an absence.
+    `for-each-ref` exits 0 for it, and says `ignoring broken ref <ref>` on
+    stderr. So each such line is recorded as broken, and anything else on
+    stderr is an error, never an absence.
     """
-    args = ("for-each-ref", "--format=%(refname)", ref)
-    proc = _git(repo.toplevel, args)
-    if proc.returncode != 0 or proc.stderr.strip():
-        raise _git_failure(repo.toplevel, args, proc)
-    return ref in proc.stdout.splitlines()
+    proc = _git(toplevel, args)
+    if proc.returncode != 0:
+        raise _git_failure(toplevel, args, proc)
+    broken = set()
+    for line in proc.stderr.splitlines():
+        if not line.strip():
+            continue
+        match = _BROKEN_REF_RE.fullmatch(line.strip())
+        if match is None:
+            raise _git_failure(toplevel, args, proc)
+        broken.add(match["ref"])
+    return RefSet(frozenset(proc.stdout.splitlines()), frozenset(broken))
 
 
-def local_ref(repo: Repo, name: str) -> bool:
-    """Whether the local branch refs/heads/<name> exists."""
-    return _ref_exists(repo, f"refs/heads/{name}")
+def _broken_ref(repo: Repo, ref: str) -> GitError:
+    return GitError(f"git in {repo.toplevel}: ignoring broken ref {ref}")
 
 
-def default_ref(repo: Repo, default: str) -> str | None:
+class GitCache:
+    """One run's git answers, each question asked once.
+
+    A live run asked the same questions once per branch directory: 1,269 git
+    processes, most of an 8-minute audit. Here a directory is resolved to its
+    work tree once, a work tree to its Repo once, a repository's local and
+    remote-tracking refs are read with ONE `for-each-ref`, and ancestry
+    against a default branch with one `for-each-ref --merged`. The answers
+    are the per-question functions' answers; only the number of processes
+    changes.
+
+    A cache lives as long as one resolve_branches call, the audit's one
+    resolution pass: repositories do not change under a read-only run, but
+    they do between two runs, so nothing is kept at module level.
+    """
+
+    def __init__(self) -> None:
+        self._toplevels: dict[str, str | None] = {}
+        self._repos: dict[str, Repo] = {}
+        self._refs: dict[tuple[str, str | None], RefSet] = {}
+        self._merged: dict[tuple[str, str], RefSet] = {}
+        self._local_defaults: dict[tuple[str, str | None], str | None] = {}
+
+    def toplevel(self, directory: str | None) -> str | None:
+        if not directory:
+            return None
+        if directory not in self._toplevels:
+            self._toplevels[directory] = _toplevel(directory)
+        return self._toplevels[directory]
+
+    def repo(self, toplevel: str) -> Repo:
+        if toplevel not in self._repos:
+            remote, slug = _remote_and_slug(toplevel)
+            self._repos[toplevel] = Repo(toplevel, _main_checkout(toplevel), slug, remote)
+        return self._repos[toplevel]
+
+    def repo_for(self, directory: str | None, fallback: str | None) -> Repo | None:
+        for candidate in (directory, fallback):
+            toplevel = self.toplevel(candidate)
+            if toplevel is not None:
+                return self.repo(toplevel)
+        return None
+
+    def refs(self, repo: Repo) -> RefSet:
+        """refs/heads and the chosen remote's refs/remotes/<remote>, in one read.
+
+        Linked worktrees share their main checkout's refs, so the read is
+        keyed by the main checkout and the remote.
+        """
+        key = (repo.main_checkout, repo.remote)
+        if key not in self._refs:
+            patterns = ("refs/heads",)
+            if repo.remote is not None:
+                patterns += (f"refs/remotes/{repo.remote}",)
+            args = ("for-each-ref", "--format=%(refname)", *patterns)
+            self._refs[key] = _for_each_ref(repo.toplevel, args)
+        return self._refs[key]
+
+    def ref_exists(self, repo: Repo, ref: str) -> bool:
+        refs = self.refs(repo)
+        if ref in refs.broken:
+            raise _broken_ref(repo, ref)
+        return ref in refs.names
+
+    def local_ref(self, repo: Repo, name: str) -> bool:
+        return self.ref_exists(repo, f"refs/heads/{name}")
+
+    def default_ref(self, repo: Repo, default: str) -> str | None:
+        candidates = [f"refs/heads/{default}"]
+        if repo.remote is not None:
+            candidates.insert(0, f"refs/remotes/{repo.remote}/{default}")
+        for ref in candidates:
+            if self.ref_exists(repo, ref):
+                return ref
+        return None
+
+    def is_ancestor(self, repo: Repo, name: str, default: str) -> bool | None:
+        target = self.default_ref(repo, default)
+        if target is None:
+            return None
+        ref = f"refs/heads/{name}"
+        if not self.local_ref(repo, name):
+            raise GitError(f"git in {repo.toplevel}: no local ref {ref} to measure")
+        key = (repo.main_checkout, target)
+        if key not in self._merged:
+            args = ("for-each-ref", "--format=%(refname)", f"--merged={target}", "refs/heads")
+            self._merged[key] = _for_each_ref(repo.toplevel, args)
+        merged = self._merged[key]
+        if ref in merged.broken:
+            raise _broken_ref(repo, ref)
+        return ref in merged.names
+
+    def local_default(self, repo: Repo) -> str | None:
+        key = (repo.main_checkout, repo.remote)
+        if key not in self._local_defaults:
+            self._local_defaults[key] = _local_default(repo)
+        return self._local_defaults[key]
+
+
+def repo_for(
+    directory: str | None, fallback: str | None, *, cache: GitCache | None = None
+) -> Repo | None:
+    """The repository `directory` is in, else the one `fallback` is in, else None."""
+    return (cache or GitCache()).repo_for(directory, fallback)
+
+
+def local_ref(repo: Repo, name: str, *, cache: GitCache | None = None) -> bool:
+    """Whether the local branch refs/heads/<name> exists.
+
+    Answered from the repository's one ref read (GitCache.refs). A ref git
+    cannot read is a GitError, never an absence.
+    """
+    return (cache or GitCache()).local_ref(repo, name)
+
+
+def default_ref(repo: Repo, default: str, *, cache: GitCache | None = None) -> str | None:
     """The local ref standing for the default branch, or None when there is none.
 
     refs/remotes/<remote>/<default> for the chosen remote when that exists,
@@ -818,37 +946,28 @@ def default_ref(repo: Repo, default: str) -> str | None:
     before a default-branch rename, a --single-branch clone, a fork clone --
     not an error.
     """
-    candidates = [f"refs/heads/{default}"]
-    if repo.remote is not None:
-        candidates.insert(0, f"refs/remotes/{repo.remote}/{default}")
-    for ref in candidates:
-        if _ref_exists(repo, ref):
-            return ref
-    return None
+    return (cache or GitCache()).default_ref(repo, default)
 
 
-def is_ancestor(repo: Repo, name: str, default: str) -> bool | None:
+def is_ancestor(repo: Repo, name: str, default: str, *, cache: GitCache | None = None):
     """Whether refs/heads/<name> is reachable from the default branch.
 
     None when the default branch is not present locally at all (default_ref),
-    which makes the branch `unresolved` rather than stopping the run. Otherwise
-    exit 0 is contained, exit 1 is not, and any other exit on refs that do
-    exist is a GitError naming the repository.
+    which makes the branch `unresolved` rather than stopping the run.
+    Otherwise answered from one `for-each-ref --merged=<default ref>` per
+    repository, which lists exactly the branches `merge-base --is-ancestor`
+    would call contained. A branch ref that is broken or missing is a
+    GitError naming the repository, as merge-base's own failure was.
     """
-    target = default_ref(repo, default)
-    if target is None:
-        return None
-    args = ("merge-base", "--is-ancestor", f"refs/heads/{name}", target)
-    proc = _git(repo.toplevel, args)
-    if proc.returncode == 0:
-        return True
-    if proc.returncode == 1:
-        return False
-    raise _git_failure(repo.toplevel, args, proc)
+    return (cache or GitCache()).is_ancestor(repo, name, default)
 
 
-def local_default(repo: Repo) -> str | None:
+def local_default(repo: Repo, *, cache: GitCache | None = None) -> str | None:
     """The branch the chosen remote's HEAD points at, or None when it is not set."""
+    return (cache or GitCache()).local_default(repo)
+
+
+def _local_default(repo: Repo) -> str | None:
     if repo.remote is None:
         return None
     head = f"refs/remotes/{repo.remote}/HEAD"
@@ -987,7 +1106,7 @@ def classify(facts: Facts) -> Resolution:
     return Resolution(CONTAINED if all(contained) else UNMERGED, None, facts.repo_slug)
 
 
-def _resolve_repository(repo: Repo, names: list[str]) -> dict[str, Resolution]:
+def _resolve_repository(repo: Repo, names: list[str], cache: GitCache) -> dict[str, Resolution]:
     """Gather the facts for every branch of one repository, batched, and classify.
 
     GitHub first (one HsRepoBranches per chunk): the pull requests may decide
@@ -1001,15 +1120,15 @@ def _resolve_repository(repo: Repo, names: list[str]) -> dict[str, Resolution]:
         github = repo_branches(owner, name, names)
         default = github.default
     else:
-        default = local_default(repo)
+        default = cache.local_default(repo)
 
     prs = {branch: tuple(github.prs[branch]) if github else () for branch in names}
     undecided = []
     if default is not None:
         undecided = [branch for branch in names if pr_decision(repo.slug, prs[branch]) is None]
-    local = {branch: local_ref(repo, branch) for branch in undecided}
+    local = {branch: cache.local_ref(repo, branch) for branch in undecided}
     contained = {
-        branch: is_ancestor(repo, branch, default) for branch in undecided if local[branch]
+        branch: cache.is_ancestor(repo, branch, default) for branch in undecided if local[branch]
     }
     statuses: dict[str, str] = {}
     if github is not None:
@@ -1073,7 +1192,12 @@ def resolve_branches(entries) -> Resolutions:
 
     GhError and GitError propagate: a failed call stops the run, it never
     becomes a state.
+
+    Every git question goes through one GitCache for the whole call, so the
+    number of git processes follows the directories and repositories named,
+    never the branches (tests/test_audit_git_calls.py counts them).
     """
+    cache = GitCache()
     located: dict[tuple, Repo | None] = {}
     repositories: dict[str, tuple[Repo, list[str]]] = {}
     sources: dict[tuple[str, str], list] = {}
@@ -1085,7 +1209,7 @@ def resolve_branches(entries) -> Resolutions:
         directory, cwd = _path_text(item.get("dir")), _path_text(item.get("cwd"))
         spot = (directory, cwd)
         if spot not in located:
-            located[spot] = repo_for(directory, cwd)
+            located[spot] = cache.repo_for(directory, cwd)
         repo = located[spot]
         if repo is None:
             key = (str(directory if directory else cwd), name)
@@ -1102,7 +1226,7 @@ def resolve_branches(entries) -> Resolutions:
         index[(name, directory, cwd)] = key
 
     for repo_key, (repo, names) in repositories.items():
-        for name, resolution in _resolve_repository(repo, names).items():
+        for name, resolution in _resolve_repository(repo, names, cache).items():
             results[(repo_key, name)] = resolution
 
     resolved = {key: replace(value, sources=tuple(sources[key])) for key, value in results.items()}
