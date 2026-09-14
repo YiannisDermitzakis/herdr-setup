@@ -58,22 +58,40 @@ run_install() {
 # run_install_watchdog <entry> <home> <path> <out> <err> [args...]: same as
 # run_install, but for a case whose whole POINT is a symlink loop -- a
 # regression in hs_resolve_path's hop cap would hang, not fail, and a hang
-# here would hang the entire suite rather than turn one assertion red. The
-# invocation runs in the background under a 10s kill watchdog; the STATUS
-# this prints is the watchdog's kill (never 4) when that fires, so a
-# regression is a normal failed assertion, not a stuck test run.
+# here would hang the entire suite rather than turn one assertion red.
+#
+# This is a POLLING loop (kill -0 "$pid" every 0.1s, up to 10s, then a force
+# kill), not a separate "sleep 10 & kill -9 $pid" watchdog job. That first
+# approach was tried and measured broken: every call site here invokes this
+# function through a command substitution (`status="$(run_install_watchdog
+# ...)"`), and inside that subshell context, killing the WRAPPING watchdog
+# subshell did not reliably reach the `sleep 10` it was blocked in -- `wait
+# "$watchdog"` then blocked until that sleep finished naturally regardless
+# of how quickly install itself returned, so every case using it took the
+# full 10s. A polling loop in THIS shell has no second job whose signal
+# delivery can misbehave, in any subshell context.
+#
+# The RC this prints is the forced kill's (never 4) when the timeout is
+# reached, so a regression is a normal failed assertion, not a stuck run.
 run_install_watchdog() {
   local entry="$1" home="$2" path_val="$3" out="$4" err="$5"
   shift 5
   ( HOME="$home" PATH="$path_val" "$entry" install "$@" >"$out" 2>"$err" ) &
   local pid=$!
-  ( sleep 10; kill -9 "$pid" 2>/dev/null ) &
-  local watchdog=$!
-  local status=0
-  wait "$pid" 2>/dev/null || status=$?
-  kill "$watchdog" 2>/dev/null
-  wait "$watchdog" 2>/dev/null
-  echo "$status"
+
+  local waited=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$waited" -ge 100 ]; then
+      kill -9 "$pid" 2>/dev/null
+      break
+    fi
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+
+  local rc=0
+  wait "$pid" 2>/dev/null || rc=$?
+  echo "$rc"
 }
 
 # ---------------------------------------------------------------------
@@ -325,8 +343,12 @@ home12="$work/home12"
 mkdir -p "$home12/.local/bin"
 ln -s "$home12/.local/bin/herdr-setup" "$home12/.local/bin/herdr-setup"
 out="$work/out12"; err="$work/err12"
+t12_before=$(date +%s)
 status="$(run_install_watchdog "$entry12" "$home12" "/usr/bin:/bin" "$out" "$err")"
+t12_after=$(date +%s)
 assert_status "12: a self-loop symlink is refused promptly, not hung" 4 "$status"
+[ "$((t12_after - t12_before))" -lt 5 ] && pass \
+  || fail "12: took $((t12_after - t12_before))s, expected well under the 10s watchdog cap (under 5s)"
 
 # ---------------------------------------------------------------------
 # 13. a two-link symlink cycle at the link path -> exit 4, promptly
@@ -337,8 +359,12 @@ mkdir -p "$home13/.local/bin"
 ln -s "$home13/.local/bin/herdr-setup" "$home13/.local/bin/other-link"
 ln -s "$home13/.local/bin/other-link" "$home13/.local/bin/herdr-setup"
 out="$work/out13"; err="$work/err13"
+t13_before=$(date +%s)
 status="$(run_install_watchdog "$entry13" "$home13" "/usr/bin:/bin" "$out" "$err")"
+t13_after=$(date +%s)
 assert_status "13: a two-link symlink cycle is refused promptly, not hung" 4 "$status"
+[ "$((t13_after - t13_before))" -lt 5 ] && pass \
+  || fail "13: took $((t13_after - t13_before))s, expected well under the 10s watchdog cap (under 5s)"
 
 # ---------------------------------------------------------------------
 # 14 & 15: the hs_resolve_path branch of the "already installed" test --
