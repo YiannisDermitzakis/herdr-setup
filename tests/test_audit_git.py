@@ -5,7 +5,7 @@
 # ///
 """The audit runner's git layer (lib/audit.py), against real repositories.
 
-docs/superpowers/specs/2026-09-13-session-audit-design.md, "Resolving a
+docs/superpowers/implemented/specs/2026-09-13-session-audit-design.md, "Resolving a
 branch" and "Merge state", is the contract. Every repository here is built
 by tests/helpers/auditlib.make_repo in a temporary directory; none is ever
 fetched from, and the last test proves the module never fetches or writes

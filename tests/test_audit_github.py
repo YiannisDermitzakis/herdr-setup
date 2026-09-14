@@ -5,7 +5,7 @@
 # ///
 """The audit runner's GitHub layer (lib/audit.py), against the fake gh.
 
-docs/superpowers/specs/2026-09-13-session-audit-design.md, "GitHub queries"
+docs/superpowers/implemented/specs/2026-09-13-session-audit-design.md, "GitHub queries"
 and "Bots", is the contract. Three rules carry most of the weight here:
 
 - **Any error is a failure.** A non-zero `gh` exit, and an `errors` array

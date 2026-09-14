@@ -6,7 +6,7 @@
 """The audit runner: join Herdr panes, agent session history and GitHub
 pull requests into one read-only report.
 
-See docs/superpowers/specs/2026-09-13-session-audit-design.md, "The audit
+See docs/superpowers/implemented/specs/2026-09-13-session-audit-design.md, "The audit
 runner" and "`audit` (read-only)".
 
 Layer by layer, each failing closed:
