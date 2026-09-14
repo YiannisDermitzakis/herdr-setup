@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "helpers"))
 
 from feedlib import (  # noqa: E402
     REPO_ROOT,
+    TEST_ADAPTER_TIMEOUT,
     claude_session,
     isolate_environment,
     load_feed,
@@ -84,38 +85,38 @@ class TestProbe(TempHomeCase):
         self.assertTrue(os.access(ADAPTER, os.X_OK), ADAPTER)
 
     def test_probe_satisfies_the_general_contract(self):
-        obj = feed.probe(ADAPTER)
+        obj = feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)
         feed.validate_probe(obj)
 
     def test_probe_declares_claude_exact(self):
         (self.config_dir / "sessions").mkdir(parents=True)
-        obj = feed.probe(ADAPTER)
+        obj = feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(obj["agent"], "claude")
         self.assertEqual(obj["source"], "herdr:claude")
         self.assertEqual(obj["confidence"], "exact")
 
     def test_available_true_when_the_config_dir_has_a_sessions_directory(self):
         (self.config_dir / "sessions").mkdir(parents=True)
-        self.assertIs(feed.probe(ADAPTER)["available"], True)
+        self.assertIs(feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)["available"], True)
 
     def test_available_false_when_the_config_dir_has_no_sessions_directory(self):
         self.config_dir.mkdir(parents=True)
-        self.assertIs(feed.probe(ADAPTER)["available"], False)
+        self.assertIs(feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)["available"], False)
 
     def test_available_false_when_the_config_dir_does_not_exist_at_all(self):
-        self.assertIs(feed.probe(ADAPTER)["available"], False)
+        self.assertIs(feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)["available"], False)
 
     def test_falls_back_to_home_claude_when_the_env_var_is_unset(self):
         del os.environ["CLAUDE_CONFIG_DIR"]
         fake_home = self.config_dir.parent / "home"
         (fake_home / ".claude" / "sessions").mkdir(parents=True)
         os.environ["HOME"] = str(fake_home)
-        self.assertIs(feed.probe(ADAPTER)["available"], True)
+        self.assertIs(feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)["available"], True)
 
     def test_never_writes_anything(self):
         self.config_dir.mkdir(parents=True)
         before = list(self.config_dir.iterdir())
-        feed.probe(ADAPTER)
+        feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(list(self.config_dir.iterdir()), before)
 
 
@@ -127,7 +128,9 @@ class TestResolve(TempHomeCase):
         start_epoch = epoch_utc(session["procStart"])
 
         results = feed.resolve(
-            ADAPTER, [pane(pid=21940, cwd="/work/alpha", pid_start_epoch=start_epoch)]
+            ADAPTER,
+            [pane(pid=21940, cwd="/work/alpha", pid_start_epoch=start_epoch)],
+            timeout=TEST_ADAPTER_TIMEOUT,
         )
         by_pane = feed.candidates_by_pane(results)
         candidates = by_pane["w2:p2"]
@@ -138,12 +141,16 @@ class TestResolve(TempHomeCase):
 
     def test_a_pid_with_no_session_file_yields_an_empty_list_not_an_error(self):
         # No session file written at all for this pid.
-        results = feed.resolve(ADAPTER, [pane(pid=99999, pid_start_epoch=None)])
+        results = feed.resolve(
+            ADAPTER, [pane(pid=99999, pid_start_epoch=None)], timeout=TEST_ADAPTER_TIMEOUT
+        )
         by_pane = feed.candidates_by_pane(results)
         self.assertEqual(by_pane.get("w2:p2", []), [])
 
     def test_a_pane_with_no_pid_yields_an_empty_list(self):
-        results = feed.resolve(ADAPTER, [pane(pid=None, pid_start_epoch=None)])
+        results = feed.resolve(
+            ADAPTER, [pane(pid=None, pid_start_epoch=None)], timeout=TEST_ADAPTER_TIMEOUT
+        )
         by_pane = feed.candidates_by_pane(results)
         self.assertEqual(by_pane.get("w2:p2", []), [])
 
@@ -156,6 +163,7 @@ class TestResolve(TempHomeCase):
                 pane(pane_id="w2:p2", pid=21940, cwd="/work/alpha", pid_start_epoch=start_epoch),
                 pane(pane_id="w9:p9", pid=99999, cwd="/work/beta", pid_start_epoch=None),
             ],
+            timeout=TEST_ADAPTER_TIMEOUT,
         )
         by_pane = feed.candidates_by_pane(results)
         self.assertEqual(len(by_pane.get("w2:p2", [])), 1)
@@ -177,7 +185,9 @@ class TestResolve(TempHomeCase):
         correct_epoch = epoch_utc(session["procStart"])
 
         results = feed.resolve(
-            ADAPTER, [pane(pid=21940, cwd="/work/alpha", pid_start_epoch=correct_epoch)]
+            ADAPTER,
+            [pane(pid=21940, cwd="/work/alpha", pid_start_epoch=correct_epoch)],
+            timeout=TEST_ADAPTER_TIMEOUT,
         )
         candidates = feed.candidates_by_pane(results)["w2:p2"]
         self.assertEqual(len(candidates), 1, "a correctly UTC-computed epoch must match")
@@ -189,7 +199,9 @@ class TestResolve(TempHomeCase):
         # handed back as this pane's.
         wrong_epoch = epoch_utc(claude_session()["procStart"]) + 999_999
         results = feed.resolve(
-            ADAPTER, [pane(pid=21940, cwd="/work/alpha", pid_start_epoch=wrong_epoch)]
+            ADAPTER,
+            [pane(pid=21940, cwd="/work/alpha", pid_start_epoch=wrong_epoch)],
+            timeout=TEST_ADAPTER_TIMEOUT,
         )
         candidates = feed.candidates_by_pane(results)["w2:p2"]
         self.assertEqual(candidates, [], "a recycled pid must not be reported")
@@ -197,7 +209,11 @@ class TestResolve(TempHomeCase):
     def test_a_null_pid_start_epoch_cannot_rule_out_reuse_but_still_reports(self):
         """Null means 'cannot rule out', not 'reject' -- docs/adapters.md is explicit."""
         write_claude_session(self.config_dir, pid=21940, cwd="/work/alpha")
-        results = feed.resolve(ADAPTER, [pane(pid=21940, cwd="/work/alpha", pid_start_epoch=None)])
+        results = feed.resolve(
+            ADAPTER,
+            [pane(pid=21940, cwd="/work/alpha", pid_start_epoch=None)],
+            timeout=TEST_ADAPTER_TIMEOUT,
+        )
         candidates = feed.candidates_by_pane(results)["w2:p2"]
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["confidence"], "exact")
@@ -212,7 +228,9 @@ class TestResolve(TempHomeCase):
         start_epoch = epoch_utc(claude_session()["procStart"])
 
         results = feed.resolve(
-            ADAPTER, [pane(pid=21940, cwd="/work/alpha", pid_start_epoch=start_epoch)]
+            ADAPTER,
+            [pane(pid=21940, cwd="/work/alpha", pid_start_epoch=start_epoch)],
+            timeout=TEST_ADAPTER_TIMEOUT,
         )
         candidate = feed.candidates_by_pane(results)["w2:p2"][0]
         self.assertEqual(candidate["session_path"], str(transcript))
@@ -221,7 +239,9 @@ class TestResolve(TempHomeCase):
         write_claude_session(self.config_dir, pid=21940, cwd="/work/alpha")
         start_epoch = epoch_utc(claude_session()["procStart"])
         results = feed.resolve(
-            ADAPTER, [pane(pid=21940, cwd="/work/alpha", pid_start_epoch=start_epoch)]
+            ADAPTER,
+            [pane(pid=21940, cwd="/work/alpha", pid_start_epoch=start_epoch)],
+            timeout=TEST_ADAPTER_TIMEOUT,
         )
         candidate = feed.candidates_by_pane(results)["w2:p2"][0]
         self.assertNotIn("session_path", candidate)
@@ -237,6 +257,7 @@ class TestResolve(TempHomeCase):
         results = feed.resolve(
             ADAPTER,
             [pane(cwd="/work/alpha_beta.gamma 1", pid=21940, pid_start_epoch=start_epoch)],
+            timeout=TEST_ADAPTER_TIMEOUT,
         )
         candidate = feed.candidates_by_pane(results)["w2:p2"][0]
         self.assertIn("session_path", candidate)
@@ -260,7 +281,9 @@ class TestResolve(TempHomeCase):
 
         # The pane's own cwd disagrees with the session file's.
         results = feed.resolve(
-            ADAPTER, [pane(cwd="/work/somewhere-else", pid=21940, pid_start_epoch=start_epoch)]
+            ADAPTER,
+            [pane(cwd="/work/somewhere-else", pid=21940, pid_start_epoch=start_epoch)],
+            timeout=TEST_ADAPTER_TIMEOUT,
         )
         candidate = feed.candidates_by_pane(results)["w2:p2"][0]
         self.assertEqual(candidate["session_path"], str(transcript))
@@ -268,12 +291,16 @@ class TestResolve(TempHomeCase):
     def test_it_never_writes_anything(self):
         write_claude_session(self.config_dir, pid=21940, cwd="/work/alpha")
         before = sorted(str(p) for p in self.config_dir.rglob("*"))
-        feed.resolve(ADAPTER, [pane(pid=21940, cwd="/work/alpha", pid_start_epoch=None)])
+        feed.resolve(
+            ADAPTER,
+            [pane(pid=21940, cwd="/work/alpha", pid_start_epoch=None)],
+            timeout=TEST_ADAPTER_TIMEOUT,
+        )
         after = sorted(str(p) for p in self.config_dir.rglob("*"))
         self.assertEqual(before, after)
 
     def test_it_answers_an_empty_pane_list_without_falling_over(self):
-        results = feed.resolve(ADAPTER, [])
+        results = feed.resolve(ADAPTER, [], timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(feed.candidates_by_pane(results), {})
 
 

@@ -65,6 +65,16 @@ LEAKY_VARS = (
 )
 
 
+# How long a test waits for a REAL adapter (adapters/claude, codex, opencode,
+# copilot) to answer probe, resolve or sessions. Each is a `uv run --script`
+# cold start, and on a loaded machine -- a CI macOS runner, or this suite's own
+# parallel pytest and tests/run.sh -- one blew lib/feed.py's production
+# PROBE_TIMEOUT of 10 s (journal p3s-suite-speed). That limit bounds a broken
+# adapter in production and stays as it is; a test is not a broken adapter.
+# Tests that are ABOUT the timeout inject their own small values.
+TEST_ADAPTER_TIMEOUT = 120.0
+
+
 # Every command a test could spawn that talks to something real, and the fake
 # that must answer in its place. A missing or broken fake does not fail on its
 # own: PATH falls through to the host's real command, and a RED run once did

@@ -27,7 +27,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "helpers"))
 
-from feedlib import REPO_ROOT, isolate_environment, load_feed, write_opencode_db  # noqa: E402
+from feedlib import (  # noqa: E402
+    REPO_ROOT,
+    TEST_ADAPTER_TIMEOUT,
+    isolate_environment,
+    load_feed,
+    write_opencode_db,
+)
 
 isolate_environment()
 
@@ -82,21 +88,21 @@ class TestProbe(TempHomeCase):
         self.assertTrue(os.access(ADAPTER, os.X_OK), ADAPTER)
 
     def test_probe_satisfies_the_general_contract(self):
-        feed.validate_probe(feed.probe(ADAPTER))
+        feed.validate_probe(feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT))
 
     def test_probe_declares_opencode_heuristic(self):
         write_opencode_db(self.db_path, [])
-        obj = feed.probe(ADAPTER)
+        obj = feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(obj["agent"], "opencode")
         self.assertEqual(obj["source"], "herdr:opencode")
         self.assertEqual(obj["confidence"], "heuristic")
 
     def test_available_true_when_the_database_file_exists(self):
         write_opencode_db(self.db_path, [])
-        self.assertIs(feed.probe(ADAPTER)["available"], True)
+        self.assertIs(feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)["available"], True)
 
     def test_available_false_when_the_database_file_does_not_exist(self):
-        self.assertIs(feed.probe(ADAPTER)["available"], False)
+        self.assertIs(feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)["available"], False)
 
     def test_falls_back_to_the_xdg_default_when_the_env_var_is_unset(self):
         del os.environ["XDG_DATA_HOME"]
@@ -104,12 +110,12 @@ class TestProbe(TempHomeCase):
         db_path = fake_home / ".local" / "share" / "opencode" / "opencode.db"
         write_opencode_db(db_path, [])
         os.environ["HOME"] = str(fake_home)
-        self.assertIs(feed.probe(ADAPTER)["available"], True)
+        self.assertIs(feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)["available"], True)
 
     def test_never_writes_anything(self):
         write_opencode_db(self.db_path, [])
         before = sorted(str(p) for p in self.data_home.rglob("*"))
-        feed.probe(ADAPTER)
+        feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)
         after = sorted(str(p) for p in self.data_home.rglob("*"))
         self.assertEqual(before, after)
 
@@ -117,7 +123,7 @@ class TestProbe(TempHomeCase):
 class TestResolve(TempHomeCase):
     def test_a_session_in_the_panes_directory_is_reported_heuristic(self):
         write_opencode_db(self.db_path, [session_row(id="s1", directory="/work/alpha")])
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         candidates = feed.candidates_by_pane(results)["w2:p2"]
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["session_id"], "s1")
@@ -125,7 +131,7 @@ class TestResolve(TempHomeCase):
 
     def test_a_session_under_a_different_directory_is_excluded(self):
         write_opencode_db(self.db_path, [session_row(id="s1", directory="/work/beta")])
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(feed.candidates_by_pane(results).get("w2:p2", []), [])
 
     def test_a_child_session_is_never_reported(self):
@@ -137,7 +143,7 @@ class TestResolve(TempHomeCase):
                 session_row(id="child", directory="/work/alpha", parent_id="parent"),
             ],
         )
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         ids = [c["session_id"] for c in feed.candidates_by_pane(results)["w2:p2"]]
         self.assertEqual(ids, ["parent"])
 
@@ -146,12 +152,12 @@ class TestResolve(TempHomeCase):
             self.db_path,
             [session_row(id="s1", directory="/work/alpha", time_archived=1_700_000_000_500)],
         )
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(feed.candidates_by_pane(results).get("w2:p2", []), [])
 
     def test_a_candidate_never_claims_exact_even_when_it_is_the_only_one(self):
         write_opencode_db(self.db_path, [session_row(id="s1", directory="/work/alpha")])
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         candidates = feed.candidates_by_pane(results)["w2:p2"]
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["confidence"], "heuristic")
@@ -164,7 +170,7 @@ class TestResolve(TempHomeCase):
                 session_row(id="newer", directory="/work/alpha", time_updated=1_700_000_500_000),
             ],
         )
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         candidates = feed.candidates_by_pane(results)["w2:p2"]
         self.assertEqual([c["session_id"] for c in candidates], ["newer", "older"])
 
@@ -173,7 +179,7 @@ class TestResolve(TempHomeCase):
             self.db_path,
             [session_row(id="s1", directory="/work/alpha", title="fix the flaky test")],
         )
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         candidate = feed.candidates_by_pane(results)["w2:p2"][0]
         self.assertEqual(candidate["label"], "fix the flaky test")
 
@@ -188,7 +194,7 @@ class TestResolve(TempHomeCase):
             self.db_path,
             [session_row(id="s1", directory="/work/alpha", time_updated=1_774_731_087_364)],
         )
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         candidate = feed.candidates_by_pane(results)["w2:p2"][0]
         updated = candidate.get("updated", "")
         self.assertTrue(updated.startswith("2026-"), updated)
@@ -198,6 +204,7 @@ class TestResolve(TempHomeCase):
         results = feed.resolve(
             ADAPTER,
             [pane(pane_id="w2:p2", cwd="/work/alpha"), pane(pane_id="w9:p9", cwd="/work/z")],
+            timeout=TEST_ADAPTER_TIMEOUT,
         )
         by_pane = feed.candidates_by_pane(results)
         self.assertEqual(len(by_pane.get("w2:p2", [])), 1)
@@ -216,19 +223,19 @@ class TestResolve(TempHomeCase):
         os.chmod(self.db_path, 0o444)
         self.addCleanup(os.chmod, self.db_path, 0o644)
         before = self.db_path.stat().st_mtime
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         after = self.db_path.stat().st_mtime
         self.assertEqual(before, after)
         self.assertEqual(len(feed.candidates_by_pane(results)["w2:p2"]), 1)
 
     def test_it_answers_an_empty_pane_list_without_falling_over(self):
         write_opencode_db(self.db_path, [])
-        results = feed.resolve(ADAPTER, [])
+        results = feed.resolve(ADAPTER, [], timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(feed.candidates_by_pane(results), {})
 
     def test_a_pane_with_no_matching_directory_type_yields_no_candidates(self):
         write_opencode_db(self.db_path, [session_row(id="s1", directory="/work/alpha")])
-        results = feed.resolve(ADAPTER, [pane(cwd=None)])
+        results = feed.resolve(ADAPTER, [pane(cwd=None)], timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(feed.candidates_by_pane(results).get("w2:p2", []), [])
 
     def test_a_database_it_cannot_open_is_an_operator_message_not_a_traceback(self):
@@ -255,7 +262,7 @@ class TestResolve(TempHomeCase):
         self.addCleanup(os.chmod, self.db_path.parent, 0o755)
 
         with self.assertRaises(feed.AdapterError) as caught:
-            feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+            feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         message = str(caught.exception)
         self.assertNotIn("Traceback", message)
         self.assertNotIn("sqlite3.", message)

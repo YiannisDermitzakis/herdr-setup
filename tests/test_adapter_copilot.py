@@ -35,7 +35,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "helpers"))
 
-from feedlib import REPO_ROOT, isolate_environment, load_feed, write_copilot_session  # noqa: E402
+from feedlib import (  # noqa: E402
+    REPO_ROOT,
+    TEST_ADAPTER_TIMEOUT,
+    isolate_environment,
+    load_feed,
+    write_copilot_session,
+)
 
 isolate_environment()
 
@@ -75,11 +81,11 @@ class TestProbe(TempHomeCase):
         self.assertTrue(os.access(ADAPTER, os.X_OK), ADAPTER)
 
     def test_probe_satisfies_the_general_contract(self):
-        feed.validate_probe(feed.probe(ADAPTER))
+        feed.validate_probe(feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT))
 
     def test_probe_declares_copilot_heuristic_and_unverified(self):
         (self.config_dir / "session-state").mkdir(parents=True)
-        obj = feed.probe(ADAPTER)
+        obj = feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(obj["agent"], "copilot")
         self.assertEqual(obj["source"], "herdr:copilot")
         self.assertEqual(obj["confidence"], "heuristic")
@@ -87,30 +93,30 @@ class TestProbe(TempHomeCase):
 
     def test_available_true_when_the_config_dir_has_a_session_state_directory(self):
         (self.config_dir / "session-state").mkdir(parents=True)
-        self.assertIs(feed.probe(ADAPTER)["available"], True)
+        self.assertIs(feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)["available"], True)
 
     def test_available_false_when_there_is_no_session_state_directory(self):
         self.config_dir.mkdir(parents=True)
-        self.assertIs(feed.probe(ADAPTER)["available"], False)
+        self.assertIs(feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)["available"], False)
 
     def test_falls_back_to_home_copilot_when_the_env_var_is_unset(self):
         del os.environ["COPILOT_HOME"]
         fake_home = self.config_dir.parent / "home"
         (fake_home / ".copilot" / "session-state").mkdir(parents=True)
         os.environ["HOME"] = str(fake_home)
-        self.assertIs(feed.probe(ADAPTER)["available"], True)
+        self.assertIs(feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)["available"], True)
 
     def test_never_writes_anything(self):
         (self.config_dir / "session-state").mkdir(parents=True)
         before = list(self.config_dir.rglob("*"))
-        feed.probe(ADAPTER)
+        feed.probe(ADAPTER, timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(list(self.config_dir.rglob("*")), before)
 
 
 class TestResolve(TempHomeCase):
     def test_a_session_in_the_panes_directory_is_reported_heuristic(self):
         write_copilot_session(self.config_dir, "sess-a", data={"cwd": "/work/alpha"})
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         candidates = feed.candidates_by_pane(results)["w2:p2"]
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["session_id"], "sess-a")
@@ -118,12 +124,12 @@ class TestResolve(TempHomeCase):
 
     def test_a_session_under_a_different_directory_is_excluded(self):
         write_copilot_session(self.config_dir, "sess-a", data={"cwd": "/work/beta"})
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(feed.candidates_by_pane(results).get("w2:p2", []), [])
 
     def test_a_candidate_never_claims_exact_even_when_it_is_the_only_one(self):
         write_copilot_session(self.config_dir, "sess-a", data={"cwd": "/work/alpha"})
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         candidates = feed.candidates_by_pane(results)["w2:p2"]
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["confidence"], "heuristic")
@@ -131,7 +137,7 @@ class TestResolve(TempHomeCase):
     def test_the_session_id_is_the_session_state_directory_name(self):
         """The one thing this adapter does NOT have to guess (README: CONFIRMED)."""
         write_copilot_session(self.config_dir, "a-real-looking-id-123", data={"cwd": "/work/alpha"})
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         candidate = feed.candidates_by_pane(results)["w2:p2"][0]
         self.assertEqual(candidate["session_id"], "a-real-looking-id-123")
 
@@ -142,7 +148,7 @@ class TestResolve(TempHomeCase):
         write_copilot_session(
             self.config_dir, "newer", data={"cwd": "/work/alpha"}, timestamp="2026-09-06T09:12:00Z"
         )
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         candidates = feed.candidates_by_pane(results)["w2:p2"]
         self.assertEqual([c["session_id"] for c in candidates], ["newer", "older"])
 
@@ -151,7 +157,7 @@ class TestResolve(TempHomeCase):
         broken_dir.mkdir(parents=True)
         (broken_dir / "events.jsonl").write_text("not json at all\n", encoding="utf-8")
         write_copilot_session(self.config_dir, "good", data={"cwd": "/work/alpha"})
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(len(feed.candidates_by_pane(results)["w2:p2"]), 1)
 
     def test_a_session_whose_first_event_has_no_data_cwd_is_skipped_not_fatal(self):
@@ -159,13 +165,13 @@ class TestResolve(TempHomeCase):
         shapeless_dir.mkdir(parents=True)
         (shapeless_dir / "events.jsonl").write_text('{"type": "other"}\n', encoding="utf-8")
         write_copilot_session(self.config_dir, "good", data={"cwd": "/work/alpha"})
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(len(feed.candidates_by_pane(results)["w2:p2"]), 1)
 
     def test_a_session_directory_with_no_events_file_is_skipped_not_fatal(self):
         (self.config_dir / "session-state" / "empty-dir").mkdir(parents=True)
         write_copilot_session(self.config_dir, "good", data={"cwd": "/work/alpha"})
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(len(feed.candidates_by_pane(results)["w2:p2"]), 1)
 
     def test_only_the_first_line_of_an_events_log_is_ever_read(self):
@@ -176,7 +182,7 @@ class TestResolve(TempHomeCase):
             extra_lines=["not json at all, and huge enough to matter if ever read"],
         )
         self.assertIn("not json", path.read_text(encoding="utf-8"))
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(len(feed.candidates_by_pane(results)["w2:p2"]), 1)
 
     def test_a_missing_session_state_directory_yields_no_candidates_and_a_warning(self):
@@ -192,11 +198,11 @@ class TestResolve(TempHomeCase):
             input='{"panes":[{"pane_id":"w2:p2","cwd":"/work/alpha","pid":1,"pid_start_epoch":1}]}',
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=TEST_ADAPTER_TIMEOUT,
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertNotEqual(proc.stderr.strip(), "", "an unreadable store must warn")
-        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        results = feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(feed.candidates_by_pane(results).get("w2:p2", []), [])
 
     def test_answers_about_fewer_panes_than_were_asked_is_fine(self):
@@ -204,6 +210,7 @@ class TestResolve(TempHomeCase):
         results = feed.resolve(
             ADAPTER,
             [pane(pane_id="w2:p2", cwd="/work/alpha"), pane(pane_id="w9:p9", cwd="/work/z")],
+            timeout=TEST_ADAPTER_TIMEOUT,
         )
         by_pane = feed.candidates_by_pane(results)
         self.assertEqual(len(by_pane.get("w2:p2", [])), 1)
@@ -212,13 +219,13 @@ class TestResolve(TempHomeCase):
     def test_it_never_writes_anything(self):
         write_copilot_session(self.config_dir, "sess-a", data={"cwd": "/work/alpha"})
         before = sorted(str(p) for p in self.config_dir.rglob("*"))
-        feed.resolve(ADAPTER, [pane(cwd="/work/alpha")])
+        feed.resolve(ADAPTER, [pane(cwd="/work/alpha")], timeout=TEST_ADAPTER_TIMEOUT)
         after = sorted(str(p) for p in self.config_dir.rglob("*"))
         self.assertEqual(before, after)
 
     def test_it_answers_an_empty_pane_list_without_falling_over(self):
         (self.config_dir / "session-state").mkdir(parents=True)
-        results = feed.resolve(ADAPTER, [])
+        results = feed.resolve(ADAPTER, [], timeout=TEST_ADAPTER_TIMEOUT)
         self.assertEqual(feed.candidates_by_pane(results), {})
 
 

@@ -34,7 +34,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "helpers"))
 
-from feedlib import REPO_ROOT, isolate_environment, load_feed, write_opencode_db  # noqa: E402
+from feedlib import (  # noqa: E402
+    REPO_ROOT,
+    TEST_ADAPTER_TIMEOUT,
+    isolate_environment,
+    load_feed,
+    write_opencode_db,
+)
 
 isolate_environment()
 
@@ -346,7 +352,7 @@ class TestConformanceAcrossAllAdapters(unittest.TestCase):
         for path in self.adapters:
             with self.subTest(adapter=path.name), tempfile.TemporaryDirectory() as tmp:
                 os.environ["HOME"] = tmp
-                obj = feed.probe(path)
+                obj = feed.probe(path, timeout=TEST_ADAPTER_TIMEOUT)
                 feed.validate_probe(obj)
                 self.assertIs(
                     obj["available"], False, f"{path.name} must report unavailable on an empty home"
@@ -365,7 +371,7 @@ class TestConformanceAcrossAllAdapters(unittest.TestCase):
                 home = Path(tmp)
                 os.environ["HOME"] = str(home)
                 ADAPTER_HOME_LAYOUT[path.name](home)
-                obj = feed.probe(path)
+                obj = feed.probe(path, timeout=TEST_ADAPTER_TIMEOUT)
                 feed.validate_probe(obj)
                 self.assertIs(obj["available"], True, f"{path.name} must report available")
 
@@ -376,18 +382,22 @@ class TestConformanceAcrossAllAdapters(unittest.TestCase):
             [str(path), "sessions", "--since", "30"],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=TEST_ADAPTER_TIMEOUT,
             env=env,
         )
 
     def _adapters_declaring_sessions(self) -> list[Path]:
-        return [path for path in self.adapters if feed.probe(path).get("sessions") is True]
+        return [
+            path
+            for path in self.adapters
+            if feed.probe(path, timeout=TEST_ADAPTER_TIMEOUT).get("sessions") is True
+        ]
 
     def test_every_adapter_declaring_sessions_answers_an_empty_list_on_an_empty_home(self):
         for path in self.adapters:
             with self.subTest(adapter=path.name), tempfile.TemporaryDirectory() as tmp:
                 os.environ["HOME"] = tmp
-                if not feed.probe(path).get("sessions"):
+                if not feed.probe(path, timeout=TEST_ADAPTER_TIMEOUT).get("sessions"):
                     continue
                 proc = self._run_sessions(path, Path(tmp))
                 self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -408,7 +418,7 @@ class TestConformanceAcrossAllAdapters(unittest.TestCase):
                 home = Path(tmp)
                 os.environ["HOME"] = str(home)
                 ADAPTER_HOME_LAYOUT[path.name](home)
-                if not feed.probe(path).get("sessions"):
+                if not feed.probe(path, timeout=TEST_ADAPTER_TIMEOUT).get("sessions"):
                     continue
                 proc = self._run_sessions(path, home)
                 self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -422,14 +432,18 @@ class TestConformanceAcrossAllAdapters(unittest.TestCase):
                 home = Path(tmp)
                 os.environ["HOME"] = str(home)
                 ADAPTER_HOME_LAYOUT[path.name](home)
-                obj = feed.probe(path)
+                obj = feed.probe(path, timeout=TEST_ADAPTER_TIMEOUT)
                 self.assertNotIn(
                     "sessions", obj, f"{path.name} must not declare a sessions capability"
                 )
 
     def test_at_least_claude_and_codex_declare_sessions(self):
         """A guard on the guard: the two tests above pass vacuously if nothing declares it."""
-        declaring = {path.name for path in self.adapters if feed.probe(path).get("sessions")}
+        declaring = {
+            path.name
+            for path in self.adapters
+            if feed.probe(path, timeout=TEST_ADAPTER_TIMEOUT).get("sessions")
+        }
         self.assertTrue({"claude", "codex"} <= declaring, declaring)
 
 

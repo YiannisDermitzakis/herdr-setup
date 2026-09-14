@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "helpers"))
 from feedlib import (  # noqa: E402
     REAL_BRANCH_NAMES,
     REPO_ROOT,
+    TEST_ADAPTER_TIMEOUT,
     UNREAL_BRANCH_NAMES,
     isolate_environment,
     load_adapter_module,
@@ -52,7 +53,7 @@ DAY = 86400
 
 
 def run_sessions(
-    config_dir: Path, *extra_args: str, timeout: float = 30
+    config_dir: Path, *extra_args: str, timeout: float = TEST_ADAPTER_TIMEOUT
 ) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["CLAUDE_CONFIG_DIR"] = str(config_dir)
@@ -179,7 +180,11 @@ class TestProbe(TempConfigCase):
         env = dict(os.environ)
         env["CLAUDE_CONFIG_DIR"] = str(self.config_dir)
         proc = subprocess.run(
-            [str(ADAPTER), "probe"], capture_output=True, text=True, timeout=10, env=env
+            [str(ADAPTER), "probe"],
+            capture_output=True,
+            text=True,
+            timeout=TEST_ADAPTER_TIMEOUT,
+            env=env,
         )
         obj = json.loads(proc.stdout)
         self.assertIs(obj["sessions"], True)
@@ -566,7 +571,11 @@ class TestUsageAndReadOnly(TempConfigCase):
         env = dict(os.environ)
         env["CLAUDE_CONFIG_DIR"] = str(self.config_dir)
         proc = subprocess.run(
-            [str(ADAPTER), "bogus"], capture_output=True, text=True, timeout=10, env=env
+            [str(ADAPTER), "bogus"],
+            capture_output=True,
+            text=True,
+            timeout=TEST_ADAPTER_TIMEOUT,
+            env=env,
         )
         self.assertEqual(proc.returncode, 2)
 
