@@ -1554,8 +1554,8 @@ hs_feed() {
 # (AGENTS.md), and uv runs this tool's own scripts and nothing else.
 #
 # audit.py is its own program, not a batched lib/hs.py subcommand, because it
-# spawns other programs the way feed.py does: adapters, `git`, `gh` and (once
-# phase 3 lands) `fr`. stdio is inherited like hs_feed's -- audit prints its
+# spawns other programs the way feed.py does: adapters, `git` and `gh`.
+# stdio is inherited like hs_feed's -- audit prints its
 # report to stdout and warnings to stderr, and has no prompt of its own to
 # protect from a command substitution the way hs_feed's does, but the
 # contract is the same door for the same reason.

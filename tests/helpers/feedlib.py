@@ -62,22 +62,20 @@ LEAKY_VARS = (
     "FAKE_GH_UNAUTH",
     "FAKE_GH_GRAPHQL_ERRORS",
     "FAKE_GH_PAGE_SIZE",
-    "FAKE_FR_STATUS",
-    "FAKE_FR_FAIL",
 )
 
 
 # Every command a test could spawn that talks to something real, and the fake
 # that must answer in its place. A missing or broken fake does not fail on its
-# own: PATH falls through to the host's real command. The first RED run of
-# tests/test_fake_fr.py did exactly that and ran the real `fr isolation up`
+# own: PATH falls through to the host's real command, and a RED run once did
+# exactly that and ran a real host command that wrote to the repository
 # (journal p3-red-reached-real-fr). tests/run.sh and tests/helpers/assert.sh
 # refuse the same way for the shell side.
-FAKES = (("herdr", "fake-herdr"), ("gh", "fake-gh"), ("fr", "fake-fr"))
+FAKES = (("herdr", "fake-herdr"), ("gh", "fake-gh"))
 
 
 def require_fakes() -> None:
-    """Raise unless herdr, gh and fr all resolve to their fakes in tests/helpers."""
+    """Raise unless herdr and gh both resolve to their fakes in tests/helpers."""
     for command, fake in FAKES:
         found = shutil.which(command)
         if found is None or Path(found).resolve() != HELPERS_DIR / fake:

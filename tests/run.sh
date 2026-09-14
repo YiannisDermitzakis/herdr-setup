@@ -18,7 +18,7 @@
 # so a suite run from inside a Herdr pane inherits the operator's LIVE
 # socket. A test that means to exercise the "no server" path then finds a
 # real one and quietly proves nothing. Tests that need such a variable set
-# it themselves. The FAKE_HERDR_*, FAKE_GH_* and FAKE_FR_* switches are
+# it themselves. The FAKE_HERDR_* and FAKE_GH_* switches are
 # cleared for the same reason from the other direction: one left set in the
 # developer's own shell would silently reconfigure a fake under every test
 # file.
@@ -70,10 +70,10 @@ repo_state() {
   git -C "$script_dir/.." worktree list --porcelain 2>/dev/null || return 0
 }
 
-# Refuse before running anything unless herdr, gh and fr resolve to the fakes
-# in tests/helpers under the PATH every test gets. A missing fake does not fail
+# Refuse before running anything unless herdr and gh resolve to the fakes in
+# tests/helpers under the PATH every test gets. A missing fake does not fail
 # on its own: PATH falls through to the host's real command.
-for c in herdr gh fr; do
+for c in herdr gh; do
   [ "$(PATH="$helpers_dir:$PATH" command -v "$c")" = "$helpers_dir/$c" ] && [ -x "$helpers_dir/$c" ] || {
     echo "tests/run.sh: refusing to run: $c does not resolve to the fake in tests/helpers" >&2
     exit 2
@@ -99,7 +99,7 @@ for test_file in "$script_dir"/test_*.sh "$script_dir"/test_*.py; do
          -u FAKE_HERDR_ERROR_CODE -u FAKE_HERDR_ERROR_STREAM -u FAKE_HERDR_FAIL \
          -u FAKE_HERDR_STDERR_NOTE -u FAKE_HERDR_PROMPT -u FAKE_HERDR_ERROR_EXIT \
          -u FAKE_GH_STATE -u FAKE_GH_LOG -u FAKE_GH_FAIL -u FAKE_GH_UNAUTH \
-         -u FAKE_GH_GRAPHQL_ERRORS -u FAKE_GH_PAGE_SIZE -u FAKE_FR_STATUS -u FAKE_FR_FAIL \
+         -u FAKE_GH_GRAPHQL_ERRORS -u FAKE_GH_PAGE_SIZE \
          HOME="$tmp_home" PATH="$helpers_dir:$PATH" "${runner[@]}"; then
     echo "PASS: $name"
   else

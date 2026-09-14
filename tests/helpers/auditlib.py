@@ -8,8 +8,8 @@ own case:
 
 - **The fakes, and only the fakes.** `isolate_audit_environment()` calls
   feedlib's `isolate_environment()`, which puts tests/helpers first on PATH
-  and REFUSES to continue unless `gh`, `fr` and `herdr` all resolve to the
-  fakes there (`feedlib.require_fakes`, the one implementation).
+  and REFUSES to continue unless `gh` and `herdr` both resolve to the fakes
+  there (`feedlib.require_fakes`, the one implementation).
 - **A fake gh state.** `gh_state()`, `gh_repo()` and `gh_pr()` build the
   state file tests/helpers/fake-gh answers from, with every key it reads, and
   `FakeGh` writes it, points the environment at it, and reads its call log

@@ -10,7 +10,7 @@
 HS_TEST_PASS=0
 HS_TEST_FAIL=0
 
-# Refuse to run at all unless herdr, gh and fr resolve to the fakes in a
+# Refuse to run at all unless herdr and gh resolve to the fakes in a
 # tests/helpers directory. A test run on its own without tests/helpers first
 # on PATH, or one whose fake is missing, otherwise falls through PATH to the
 # host's REAL command -- which is how a RED run once created a real branch and
@@ -20,7 +20,7 @@ HS_TEST_FAIL=0
 # Any tests/helpers directory, not only this file's own: the hygiene tests
 # source a COPY of this file from a nested directory with no fakes in it,
 # while the PATH they inherit still resolves to the real suite's fakes.
-for hs_fake_cmd in herdr gh fr; do
+for hs_fake_cmd in herdr gh; do
   hs_fake_path="$(command -v "$hs_fake_cmd" 2>/dev/null || true)"
   case "$hs_fake_path" in
     */tests/helpers/"$hs_fake_cmd" | tests/helpers/"$hs_fake_cmd")
