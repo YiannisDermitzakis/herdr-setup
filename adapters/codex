@@ -281,6 +281,22 @@ def read_first_record(path: Path) -> dict | None:
     return record if isinstance(record, dict) else None
 
 
+def normalize_timestamp(text: str) -> str | None:
+    """A timestamp normalised to second-precision UTC, `Z`-suffixed.
+
+    This adapter's own copy of adapters/claude's normalize_timestamp -- see
+    its docstring. `payload.timestamp` is the only field here that needs it;
+    `last_active` always comes from the file's own mtime, already exact.
+    """
+    try:
+        parsed = datetime.fromisoformat(text)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _file_mtime_z(path: Path) -> str | None:
     try:
         epoch = path.stat().st_mtime
@@ -322,14 +338,13 @@ def derive_session(path: Path) -> dict | None:
     git = payload.get("git")
     if isinstance(git, dict):
         branch = git.get("branch")
-        seen_at = payload.get("timestamp")
-        if (
-            isinstance(branch, str)
-            and branch
-            and isinstance(seen_at, str)
-            and seen_at
-            and branch_name_ok(branch)
-        ):
+        raw_seen_at = payload.get("timestamp")
+        seen_at = (
+            normalize_timestamp(raw_seen_at)
+            if isinstance(raw_seen_at, str) and raw_seen_at
+            else None
+        )
+        if isinstance(branch, str) and branch and seen_at and branch_name_ok(branch):
             branches.append(
                 {"name": branch, "dir": cwd, "evidence": "session-meta", "seen_at": seen_at}
             )

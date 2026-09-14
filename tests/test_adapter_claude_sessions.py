@@ -171,7 +171,9 @@ class TestIdentityAndFields(TempConfigCase):
         session = sessions[0]
         self.assertEqual(session["id"], "00000000-0000-4000-8000-0000000000aa")
         self.assertEqual(session["cwd"], "/work/alpha")
-        self.assertEqual(session["last_active"], "2026-09-12T18:04:11.000Z")
+        # Normalised to second precision (review item 5): the input carries
+        # ".000Z", the output does not.
+        self.assertEqual(session["last_active"], "2026-09-12T18:04:11Z")
 
     def test_cwd_is_the_last_one_seen(self):
         self.write_transcript(
@@ -218,6 +220,51 @@ class TestIdentityAndFields(TempConfigCase):
         self.assertEqual(sessions[0]["title"], "second")
 
 
+class TestTimestampNormalization(TempConfigCase):
+    """review item 5: last_active and seen_at are second-precision UTC, `Z`.
+
+    docs/adapters.md requires an adapter to convert an offset and strip a
+    fraction itself, never leaving that to the runner.
+    """
+
+    def test_an_offset_timestamp_is_converted_to_utc(self):
+        self.write_transcript([line(timestamp="2026-09-12T20:04:11+02:00")])
+        sessions = sessions_of(self.config_dir, "--since", "30")
+        self.assertEqual(sessions[0]["last_active"], "2026-09-12T18:04:11Z")
+
+    def test_a_millisecond_timestamp_is_stripped_to_second_precision(self):
+        self.write_transcript([line(timestamp="2026-09-12T18:04:11.987Z")])
+        sessions = sessions_of(self.config_dir, "--since", "30")
+        self.assertEqual(sessions[0]["last_active"], "2026-09-12T18:04:11Z")
+
+    def test_git_branch_field_seen_at_is_normalised_too(self):
+        self.write_transcript([line(timestamp="2026-09-12T18:04:11.987Z", gitBranch="feat/x")])
+        sessions = sessions_of(self.config_dir, "--since", "30")
+        self.assertEqual(sessions[0]["branches"][0]["seen_at"], "2026-09-12T18:04:11Z")
+
+    def test_command_evidence_seen_at_is_normalised_too(self):
+        self.write_transcript(
+            [bash_line("git checkout -b feat/y", timestamp="2026-09-12T18:04:11.987+02:00")]
+        )
+        sessions = sessions_of(self.config_dir, "--since", "30")
+        self.assertEqual(sessions[0]["branches"][0]["seen_at"], "2026-09-12T16:04:11Z")
+
+    def test_every_timestamp_matches_the_runner_s_own_pattern(self):
+        self.write_transcript(
+            [
+                line(
+                    timestamp="2026-09-12T18:04:11.987+02:00",
+                    gitBranch="feat/z",
+                )
+            ]
+        )
+        sessions = sessions_of(self.config_dir, "--since", "30")
+        session = sessions[0]
+        self.assertRegex(session["last_active"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        for branch in session["branches"]:
+            self.assertRegex(branch["seen_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
 class TestSubagentsAndSidechains(TempConfigCase):
     def test_a_subagent_directory_is_never_walked(self):
         self.write_transcript([line()], name="top")
@@ -243,7 +290,7 @@ class TestSubagentsAndSidechains(TempConfigCase):
         )
         sessions = sessions_of(self.config_dir, "--since", "30")
         self.assertEqual(sessions[0]["cwd"], "/work/alpha")
-        self.assertEqual(sessions[0]["last_active"], "2026-09-12T18:00:00.000Z")
+        self.assertEqual(sessions[0]["last_active"], "2026-09-12T18:00:00Z")
 
 
 class TestSdkFiltering(TempConfigCase):
@@ -305,7 +352,7 @@ class TestWindowAndTolerance(TempConfigCase):
         path.write_text(text + "\n", encoding="utf-8")
         sessions = sessions_of(self.config_dir, "--since", "30")
         self.assertEqual(len(sessions), 1)
-        self.assertEqual(sessions[0]["last_active"], "2026-09-12T18:01:00.000Z")
+        self.assertEqual(sessions[0]["last_active"], "2026-09-12T18:01:00Z")
 
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root ignores chmod 000")
     def test_an_unreadable_file_is_skipped(self):
@@ -338,7 +385,7 @@ class TestGitBranchFieldEvidence(TempConfigCase):
         self.assertEqual(branch["name"], "feat/health-endpoint")
         self.assertEqual(branch["dir"], "/work/alpha")
         self.assertEqual(branch["evidence"], "git-branch-field")
-        self.assertEqual(branch["seen_at"], "2026-09-12T18:00:00.000Z")
+        self.assertEqual(branch["seen_at"], "2026-09-12T18:00:00Z")
 
     def test_main_is_filtered_out(self):
         self.write_transcript(
@@ -365,7 +412,7 @@ class TestGitBranchFieldEvidence(TempConfigCase):
         sessions = sessions_of(self.config_dir, "--since", "30")
         branches = sessions[0]["branches"]
         self.assertEqual(len(branches), 1)
-        self.assertEqual(branches[0]["seen_at"], "2026-09-12T19:00:00.000Z")
+        self.assertEqual(branches[0]["seen_at"], "2026-09-12T19:00:00Z")
 
     def test_a_real_capture_line_is_read_correctly(self):
         """tests/fixtures/claude/transcript.jsonl's own line 1 -- gitBranch: main, filtered."""

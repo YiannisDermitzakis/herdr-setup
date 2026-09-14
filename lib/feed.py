@@ -42,6 +42,7 @@ import contextlib
 import json
 import os
 import random
+import re
 import socket
 import subprocess
 import sys
@@ -59,6 +60,12 @@ VALID_CONFIDENCE = ("exact", "heuristic")
 # dropped by parse_sessions rather than passed on as something the audit
 # runner (phase 3) would have to recognise on its own.
 EVIDENCE = ("session-meta", "git-branch-field", "command", "worktree-path")
+
+# `last_active` and `branches[].seen_at` must already be exactly
+# second-precision UTC (docs/adapters.md's own wording) -- an adapter
+# converts an offset and strips a fraction itself; parse_sessions does not
+# do that work on an adapter's behalf, it only checks the adapter did.
+TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 # An adapter is a small local script. These bound a broken one; they are not
 # a performance budget. `sessions` gets the longest budget of the three: it
@@ -656,7 +663,11 @@ def parse_sessions(obj) -> tuple[list[dict], int]:
 
     `branch_name_ok` is re-applied here even though every adapter is
     supposed to have applied its own copy already: this function is the one
-    place that can make that promise true regardless of the adapter.
+    place that can make that promise true regardless of the adapter. The
+    same is true of TIMESTAMP_RE: `last_active` and `seen_at` must already
+    be exactly second-precision UTC (docs/adapters.md), and a value that is
+    not is treated as malformed -- the session is dropped and counted for
+    `last_active`, the one branch dropped silently for `seen_at`.
     """
     if not isinstance(obj, dict):
         raise AdapterError(f"sessions must print a JSON object, got {type(obj).__name__}")
@@ -672,6 +683,9 @@ def parse_sessions(obj) -> tuple[list[dict], int]:
             continue
         required_keys = ("id", "cwd", "last_active")
         if not all(isinstance(raw.get(k), str) and raw.get(k) for k in required_keys):
+            dropped += 1
+            continue
+        if not TIMESTAMP_RE.match(raw["last_active"]):
             dropped += 1
             continue
         raw_branches = raw.get("branches")
@@ -693,7 +707,7 @@ def parse_sessions(obj) -> tuple[list[dict], int]:
                 continue
             if evidence not in EVIDENCE:
                 continue
-            if not isinstance(seen_at, str) or not seen_at:
+            if not isinstance(seen_at, str) or not seen_at or not TIMESTAMP_RE.match(seen_at):
                 continue
             branches.append(
                 {"name": name, "dir": branch_dir, "evidence": evidence, "seen_at": seen_at}

@@ -592,22 +592,33 @@ def _bash_commands(line: dict) -> list[str]:
     return commands
 
 
-def extract_command_evidence(line: dict, branch_hits: dict[tuple[str, str], dict]) -> None:
-    """Evidence `command`: every Bash `tool_use` block's `input.command`."""
+def extract_command_evidence(
+    line: dict, branch_hits: dict[tuple[str, str], dict], *, seen_at: str
+) -> None:
+    """Evidence `command`: every Bash `tool_use` block's `input.command`.
+
+    `seen_at` is the caller's already-normalised (second-precision UTC)
+    reading of this line's own `timestamp` -- computed once in
+    derive_session's own loop and passed in here, so this function and
+    extract_worktree_path_evidence cannot each normalise the same value a
+    different way.
+    """
     line_cwd = line.get("cwd")
     base_cwd = line_cwd if isinstance(line_cwd, str) and line_cwd else None
-    timestamp = line.get("timestamp")
-    seen_at = timestamp if isinstance(timestamp, str) and timestamp else ""
     for command_text in _bash_commands(line):
         _process_bash_command(
             command_text, base_cwd=base_cwd, seen_at=seen_at, branch_hits=branch_hits
         )
 
 
-def extract_worktree_path_evidence(line: dict, branch_hits: dict[tuple[str, str], dict]) -> None:
-    """Evidence `worktree-path`, read from a line's own `cwd` and Bash command text."""
-    timestamp = line.get("timestamp")
-    seen_at = timestamp if isinstance(timestamp, str) and timestamp else ""
+def extract_worktree_path_evidence(
+    line: dict, branch_hits: dict[tuple[str, str], dict], *, seen_at: str
+) -> None:
+    """Evidence `worktree-path`, read from a line's own `cwd` and Bash command text.
+
+    `seen_at` is the caller's already-normalised reading of this line's own
+    `timestamp` -- see extract_command_evidence's docstring.
+    """
     texts = []
     cwd = line.get("cwd")
     if isinstance(cwd, str) and cwd:
@@ -624,6 +635,25 @@ def extract_worktree_path_evidence(line: dict, branch_hits: dict[tuple[str, str]
             _record_branch(
                 branch_hits, name=branch, branch_dir=path, evidence="worktree-path", seen_at=seen_at
             )
+
+
+def normalize_timestamp(text: str) -> str | None:
+    """A timestamp normalised to second-precision UTC, `Z`-suffixed.
+
+    docs/adapters.md requires `last_active` and `branches[].seen_at` to
+    already be exactly this shape -- the runner's own `TIMESTAMP_RE`
+    (lib/feed.py) drops anything that is not, rather than doing this
+    conversion on an adapter's behalf. A numeric offset (`+02:00`) is
+    converted to UTC and a fractional-second suffix (`.987`) is dropped.
+    Returns None if `text` cannot be parsed as a timestamp at all.
+    """
+    try:
+        parsed = datetime.fromisoformat(text)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _file_mtime_z(path: Path) -> str | None:
@@ -656,8 +686,17 @@ def derive_session(path: Path, *, include_sdk: bool) -> dict | None:
         line_cwd = line.get("cwd")
         if isinstance(line_cwd, str) and line_cwd:
             cwd = line_cwd
-        timestamp = line.get("timestamp")
-        if isinstance(timestamp, str) and timestamp:
+        raw_timestamp = line.get("timestamp")
+        # Normalised once here, and reused everywhere below, so `last_active`
+        # and every evidence extractor's `seen_at` agree on the same second-
+        # precision UTC value for this line -- docs/adapters.md requires an
+        # adapter to do this itself, not leave it to the runner.
+        timestamp = (
+            normalize_timestamp(raw_timestamp)
+            if isinstance(raw_timestamp, str) and raw_timestamp
+            else None
+        )
+        if timestamp:
             last_active = timestamp
         line_entrypoint = line.get("entrypoint")
         if isinstance(line_entrypoint, str) and line_entrypoint:
@@ -676,11 +715,11 @@ def derive_session(path: Path, *, include_sdk: bool) -> dict | None:
                 name=git_branch,
                 branch_dir=line_cwd,
                 evidence="git-branch-field",
-                seen_at=timestamp if isinstance(timestamp, str) and timestamp else "",
+                seen_at=timestamp or "",
             )
 
-        extract_command_evidence(line, branch_hits)
-        extract_worktree_path_evidence(line, branch_hits)
+        extract_command_evidence(line, branch_hits, seen_at=timestamp or "")
+        extract_worktree_path_evidence(line, branch_hits, seen_at=timestamp or "")
 
     if not saw_a_line or not cwd:
         return None

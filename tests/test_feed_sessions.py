@@ -221,6 +221,45 @@ class TestParseSessionsDropsBrokenBranches(unittest.TestCase):
         self.assertEqual(sessions[0]["branches"], [])
 
 
+class TestParseSessionsValidatesTimestamps(unittest.TestCase):
+    """review item 5: last_active/seen_at must already be second-precision UTC.
+
+    An adapter is responsible for normalising its OWN timestamps
+    (docs/adapters.md); parse_sessions only checks that it did, rather than
+    silently accepting an offset or a millisecond fraction and re-doing the
+    adapter's job for it.
+    """
+
+    BAD_TIMESTAMPS = (
+        "2026-09-12T18:04:11+02:00",  # a numeric offset, not UTC/Z
+        "2026-09-12T18:04:11.123Z",  # milliseconds
+        "not-a-timestamp",  # garbage
+        "2026-09-12 18:04:11Z",  # no "T"
+        "",
+    )
+
+    def test_a_malformed_last_active_drops_and_counts_the_session(self):
+        for bad in self.BAD_TIMESTAMPS:
+            session = dict(GOOD_SESSION, last_active=bad)
+            sessions, dropped = feed.parse_sessions({"sessions": [session]})
+            self.assertEqual(sessions, [], f"last_active={bad!r} must be dropped")
+            self.assertEqual(dropped, 1, f"last_active={bad!r} must be counted")
+
+    def test_a_malformed_seen_at_drops_only_the_branch(self):
+        for bad in self.BAD_TIMESTAMPS:
+            branch = dict(GOOD_SESSION["branches"][0], seen_at=bad)
+            session = dict(GOOD_SESSION, branches=[branch])
+            sessions, dropped = feed.parse_sessions({"sessions": [session]})
+            self.assertEqual(sessions[0]["branches"], [], f"seen_at={bad!r} must drop the branch")
+            self.assertEqual(dropped, 0, f"seen_at={bad!r} must not drop the whole session")
+
+    def test_a_second_precision_z_timestamp_is_accepted(self):
+        sessions, dropped = feed.parse_sessions({"sessions": [GOOD_SESSION]})
+        self.assertEqual(dropped, 0)
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(len(sessions[0]["branches"]), 1)
+
+
 class TestBranchNameOk(unittest.TestCase):
     """The exact list the phase brief pins, run through the runner's own copy.
 

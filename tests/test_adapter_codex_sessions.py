@@ -127,14 +127,15 @@ class TestIdentityAndGitBranch(TempHomeCase):
                 "repository_url": "https://github.com/example-org/example-repo.git",
             },
         )
-        meta = codex_session_meta()["payload"]
         sessions = sessions_of(self.config_dir, "--since", "30")
         self.assertEqual(len(sessions[0]["branches"]), 1)
         branch = sessions[0]["branches"][0]
         self.assertEqual(branch["name"], "feat/health-endpoint")
         self.assertEqual(branch["dir"], "/work/alpha")
         self.assertEqual(branch["evidence"], "session-meta")
-        self.assertEqual(branch["seen_at"], meta["timestamp"])
+        # Normalised to second precision (review item 5): the fixture's own
+        # payload.timestamp carries milliseconds ("...421Z").
+        self.assertEqual(branch["seen_at"], "2026-09-06T19:29:39Z")
 
     def test_main_is_filtered_out(self):
         # session-meta.json's own captured branch value is "main".
@@ -143,6 +144,50 @@ class TestIdentityAndGitBranch(TempHomeCase):
         )
         sessions = sessions_of(self.config_dir, "--since", "30")
         self.assertEqual(sessions[0]["branches"], [])
+
+
+class TestTimestampNormalization(TempHomeCase):
+    """review item 5: seen_at is second-precision UTC, `Z`.
+
+    `last_active` always comes from the file's own mtime (already exact),
+    so only `payload.timestamp` -> `seen_at` needs this.
+    """
+
+    def test_an_offset_timestamp_is_converted_to_utc(self):
+        write_codex_rollout(
+            self.config_dir,
+            2026,
+            9,
+            6,
+            "rollout-2026-09-06T19-29-39-a.jsonl",
+            cwd="/work/alpha",
+            timestamp="2026-09-06T21:29:39+02:00",
+            git={
+                "commit_hash": "0" * 40,
+                "branch": "feat/health-endpoint",
+                "repository_url": "https://github.com/example-org/example-repo.git",
+            },
+        )
+        sessions = sessions_of(self.config_dir, "--since", "30")
+        self.assertEqual(sessions[0]["branches"][0]["seen_at"], "2026-09-06T19:29:39Z")
+
+    def test_a_millisecond_timestamp_is_stripped_to_second_precision(self):
+        write_codex_rollout(
+            self.config_dir,
+            2026,
+            9,
+            6,
+            "rollout-2026-09-06T19-29-39-a.jsonl",
+            cwd="/work/alpha",
+            timestamp="2026-09-06T19:29:39.987Z",
+            git={
+                "commit_hash": "0" * 40,
+                "branch": "feat/health-endpoint",
+                "repository_url": "https://github.com/example-org/example-repo.git",
+            },
+        )
+        sessions = sessions_of(self.config_dir, "--since", "30")
+        self.assertEqual(sessions[0]["branches"][0]["seen_at"], "2026-09-06T19:29:39Z")
 
 
 class TestNoGitOrDetachedHead(TempHomeCase):

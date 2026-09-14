@@ -269,3 +269,18 @@ Added '@' and 'a.lock/b' to tests/helpers/feedlib.py's shared UNREAL_BRANCH_NAME
 ### 9e4832105f2e · discovery · RED: sessions() discards parse_sessions' dropped count (review item 2) (phase 2)
 
 Before sessions() returned (sessions, dropped) and warned/raised on drops: uv run --quiet --script tests/test_feed_sessions.py -> rc=1, 35 tests, 5 errors (test_it_runs_sessions_with_since_and_parses_the_answer, test_the_result_has_already_passed_parse_sessions -- both unpack a 2-tuple sessions() did not return -- plus the three new tests: test_a_dropped_entry_is_warned_about_by_name_and_count, test_no_warning_when_nothing_was_dropped, test_every_entry_malformed_raises_rather_than_returning_an_empty_list, all erroring the same way). An adapter whose every entry was malformed previously returned [] silently, indistinguishable from a genuinely empty window -- the exact ambiguity the sessions contract's Failing rule forbids.
+
+<!-- fr:journal kind=discovery scope=plan id=6ec7be37b325 created=2026-09-14T04:31:25 phase=2 -->
+### 6ec7be37b325 · discovery · RED: parse_sessions accepted offset/millisecond/garbage timestamps (review item 5, runner half) (phase 2)
+
+Before TIMESTAMP_RE was added to lib/feed.py's parse_sessions: uv run --quiet --script tests/test_feed_sessions.py -> rc=1, 38 tests, 2 failures (test_a_malformed_last_active_drops_and_counts_the_session, test_a_malformed_seen_at_drops_only_the_branch), each parametrised over an offset (+02:00), a millisecond fraction, garbage text, a missing 'T' separator and an empty string. parse_sessions accepted every one of them as a valid last_active/seen_at. After adding TIMESTAMP_RE (^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$) and applying it to both fields: rc=0, 38/38.
+
+<!-- fr:journal kind=discovery scope=plan id=538edf4b459b created=2026-09-14T04:35:48 phase=2 -->
+### 538edf4b459b · discovery · RED: adapters/claude does not normalise last_active/seen_at (review item 5, adapter half) (phase 2)
+
+Before adapters/claude gained normalize_timestamp() and applied it to last_active and every branch's seen_at: uv run --quiet --script tests/test_adapter_claude_sessions.py -> rc=1, 72 tests, 10 failures. Five are pre-existing assertions updated to the normalised (no-milliseconds) expected value ahead of the fix (test_a_top_level_transcript_yields_expected_identity, test_a_sidechain_line_is_ignored, test_an_unparseable_middle_line_is_skipped, test_gitbranch_becomes_a_git_branch_field_branch, test_gitbranch_is_deduped_per_name_and_dir_keeping_the_latest -- each failed with the raw '.000Z' value instead of the stripped one). Five are new: test_an_offset_timestamp_is_converted_to_utc, test_a_millisecond_timestamp_is_stripped_to_second_precision, test_git_branch_field_seen_at_is_normalised_too, test_command_evidence_seen_at_is_normalised_too, test_every_timestamp_matches_the_runner_s_own_pattern.
+
+<!-- fr:journal kind=discovery scope=plan id=6f4429714675 created=2026-09-14T04:39:37 phase=2 -->
+### 6f4429714675 · discovery · RED: adapters/codex does not normalise seen_at (review item 5, codex half) (phase 2)
+
+Before adapters/codex gained normalize_timestamp() applied to payload.timestamp: uv run --quiet --script tests/test_adapter_codex_sessions.py -> rc=1, 23 tests, 3 failures (test_a_real_branch_yields_session_meta_evidence, updated ahead of the fix to expect the normalised value against the fixture's own millisecond payload.timestamp; plus two new tests, test_an_offset_timestamp_is_converted_to_utc and test_a_millisecond_timestamp_is_stripped_to_second_precision). last_active needed no change: it always comes from the file's own mtime, already exact.

@@ -263,13 +263,13 @@ Prints one JSON object on stdout and exits 0:
 |---|---|---|
 | `id` | yes | The session id Herdr knows the session by, the value `agent_session.value` carries. |
 | `cwd` | yes | The session's working directory, the latest one known. |
-| `last_active` | yes | ISO 8601 UTC with `Z`. |
+| `last_active` | yes | ISO 8601 UTC, second precision, `Z`. |
 | `title` | no | A short human name. |
 | `branches` | yes | May be empty. At most one entry per (`name`, `dir`), keeping the latest `seen_at`. |
 | `branches[].name` | yes | A branch name. |
 | `branches[].dir` | yes | Where the branch lives when known (a worktree path), otherwise the session `cwd`. |
 | `branches[].evidence` | yes | `session-meta`, `git-branch-field`, `command` or `worktree-path`. |
-| `branches[].seen_at` | yes | ISO 8601 UTC with `Z`: when that evidence was recorded. |
+| `branches[].seen_at` | yes | ISO 8601 UTC, second precision, `Z`: when that evidence was recorded. |
 
 Rules:
 
