@@ -454,36 +454,77 @@ def _within(path: str, root: str) -> bool:
     return path == root or path.startswith(root.rstrip("/") + "/")
 
 
+# A path at or beneath fr's worktree root: `<prefix>/.cache/fr/worktrees`, then
+# optionally `<repo>`, then anything. None of `.cache`, `fr`, `worktrees` or the
+# slug below `<repo>` names a repository.
+_FR_WORKTREES_PATH_RE = re.compile(
+    r"(?P<prefix>(?:/.*?)?)/\.cache/fr/worktrees(?:/(?P<repo>[^/]+)(?:/.*)?)?"
+)
+
+
+def _session_repositories(own_cwd: str) -> frozenset[str]:
+    """The names the session's own repository may have, from the line's `cwd`.
+
+    A `cwd` inside an fr worktree belongs to that worktree's `<repo>`, and to
+    nothing else on its path. Otherwise the repository is one of the `cwd`'s
+    path components -- fr names a repository's worktrees after its checkout
+    -- leaving out fr's own `.cache/fr/worktrees` components and everything
+    below them. The adapter has no git, so it cannot tell WHICH component is
+    the checkout: a generic name such as `work` in `/work/a` still matches.
+    """
+    fr_path = _FR_WORKTREES_PATH_RE.fullmatch(own_cwd)
+    if fr_path is not None and fr_path["repo"]:
+        return frozenset({fr_path["repo"]})
+    head = fr_path["prefix"] if fr_path is not None else own_cwd
+    return frozenset(part for part in head.split("/") if part)
+
+
 def _same_repository_fr_worktree(directory: str | None, own_cwd: str | None):
     """The fr worktree match when `directory` is in an fr worktree of the line's repository.
 
-    The same repository means the worktree's `<repo>` equals one path
-    component of the line's own `cwd`: fr names a repository's worktrees
-    after its checkout, and a session working through `cd <worktree>` keeps
-    its recorded `cwd` in that checkout.
+    The same repository means the worktree's `<repo>` is one of
+    _session_repositories(own_cwd): fr names a repository's worktrees after
+    its checkout, and a session working through `cd <worktree>` keeps its
+    recorded `cwd` in that checkout.
     """
     if not directory or not own_cwd or _VARIABLE_RE.search(directory):
         return None
     match = _FR_WORKTREE_DIR_RE.fullmatch(directory)
-    if match is None or match["repo"] not in own_cwd.split("/"):
+    if match is None or match["repo"] not in _session_repositories(own_cwd):
         return None
     return match
+
+
+def _names_own_repository(repository: str, own_cwd: str | None) -> bool:
+    """Whether a `gh --repo [HOST/]OWNER/NAME` value names the line's own repository.
+
+    Only NAME can be compared: the `cwd` carries no owner.
+    """
+    if not own_cwd or _VARIABLE_RE.search(repository):
+        return False
+    name = repository.rstrip("/").rsplit("/", 1)[-1]
+    return bool(name) and name in _session_repositories(own_cwd)
 
 
 def _in_own_repository(directory: str | None, own_cwd: str | None) -> bool:
     """Whether a command acting in `directory` acts in the line's own repository.
 
-    The line's `cwd` or beneath it, or an fr worktree of the same repository.
-    A relative directory (no `cwd` to resolve it against) and one holding an
-    unexpanded variable are never either.
+    A directory inside an fr worktree counts only when it is an fr worktree
+    of the same repository -- even beneath the `cwd`, since a home-directory
+    session has every fr worktree beneath it. Any other directory counts when
+    it is the line's `cwd` or beneath it: a branch created in a checkout
+    beneath a non-repository `cwd` is still that session's work, because
+    without git the adapter cannot see where one repository ends. A relative
+    directory (no `cwd` to resolve it against) and one holding an unexpanded
+    variable never count.
     """
     if not directory or not own_cwd or not directory.startswith("/"):
         return False
     if _VARIABLE_RE.search(directory) or _VARIABLE_RE.search(own_cwd):
         return False
-    return _within(directory, own_cwd) or (
-        _same_repository_fr_worktree(directory, own_cwd) is not None
-    )
+    if _FR_WORKTREE_DIR_RE.fullmatch(directory) is not None:
+        return _same_repository_fr_worktree(directory, own_cwd) is not None
+    return _within(directory, own_cwd)
 
 
 def _flag_value(tokens: list[str], *names: str) -> str | None:
@@ -713,6 +754,11 @@ def _process_bash_command(
             hit = _match_command_shape(segment, segment_dir=segment_dir, current_dir=current_dir)
         elif segment[0] == "gh" and len(segment) >= 2:
             hit = _match_gh_shape(segment[1:], segment_dir=segment_dir)
+            # `gh ... --repo|-R OWNER/NAME` acts on the repository it names,
+            # wherever gh runs.
+            named = _flag_value(segment[1:], "--repo", "-R")
+            if hit is not None and named is not None and not _names_own_repository(named, own_cwd):
+                return
 
         if hit is None:
             return

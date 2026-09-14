@@ -992,15 +992,111 @@ class TestEvidenceIsLimitedToTheSessionsOwnRepository(TempConfigCase):
         self.assertEqual(branches, [])
 
     def test_a_home_directory_session_is_credited_with_no_ones_worktrees(self):
+        # The fr worktrees lie BENEATH a home-directory cwd, but beneath is not
+        # enough: a directory inside an fr worktree must pass the repository
+        # component rule, and `example-repo` is no component of the home path.
         home = os.environ["HOME"]
         branches = self.branches_for(
             [
                 "cd ~/.cache/fr/worktrees/example-repo/feat__x && git status",
                 "git -C $HOME/.cache/fr/worktrees/example-repo/feat__y log",
+                "cd ~/.cache/fr/worktrees/example-repo/feat__z && git checkout -b feat/z-checkout",
+                "cd ~/.cache/fr/worktrees/example-repo/feat__z && git push -u origin feat/z-push",
+                "git -C ~/.cache/fr/worktrees/example-repo/feat__z switch -c feat/z-switch",
             ],
             cwd=home,
         )
         self.assertEqual(branches, [])
+
+    def test_a_branch_created_in_a_checkout_beneath_a_non_repository_cwd_still_counts(self):
+        # Decision: without git the adapter cannot see repository boundaries, and
+        # a branch created beneath the session's own cwd is that session's work.
+        branches = self.branches_for(["cd example-repo-2 && git checkout -b feat/p"], cwd="/work")
+        found = [(b["name"], b["dir"], b["evidence"]) for b in branches]
+        self.assertEqual(found, [("feat/p", "/work/example-repo-2", "command")])
+
+    def test_its_own_fr_worktree_reached_only_by_dash_cap_c_counts(self):
+        branches = self.branches_for([f"git -C {self.OWN_WT} log --oneline"])
+        found = [(b["name"], b["dir"], b["evidence"]) for b in branches]
+        self.assertEqual(found, [("feat/mine", self.OWN_WT, "worktree-path")])
+
+    def test_the_repository_must_equal_a_cwd_component_not_be_part_of_one(self):
+        branches = self.branches_for(
+            [
+                f"cd {self.ROOT}/example-repo/feat__s && git checkout -b feat/s-checkout",
+                f"git -C {self.ROOT}/example-repo/feat__t log",
+            ],
+            cwd=self.OTHER,
+        )
+        self.assertEqual(branches, [])
+
+    def test_only_a_whole_home_variable_is_expanded(self):
+        # From the parent of HOME, `$HOMEX/sub` read loosely as `$HOME` + `X/sub`
+        # would land beneath the cwd and count; it is a different variable.
+        parent = os.path.dirname(os.environ["HOME"].rstrip("/"))
+        branches = self.branches_for(
+            [
+                "cd $HOMEX/sub && git checkout -b feat/home-x",
+                "cd ${HOME_DIR}/sub && git checkout -b feat/home-dir",
+                "git -C $HOMEX/sub switch -c feat/home-x-dash-cap-c",
+            ],
+            cwd=parent,
+        )
+        self.assertEqual(branches, [])
+
+    def test_a_cwd_inside_an_fr_worktree_belongs_to_that_worktrees_repository(self):
+        # Inside example-repo's worktree the path also holds `.cache`, `fr`,
+        # `worktrees`, the slug and whatever lies above them. None of those is
+        # the session's repository; example-repo is.
+        branches = self.branches_for(
+            [
+                f"cd {self.ROOT}/example-repo/feat__other && git status",
+                f"cd {self.ROOT}/example-repo-2/feat__b && git status",
+                f"cd {self.ROOT}/fr/feat__named-fr && git status",
+                f"cd {self.ROOT}/worktrees/feat__named-worktrees && git checkout -b feat/w",
+                f"git -C {self.ROOT}/box/feat__named-box log",
+            ],
+            cwd=f"{self.OWN_WT}/src",
+        )
+        found = sorted((b["name"], b["dir"], b["evidence"]) for b in branches)
+        self.assertEqual(
+            found,
+            [
+                ("feat/mine", self.OWN_WT, "worktree-path"),
+                ("feat/other", f"{self.ROOT}/example-repo/feat__other", "worktree-path"),
+            ],
+        )
+
+    def test_a_repository_named_like_an_fr_path_component_is_not_credited(self):
+        branches = self.branches_for(
+            [
+                f"cd {self.ROOT}/fr/feat__named-fr && git checkout -b feat/named-fr",
+                f"git -C {self.ROOT}/work/feat__named-work log",
+            ],
+            cwd=self.OWN_WT,
+        )
+        found = sorted((b["name"], b["evidence"]) for b in branches)
+        self.assertEqual(found, [("feat/mine", "worktree-path")])
+
+    def test_gh_pr_create_with_a_repo_flag_counts_only_for_its_own_repository(self):
+        branches = self.branches_for(
+            [
+                "gh pr create --head feat/own-repo --repo example-org/example-repo",
+                "gh pr create -R example-org/example-repo-2 --head feat/other-repo",
+                "gh pr create --repo=example-org/example-repo-2 --head feat/other-repo-equals",
+                "gh pr create -R github.com/example-org/example-repo --head feat/own-repo-host",
+                "gh pr create --head feat/no-repo",
+            ]
+        )
+        found = sorted((b["name"], b["dir"], b["evidence"]) for b in branches)
+        self.assertEqual(
+            found,
+            [
+                ("feat/no-repo", self.OWN, "command"),
+                ("feat/own-repo", self.OWN, "command"),
+                ("feat/own-repo-host", self.OWN, "command"),
+            ],
+        )
 
     def test_its_own_fr_worktrees_reached_by_cd_or_dash_cap_c_still_count(self):
         branches = self.branches_for(

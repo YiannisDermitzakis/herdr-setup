@@ -404,17 +404,37 @@ Rules:
 - **Scope: a session is credited only with its own repository.** Without
   this, a session that inspects or cleans up other repositories' worktrees
   is credited with all of their branches.
+  - **The session's repository** is named from the line's `cwd`, since
+    the adapter has no git. A `cwd` inside an fr worktree
+    `.../.cache/fr/worktrees/<repo>/<slug>` belongs to that `<repo>` and to
+    nothing else on its path. Any other `cwd` belongs to one of its path
+    components, leaving out fr's own `.cache`, `fr` and `worktrees`
+    components and everything below them. An fr worktree is "of the same
+    repository" when its `<repo>` is the session's repository.
   - `git-branch-field` evidence is always the line's own `cwd`, unchanged.
   - `worktree-path` evidence counts when the worktree is the line's own
-    `cwd` or contains it; or when a `cd` or `git -C` reaches it AND its
-    `<repo>` equals a path component of the line's `cwd`. fr sessions work
-    through `cd <worktree> && ...` while their recorded `cwd` stays in the
-    base clone, so the second case keeps real fr work.
-  - `command` evidence counts only when the command acts in the line's
-    `cwd` or beneath it, or in an fr worktree of the same repository by the
-    rule above. A command acts where git or gh runs, after `cd`, `-C` and
-    `--work-tree=` -- `git worktree add` included, whose new path is only
-    its `dir` -- and `fr isolation up|attach --repo <path>` acts in `<path>`.
+    `cwd` or contains it; or when a `cd` or `git -C` reaches it AND it is an
+    fr worktree of the same repository. fr sessions work through
+    `cd <worktree> && ...` while their recorded `cwd` stays in the base
+    clone, so the second case keeps real fr work.
+  - `command` evidence counts only when the command acts in the session's
+    own repository. A command acts where git or gh runs, after `cd`, `-C`
+    and `--work-tree=` -- `git worktree add` included, whose new path is
+    only its `dir` -- and `fr isolation up|attach --repo <path>` acts in
+    `<path>`. Two rules decide:
+    - **Inside an fr worktree,** the directory must be an fr worktree of the
+      same repository. Being beneath the `cwd` is not enough: a
+      home-directory session has every fr worktree beneath it.
+    - **Anywhere else,** the directory must be the line's `cwd` or beneath
+      it. A branch created in an ordinary checkout beneath a non-repository
+      `cwd` still counts (`cwd=/work`, `cd other-repo && git checkout -b p`):
+      without git the adapter cannot see where one repository ends.
+
+    `gh pr create --repo|-R [HOST/]OWNER/NAME` acts on the repository it
+    names, so it counts only when `NAME` is the session's repository.
+  - Known limits: a subdirectory `cwd` cannot reach upward (`cwd=/work/a/sub`
+    with `cd .. && git checkout -b x` is dropped), and a generic path
+    component still matches (a repository named `work` for `cwd=/work/a`).
   - A directory holding an unexpanded variable (`$NAME` or `${NAME}`, other
     than a leading `$HOME` or `${HOME}`) is not a directory. A command that
     acts in one yields nothing. A shape whose own `dir` is one, from a
