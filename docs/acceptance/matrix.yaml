@@ -408,13 +408,26 @@ rows:
       the configured GitHub owners that match no session branch, and it writes nothing.
     origin:
     - herdr-setup:docs/superpowers/implemented/specs/2026-09-13-session-audit-design.md
+    - herdr-setup:docs/superpowers/specs/2026-09-14-audit-live-host-findings-design.md
     levels:
       unit:
       - herdr-setup:tests/test_audit_join.py
       - herdr-setup:tests/test_audit_report.py
       - herdr-setup:tests/test_audit_entrypoint.sh
+      - herdr-setup:tests/test_audit_github.py
+      - herdr-setup:tests/test_fake_gh.py
+      - herdr-setup:tests/test_adapter_claude_sessions.py
     status: ci
-    notes: Implemented in the 2026-09-13-session-audit plan, phase 4. Section 1 (every
+    notes: The 2026-09-14 live-host fixes amend this row. Section 3 asks GitHub for owned
+      repositories only and names each by nameWithOwner, so a collaborator repository's
+      pull request is listed once under its real name (herdr-setup:tests/test_audit_github.py,
+      against the collaborator repository herdr-setup:tests/test_fake_gh.py pins in the fake
+      gh), and a pull request two owners both list is reported once (herdr-setup:tests/test_audit_report.py).
+      Section 2 no longer lists branches a session only inspected or created in another
+      repository, because the Claude Code adapter credits a session only with its own repository's
+      command and worktree-path evidence (herdr-setup:tests/test_adapter_claude_sessions.py).
+      The live re-run is that spec's post-merge Test Plan, run by the operator.
+      Implemented in the 2026-09-13-session-audit plan, phase 4. Section 1 (every
       Herdr pane with its session's branches, a worktree-path branch from the pane's own
       cwd, or the note saying why it has none) is verified by herdr-setup:tests/test_audit_join.py
       against the fake herdr and inline adapters; sections 2 and 3 (unmerged and open-pr
@@ -436,13 +449,20 @@ rows:
       as work to act on.
     origin:
     - herdr-setup:docs/superpowers/implemented/specs/2026-09-13-session-audit-design.md
+    - herdr-setup:docs/superpowers/specs/2026-09-14-audit-live-host-findings-design.md
     levels:
       unit:
       - herdr-setup:tests/test_audit_merge_state.py
       - herdr-setup:tests/test_audit_report.py
       - herdr-setup:tests/test_audit_entrypoint.sh
+      - herdr-setup:tests/test_audit_git_calls.py
     status: ci
-    notes: Phase 3 of the 2026-09-13-session-audit plan verifies merge state against
+    notes: The 2026-09-14 live-host fixes resolve each repository once and read its refs
+      with one for-each-ref, and herdr-setup:tests/test_audit_git_calls.py proves the
+      states are unchanged (97 branches across two repositories, four clones and a linked
+      worktree resolve to unmerged and contained) while the git process count stays within
+      a bound set by work trees, not branches. The merge-state tests of phase 3 still pass.
+      Phase 3 of the 2026-09-13-session-audit plan verifies merge state against
       real git repositories and the fake gh (herdr-setup:tests/test_audit_merge_state.py)
       -- a squash-merged branch resolves to merged because a MERGED pull request with
       the same head and head repository is checked before ancestry, a fork's same-named
@@ -489,6 +509,7 @@ rows:
       history, and agents without it are reported as unsupported.
     origin:
     - herdr-setup:docs/superpowers/implemented/specs/2026-09-13-session-audit-design.md
+    - herdr-setup:docs/superpowers/specs/2026-09-14-audit-live-host-findings-design.md
     levels:
       unit:
       - herdr-setup:tests/test_feed_sessions.py
@@ -497,7 +518,14 @@ rows:
       - herdr-setup:tests/test_contract.py
       - herdr-setup:tests/test_audit_join.py
     status: ci
-    notes: Phase 2 of the 2026-09-13-session-audit plan lands and verifies the contract
+    notes: The 2026-09-14 live-host fixes amend the contract twice. The sessions timeout
+      is 600 seconds in docs/adapters.md and lib/feed.py alike (herdr-setup:tests/test_contract.py),
+      with the probe and resolve limits unchanged and the timeout mechanism still proven
+      with small injected values (herdr-setup:tests/test_feed_sessions.py). And Claude Code
+      credits a session only with its own repository -- its cwd or beneath it, or an fr
+      worktree of the same repository reached by cd or -C, with a directory holding an
+      unexpanded variable never a directory (herdr-setup:tests/test_adapter_claude_sessions.py).
+      Phase 2 of the 2026-09-13-session-audit plan lands and verifies the contract
       -- docs/adapters.md's sessions-probe/sessions-response examples execute
       (herdr-setup:tests/test_contract.py), lib/feed.py validates and re-filters branch
       names (herdr-setup:tests/test_feed_sessions.py), Claude Code and Codex both answer
