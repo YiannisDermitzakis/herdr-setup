@@ -217,6 +217,57 @@ class TestIsAncestor(GitCase):
         self.assertIsNone(audit.is_ancestor(audit.repo_for(str(repo), None), "feat/x", "main"))
 
 
+def point_ref(repo: Path, branch: str, oid: str) -> None:
+    """Write a loose branch ref naming `oid`, whatever that object is or is not."""
+    path = repo / ".git" / "refs" / "heads" / branch
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(oid + "\n", encoding="utf-8")
+
+
+class TestCorruptBranchTips(GitCase):
+    """A branch whose tip is not a commit fails closed, and only for that branch.
+
+    `merge-base --is-ancestor` exited 128 on such a tip. The one `--merged`
+    read skips it silently, so the tips it did not list are checked with one
+    `cat-file --batch-check` per repository instead.
+    """
+
+    def repository_with_siblings(self) -> Path:
+        repo = make_repo(self.root)
+        git(repo, "branch", "feat/fresh")
+        git(repo, "checkout", "-q", "-b", "feat/unmerged")
+        commit(repo, "unmerged work")
+        git(repo, "checkout", "-q", "main")
+        return repo
+
+    def assert_only_the_corrupt_branch_raises(self, repo: Path, corrupt: str) -> None:
+        cache = audit.GitCache()
+        found = cache.repo_for(str(repo), None)
+        self.assertTrue(cache.local_ref(found, corrupt))
+        self.assertFalse(cache.is_ancestor(found, "feat/unmerged", "main"))
+        with self.assertRaises(audit.GitError) as ctx:
+            cache.is_ancestor(found, corrupt, "main")
+        self.assertIn(str(repo), str(ctx.exception))
+        self.assertIn(f"refs/heads/{corrupt}", str(ctx.exception))
+        self.assertTrue(cache.is_ancestor(found, "feat/fresh", "main"))
+        self.assertFalse(cache.is_ancestor(found, "feat/unmerged", "main"))
+        with self.assertRaises(audit.GitError):
+            audit.is_ancestor(audit.repo_for(str(repo), None), corrupt, "main")
+
+    def test_a_tip_naming_a_missing_object_raises_for_that_branch_only(self):
+        repo = self.repository_with_siblings()
+        point_ref(repo, "feat/missing", "f" * 40)
+        self.assert_only_the_corrupt_branch_raises(repo, "feat/missing")
+
+    def test_a_tip_naming_a_blob_raises_for_that_branch_only(self):
+        repo = self.repository_with_siblings()
+        data = self.root / "blob.txt"
+        data.write_text("not a commit\n", encoding="utf-8")
+        blob = git(repo, "hash-object", "-w", str(data)).stdout.strip()
+        point_ref(repo, "feat/blob", blob)
+        self.assert_only_the_corrupt_branch_raises(repo, "feat/blob")
+
+
 class TestLocalDefault(GitCase):
     def test_none_without_origin_head_and_the_target_with_it(self):
         repo = make_repo(self.root)

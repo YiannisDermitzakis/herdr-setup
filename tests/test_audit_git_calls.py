@@ -54,9 +54,9 @@ REMOTE_B = "https://github.com/example-org/example-repo-2.git"
 BRANCHES_PER_CHECKOUT = 12
 
 # What one repository may cost, whatever its branch count: the main
-# checkout, the chosen remote and its URL (3), and its refs and their
-# ancestry (2).
-CALLS_PER_TOPLEVEL = 5
+# checkout, the chosen remote and its URL (3), and its refs, their ancestry
+# and the check of the tips ancestry left out (3).
+CALLS_PER_TOPLEVEL = 6
 
 
 class TestGitCallsAreBoundedByRepositories(unittest.TestCase):
@@ -157,6 +157,10 @@ class TestGitCallsAreBoundedByRepositories(unittest.TestCase):
         _, calls = self.resolve_counting(BRANCHES_PER_CHECKOUT)
         reads = [line for line in calls if line.endswith(" refs/heads refs/remotes/origin")]
         self.assertEqual(len(reads), len(self.checkouts), calls)
+        # Every checkout has unmerged branches, whose tips are checked in ONE
+        # cat-file batch per checkout, never one per branch.
+        tip_checks = [line for line in calls if git_subcommand(line) == "cat-file"]
+        self.assertEqual(len(tip_checks), len(self.checkouts), calls)
         per_branch = [line for line in calls if "refs/heads/feat/" in line]
         self.assertEqual(per_branch, [])
 

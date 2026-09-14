@@ -326,7 +326,9 @@ class TestWhatIsAsked(MergeStateCase):
         lookups = [
             line
             for line in recorded
-            if line.endswith("for-each-ref --format=%(refname) refs/heads refs/remotes/origin")
+            if line.endswith(
+                "for-each-ref --format=%(refname) %(objectname) refs/heads refs/remotes/origin"
+            )
         ]
         ancestry = [line for line in recorded if " --merged=" in line]
         self.assertEqual([line for line in recorded if "refs/heads/feat/shared" in line], [])

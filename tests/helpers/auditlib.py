@@ -346,6 +346,8 @@ READ_ONLY_SUBCOMMANDS = frozenset(
         "merge-base",
         "symbolic-ref",
         "worktree list",
+        # `cat-file --batch-check` only reports each object's type and size.
+        "cat-file",
     }
 )
 

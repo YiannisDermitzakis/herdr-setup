@@ -44,7 +44,7 @@ import shutil
 import subprocess
 import sys
 import traceback
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -728,11 +728,14 @@ class Repo:
     remote: str | None = None
 
 
-def _git(directory: str, args: tuple[str, ...]) -> subprocess.CompletedProcess:
+def _git(
+    directory: str, args: tuple[str, ...], stdin: str | None = None
+) -> subprocess.CompletedProcess:
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
     try:
         return subprocess.run(  # noqa: S603
             ["git", "-C", directory, *args],
+            input=stdin,
             capture_output=True,
             text=True,
             timeout=GIT_TIMEOUT,
@@ -822,6 +825,8 @@ class RefSet:
 
     names: frozenset[str]
     broken: frozenset[str]
+    # ref -> the object id it names, when the read asked for `%(objectname)`
+    tips: dict[str, str] = field(default_factory=dict)
 
 
 def _for_each_ref(toplevel: str, args: tuple[str, ...]) -> RefSet:
@@ -832,6 +837,9 @@ def _for_each_ref(toplevel: str, args: tuple[str, ...]) -> RefSet:
     `for-each-ref` exits 0 for it, and says `ignoring broken ref <ref>` on
     stderr. So each such line is recorded as broken, and anything else on
     stderr is an error, never an absence.
+
+    Each output line is `<refname>`, or `<refname> <objectname>` when the
+    format asks for both; the object id is kept in `tips`.
     """
     proc = _git(toplevel, args)
     if proc.returncode != 0:
@@ -844,11 +852,23 @@ def _for_each_ref(toplevel: str, args: tuple[str, ...]) -> RefSet:
         if match is None:
             raise _git_failure(toplevel, args, proc)
         broken.add(match["ref"])
-    return RefSet(frozenset(proc.stdout.splitlines()), frozenset(broken))
+    names, tips = set(), {}
+    for line in proc.stdout.splitlines():
+        name, _, oid = line.partition(" ")
+        names.add(name)
+        if oid:
+            tips[name] = oid
+    return RefSet(frozenset(names), frozenset(broken), tips)
 
 
 def _broken_ref(repo: Repo, ref: str) -> GitError:
     return GitError(f"git in {repo.toplevel}: ignoring broken ref {ref}")
+
+
+# One `cat-file --batch-check` answer line for an object that is a commit.
+# Anything else -- `<input> missing` for a missing object or for a tip that
+# does not peel to a commit -- is not one.
+_COMMIT_CHECK_RE = re.compile(r"[0-9a-f]+ commit \d+")
 
 
 class GitCache:
@@ -856,11 +876,12 @@ class GitCache:
 
     A live run asked the same questions once per branch directory: 1,269 git
     processes, most of an 8-minute audit. Here a directory is resolved to its
-    work tree once, a work tree to its Repo once, a repository's local and
-    remote-tracking refs are read with ONE `for-each-ref`, and ancestry
-    against a default branch with one `for-each-ref --merged`. The answers
-    are the per-question functions' answers; only the number of processes
-    changes.
+    work tree once, a work tree to its Repo once, and each checkout's local
+    and remote-tracking refs, with the object each names, are read with ONE
+    `for-each-ref`. Ancestry against a default branch takes one
+    `for-each-ref --merged`, and the tips that read left out are checked
+    with one `cat-file --batch-check`. The answers are the per-question
+    functions' answers; only the number of processes changes.
 
     A cache lives as long as one resolve_branches call, the audit's one
     resolution pass: repositories do not change under a read-only run, but
@@ -872,6 +893,7 @@ class GitCache:
         self._repos: dict[str, Repo] = {}
         self._refs: dict[tuple[str, str | None], RefSet] = {}
         self._merged: dict[tuple[str, str], RefSet] = {}
+        self._not_commits: dict[tuple[str, str], frozenset[str]] = {}
         self._local_defaults: dict[tuple[str, str | None], str | None] = {}
 
     def toplevel(self, directory: str | None) -> str | None:
@@ -905,7 +927,7 @@ class GitCache:
             patterns = ("refs/heads",)
             if repo.remote is not None:
                 patterns += (f"refs/remotes/{repo.remote}",)
-            args = ("for-each-ref", "--format=%(refname)", *patterns)
+            args = ("for-each-ref", "--format=%(refname) %(objectname)", *patterns)
             self._refs[key] = _for_each_ref(repo.toplevel, args)
         return self._refs[key]
 
@@ -941,7 +963,45 @@ class GitCache:
         merged = self._merged[key]
         if ref in merged.broken:
             raise _broken_ref(repo, ref)
-        return ref in merged.names
+        if ref in merged.names:
+            return True
+        if ref in self.not_commits(repo, target):
+            raise GitError(f"git in {repo.toplevel}: {ref} does not name a commit")
+        return False
+
+    def not_commits(self, repo: Repo, target: str) -> frozenset[str]:
+        """The local branches whose tip is not a readable commit, among those not merged.
+
+        `for-each-ref --merged` leaves such a tip out without a word, where
+        `merge-base --is-ancestor` exited 128. So every branch the merged read
+        left out has its tip checked, all at once: ONE `cat-file --batch-check`
+        per checkout and default ref, fed `<oid>^{commit}` on stdin. Its
+        stdout decides, a line per tip; the error line it prints on stderr
+        for a blob only repeats what stdout says.
+        """
+        key = (repo.main_checkout, target)
+        if key not in self._not_commits:
+            refs, merged = self.refs(repo), self._merged[key]
+            asked = sorted(
+                ref
+                for ref in refs.names
+                if ref.startswith("refs/heads/") and ref not in merged.names and ref in refs.tips
+            )
+            found: frozenset[str] = frozenset()
+            if asked:
+                args = ("cat-file", "--batch-check")
+                stdin = "".join(f"{refs.tips[ref]}^{{commit}}\n" for ref in asked)
+                proc = _git(repo.toplevel, args, stdin=stdin)
+                answers = proc.stdout.splitlines()
+                if proc.returncode != 0 or len(answers) != len(asked):
+                    raise _git_failure(repo.toplevel, args, proc)
+                found = frozenset(
+                    ref
+                    for ref, answer in zip(asked, answers, strict=True)
+                    if _COMMIT_CHECK_RE.fullmatch(answer) is None
+                )
+            self._not_commits[key] = found
+        return self._not_commits[key]
 
     def local_default(self, repo: Repo) -> str | None:
         key = (repo.main_checkout, repo.remote)
@@ -983,9 +1043,17 @@ def is_ancestor(repo: Repo, name: str, default: str, *, cache: GitCache | None =
     None when the default branch is not present locally at all (default_ref),
     which makes the branch `unresolved` rather than stopping the run.
     Otherwise answered from one `for-each-ref --merged=<default ref>` per
-    repository, which lists exactly the branches `merge-base --is-ancestor`
-    would call contained. A branch ref that is broken or missing is a
-    GitError naming the repository, as merge-base's own failure was.
+    checkout, which lists the branches `merge-base --is-ancestor` would call
+    contained. A branch that read leaves out is not contained, unless its
+    tip is not a readable commit: `--merged` skips a tip naming a missing
+    object or a blob without a word, so those tips are checked with one
+    `cat-file --batch-check` per checkout (GitCache.not_commits), and such a
+    branch -- that branch only -- is a GitError naming the repository, as
+    merge-base's exit 128 was. A broken or absent branch ref is a GitError too.
+
+    A known limit: a readable tip commit whose PARENT object is missing is
+    not detected. merge-base failed on it; `--merged` reads it as not
+    contained. Finding it means walking history, which is `git fsck`'s job.
     """
     return (cache or GitCache()).is_ancestor(repo, name, default)
 
