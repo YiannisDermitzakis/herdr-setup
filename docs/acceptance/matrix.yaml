@@ -451,8 +451,14 @@ rows:
     - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
     levels: {}
     status: not-implemented
-    notes: Born with the spec (not-implemented). The 2026-09-13-session-audit plan adds
-      the verifying tests and moves this row up.
+    notes: Born with the spec (not-implemented). Phase 2 of the 2026-09-13-session-audit
+      plan lands and verifies the contract half in full -- docs/adapters.md's sessions-probe/sessions-response
+      examples execute (herdr-setup:tests/test_contract.py), lib/feed.py validates and
+      re-filters branch names (parse_sessions, branch_name_ok), and Claude Code and Codex
+      both answer real session history (herdr-setup:tests/test_adapter_claude_sessions.py,
+      herdr-setup:tests/test_adapter_codex_sessions.py), plus a conformance pass over every
+      adapter's probe. Left not-implemented because the other half -- agents WITHOUT the
+      query reported as unsupported by the audit runner -- is phase 4's work.
   - id: install-adds-never-overwrites
     capability: Install
     acceptance: install puts herdr-setup on PATH by symlinking it into ~/.local/bin,

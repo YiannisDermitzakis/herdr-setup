@@ -354,6 +354,69 @@ class TestConformanceAcrossAllAdapters(unittest.TestCase):
                 feed.validate_probe(obj)
                 self.assertIs(obj["available"], True, f"{path.name} must report available")
 
+    def _run_sessions(self, path: Path, home: Path) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env["HOME"] = str(home)
+        return subprocess.run(
+            [str(path), "sessions", "--since", "30"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+
+    def _adapters_declaring_sessions(self) -> list[Path]:
+        return [path for path in self.adapters if feed.probe(path).get("sessions") is True]
+
+    def test_every_adapter_declaring_sessions_answers_an_empty_list_on_an_empty_home(self):
+        for path in self.adapters:
+            with self.subTest(adapter=path.name), tempfile.TemporaryDirectory() as tmp:
+                os.environ["HOME"] = tmp
+                if not feed.probe(path).get("sessions"):
+                    continue
+                proc = self._run_sessions(path, Path(tmp))
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(json.loads(proc.stdout), {"sessions": []})
+
+    def test_every_adapter_declaring_sessions_answers_an_empty_list_on_a_present_but_empty_store(
+        self,
+    ):
+        """Present (probe's `available: true`) but genuinely empty is still `[]`, exit 0.
+
+        Distinct from the no-home case above: this is the "installed, used
+        once long enough ago that nothing falls in the window, or simply has
+        no history yet" case, exercised on the SAME fixture layout
+        test_every_adapter_is_available_when_its_agent_is_present uses.
+        """
+        for path in self.adapters:
+            with self.subTest(adapter=path.name), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp)
+                os.environ["HOME"] = str(home)
+                ADAPTER_HOME_LAYOUT[path.name](home)
+                if not feed.probe(path).get("sessions"):
+                    continue
+                proc = self._run_sessions(path, home)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(json.loads(proc.stdout), {"sessions": []})
+
+    def test_opencode_and_copilot_do_not_declare_sessions(self):
+        for path in self.adapters:
+            if path.name not in ("opencode", "copilot"):
+                continue
+            with tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp)
+                os.environ["HOME"] = str(home)
+                ADAPTER_HOME_LAYOUT[path.name](home)
+                obj = feed.probe(path)
+                self.assertNotIn(
+                    "sessions", obj, f"{path.name} must not declare a sessions capability"
+                )
+
+    def test_at_least_claude_and_codex_declare_sessions(self):
+        """A guard on the guard: the two tests above pass vacuously if nothing declares it."""
+        declaring = {path.name for path in self.adapters if feed.probe(path).get("sessions")}
+        self.assertTrue({"claude", "codex"} <= declaring, declaring)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
