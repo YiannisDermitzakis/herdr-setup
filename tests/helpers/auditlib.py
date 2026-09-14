@@ -6,12 +6,10 @@ Not a test file itself: it lives in tests/helpers/ so tests/run.sh's
 Three things every audit test needs, done once so each test stays about its
 own case:
 
-- **The fakes, and only the fakes.** `isolate_audit_environment()` puts
-  tests/helpers first on PATH (feedlib's rule) and then REFUSES to continue
-  unless `gh`, `fr` and `herdr` all resolve to the fakes there. A missing fake
-  otherwise falls through PATH to the host's real command, and that has
-  already happened once in this repository (journal p3-red-reached-real-fr):
-  a RED run of the fake-fr tests ran the real `fr isolation up`.
+- **The fakes, and only the fakes.** `isolate_audit_environment()` calls
+  feedlib's `isolate_environment()`, which puts tests/helpers first on PATH
+  and REFUSES to continue unless `gh`, `fr` and `herdr` all resolve to the
+  fakes there (`feedlib.require_fakes`, the one implementation).
 - **A fake gh state.** `gh_state()`, `gh_repo()` and `gh_pr()` build the
   state file tests/helpers/fake-gh answers from, with every key it reads, and
   `FakeGh` writes it, points the environment at it, and reads its call log
@@ -35,7 +33,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
-from feedlib import HELPERS_DIR, REPO_ROOT, TESTS_DIR, isolate_environment
+from feedlib import REPO_ROOT, TESTS_DIR, isolate_environment
 
 AUDIT_PATH = REPO_ROOT / "lib" / "audit.py"
 GH_CAPTURES = TESTS_DIR / "fixtures" / "gh"
@@ -57,24 +55,11 @@ GIT_ENV = {
     "GIT_TERMINAL_PROMPT": "0",
 }
 
-FAKES = (("gh", "fake-gh"), ("fr", "fake-fr"), ("herdr", "fake-herdr"))
-
-
-def require_fakes() -> None:
-    """Raise unless every command the audit spawns resolves to its fake."""
-    for command, fake in FAKES:
-        found = shutil.which(command)
-        if found is None or Path(found).resolve() != HELPERS_DIR / fake:
-            raise RuntimeError(
-                f"{command} resolves to {found}, not tests/helpers/{fake}: "
-                "refusing to run tests that would reach the real one"
-            )
-
 
 def isolate_audit_environment() -> None:
+    """feedlib's isolation (which refuses unless every fake is on PATH), plus GIT_ENV."""
     isolate_environment()
     os.environ.update(GIT_ENV)
-    require_fakes()
 
 
 def load_audit():

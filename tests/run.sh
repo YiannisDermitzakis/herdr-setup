@@ -58,10 +58,27 @@ failed=0
 # unstaged and untracked path. Empty when this is not a git checkout, in which
 # case the comparison below is skipped rather than failed -- a tarball export
 # is a legitimate way to run these tests.
+#
+# Refs and registered worktrees are part of it. A branch created, or a worktree
+# registered, changes neither HEAD nor `status --porcelain`, and that is
+# exactly what a test once did through the host's real `fr isolation up`
+# (journal p3-red-reached-real-fr) without this check noticing.
 repo_state() {
   git -C "$script_dir/.." rev-parse HEAD 2>/dev/null || return 0
   git -C "$script_dir/.." status --porcelain 2>/dev/null || return 0
+  git -C "$script_dir/.." for-each-ref 2>/dev/null || return 0
+  git -C "$script_dir/.." worktree list --porcelain 2>/dev/null || return 0
 }
+
+# Refuse before running anything unless herdr, gh and fr resolve to the fakes
+# in tests/helpers under the PATH every test gets. A missing fake does not fail
+# on its own: PATH falls through to the host's real command.
+for c in herdr gh fr; do
+  [ "$(PATH="$helpers_dir:$PATH" command -v "$c")" = "$helpers_dir/$c" ] && [ -x "$helpers_dir/$c" ] || {
+    echo "tests/run.sh: refusing to run: $c does not resolve to the fake in tests/helpers" >&2
+    exit 2
+  }
+done
 
 state_before_suite="$(repo_state)"
 

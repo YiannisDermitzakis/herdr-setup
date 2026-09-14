@@ -36,7 +36,6 @@ from auditlib import (  # noqa: E402
     ZERO_OID,
     capture,
     isolate_audit_environment,
-    require_fakes,
     shape,
 )
 from auditlib import gh_pr as pr  # noqa: E402
@@ -142,13 +141,6 @@ class FakeGhCase(unittest.TestCase):
         self.state_path.write_text(json.dumps(state), encoding="utf-8")
 
     def gh(self, *args, **extra_env) -> subprocess.CompletedProcess:
-        # Refuse before running anything when `gh` is not the fake. Without
-        # this, a missing or broken fake falls through PATH to the host's REAL
-        # gh, and this file's first RED run did exactly that.
-        try:
-            require_fakes()
-        except RuntimeError as exc:
-            self.fail(str(exc))
         env = {k: v for k, v in os.environ.items() if not k.startswith(("FAKE_GH_", "FAKE_FR_"))}
         env["FAKE_GH_STATE"] = str(self.state_path)
         env["FAKE_GH_LOG"] = str(self.log_path)

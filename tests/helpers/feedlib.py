@@ -23,6 +23,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import shutil
 import socket
 import sqlite3
 import sys
@@ -66,6 +67,26 @@ LEAKY_VARS = (
 )
 
 
+# Every command a test could spawn that talks to something real, and the fake
+# that must answer in its place. A missing or broken fake does not fail on its
+# own: PATH falls through to the host's real command. The first RED run of
+# tests/test_fake_fr.py did exactly that and ran the real `fr isolation up`
+# (journal p3-red-reached-real-fr). tests/run.sh and tests/helpers/assert.sh
+# refuse the same way for the shell side.
+FAKES = (("herdr", "fake-herdr"), ("gh", "fake-gh"), ("fr", "fake-fr"))
+
+
+def require_fakes() -> None:
+    """Raise unless herdr, gh and fr all resolve to their fakes in tests/helpers."""
+    for command, fake in FAKES:
+        found = shutil.which(command)
+        if found is None or Path(found).resolve() != HELPERS_DIR / fake:
+            raise RuntimeError(
+                f"{command} resolves to {found}, not tests/helpers/{fake}: "
+                "refusing to run tests that would reach the real one"
+            )
+
+
 def isolate_environment() -> None:
     """Make `herdr` resolve to the fake, whoever started this test file.
 
@@ -82,6 +103,7 @@ def isolate_environment() -> None:
         os.environ["PATH"] = os.pathsep.join([str(HELPERS_DIR), *parts])
     for name in LEAKY_VARS:
         os.environ.pop(name, None)
+    require_fakes()
 
 
 def load_feed():

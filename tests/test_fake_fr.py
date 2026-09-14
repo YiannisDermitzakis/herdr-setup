@@ -23,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "helpers"))
 
-from auditlib import isolate_audit_environment, require_fakes  # noqa: E402
+from auditlib import isolate_audit_environment  # noqa: E402
 from feedlib import HELPERS_DIR  # noqa: E402
 
 isolate_audit_environment()
@@ -60,14 +60,6 @@ class TestFakeFr(unittest.TestCase):
         self._tmp.cleanup()
 
     def fr(self, *args, **extra_env) -> subprocess.CompletedProcess:
-        # Refuse before running anything when `fr` is not the fake. This
-        # file's first RED run, with no fake on PATH yet, ran the host's REAL
-        # fr -- including `isolation up --branch feat/x`, which created a
-        # branch and a workspace. Never again.
-        try:
-            require_fakes()
-        except RuntimeError as exc:
-            self.fail(str(exc))
         env = {k: v for k, v in os.environ.items() if not k.startswith(("FAKE_GH_", "FAKE_FR_"))}
         env["FAKE_FR_STATUS"] = str(self.status_path)
         env.update({k: str(v) for k, v in extra_env.items()})
