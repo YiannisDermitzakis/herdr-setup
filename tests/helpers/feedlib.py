@@ -19,6 +19,7 @@ print a fixed string.
 from __future__ import annotations
 
 import contextlib
+import importlib.machinery
 import importlib.util
 import json
 import os
@@ -86,6 +87,33 @@ def load_feed():
     # is not there yet fails at class-definition time.
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    return module
+
+
+def load_adapter_module(name: str):
+    """Import `adapters/<name>` (no `.py` suffix) as a module object.
+
+    For a test that needs to call an adapter's own internal function
+    directly -- e.g. comparing its `branch_name_ok` copy against
+    lib/feed.py's -- rather than only ever exercising it as a subprocess
+    the way `probe`/`resolve`/`sessions` normally are. The adapter itself
+    never imports anything from tests/ or lib/; this is purely a test-side
+    convenience, the same mechanism load_feed() already uses for the same
+    reason (no `.py` suffix, not a package).
+    """
+    path = REPO_ROOT / "adapters" / name
+    module_name = f"hs_adapter_{name}"
+    # The file carries no `.py` suffix (by design: adapters/ discovers by
+    # executability, not extension), so spec_from_file_location cannot infer
+    # a loader on its own -- an explicit SourceFileLoader is what load_feed()
+    # gets for free from lib/feed.py's own `.py` name.
+    loader = importlib.machinery.SourceFileLoader(module_name, str(path))
+    spec = importlib.util.spec_from_loader(module_name, loader)
+    if spec is None:
+        raise ImportError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    loader.exec_module(module)
     return module
 
 
@@ -390,6 +418,49 @@ def codex_session_meta(**values) -> dict:
             raise KeyError(f"{key!r} is not a key the capture has; do not invent one")
         payload[key] = value
     return line
+
+
+# The exact name lists docs/adapters.md's own "sessions" section pins for
+# branch_name_ok / the adapters' own copies of it. Shared here so
+# tests/test_feed_sessions.py (the runner's copy) and
+# tests/test_adapter_claude_sessions.py (the adapter's copy) run the SAME
+# list rather than two lists that could quietly drift apart from each other.
+UNREAL_BRANCH_NAMES = (
+    "",
+    "main",
+    "master",
+    "HEAD",
+    "worktree-agent-x",
+    "a$b",
+    "-x",
+    "a b",
+    "a..b",
+    "a~1",
+    "a^",
+    "a:b",
+    "a?b",
+    "a*b",
+    "a[b",
+    "a\\b",
+    "a@{b",
+    "a//b",
+    "/a",
+    "a/",
+    "a.",
+    "a.lock",
+    "a/.b",
+    "<branch>",
+    "{branch}",
+    "a|b",
+    "a;b",
+    "a&b",
+    "(a)",
+    "'a'",
+    '"a"',
+    "`a`",
+)
+
+REAL_BRANCH_NAMES = ("feat/x", "fix/y-2", "release/1.2", "user@host-ok", "123")
 
 
 def write_codex_rollout(

@@ -27,7 +27,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "helpers"))
 
-from feedlib import isolate_environment, load_feed, probe_adapter, write_adapter  # noqa: E402
+from feedlib import (  # noqa: E402
+    REAL_BRANCH_NAMES,
+    UNREAL_BRANCH_NAMES,
+    isolate_environment,
+    load_feed,
+    probe_adapter,
+    write_adapter,
+)
 
 isolate_environment()
 
@@ -214,52 +221,21 @@ class TestParseSessionsDropsBrokenBranches(unittest.TestCase):
         self.assertEqual(sessions[0]["branches"], [])
 
 
-# The exact list the phase brief pins, run through the runner's own copy.
-UNREAL_NAMES = (
-    "",
-    "main",
-    "master",
-    "HEAD",
-    "worktree-agent-x",
-    "a$b",
-    "-x",
-    "a b",
-    "a..b",
-    "a~1",
-    "a^",
-    "a:b",
-    "a?b",
-    "a*b",
-    "a[b",
-    "a\\b",
-    "a@{b",
-    "a//b",
-    "/a",
-    "a/",
-    "a.",
-    "a.lock",
-    "a/.b",
-    "<branch>",
-    "{branch}",
-    "a|b",
-    "a;b",
-    "a&b",
-    "(a)",
-    "'a'",
-    '"a"',
-    "`a`",
-)
-
-REAL_NAMES = ("feat/x", "fix/y-2", "release/1.2", "user@host-ok", "123")
-
-
 class TestBranchNameOk(unittest.TestCase):
+    """The exact list the phase brief pins, run through the runner's own copy.
+
+    tests/test_adapter_claude_sessions.py runs the SAME two lists
+    (UNREAL_BRANCH_NAMES, REAL_BRANCH_NAMES, both in tests/helpers/feedlib.py)
+    through the adapter's own copy, so the two filters cannot silently drift
+    apart from each other.
+    """
+
     def test_every_unreal_name_is_rejected(self):
-        for name in UNREAL_NAMES:
+        for name in UNREAL_BRANCH_NAMES:
             self.assertFalse(feed.branch_name_ok(name), name)
 
     def test_every_real_name_is_accepted(self):
-        for name in REAL_NAMES:
+        for name in REAL_BRANCH_NAMES:
             self.assertTrue(feed.branch_name_ok(name), name)
 
 

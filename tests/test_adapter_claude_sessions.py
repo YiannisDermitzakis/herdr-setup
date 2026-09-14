@@ -31,7 +31,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "helpers"))
 
-from feedlib import REPO_ROOT, isolate_environment, load_feed  # noqa: E402
+from feedlib import (  # noqa: E402
+    REAL_BRANCH_NAMES,
+    REPO_ROOT,
+    UNREAL_BRANCH_NAMES,
+    isolate_environment,
+    load_adapter_module,
+    load_feed,
+)
 
 isolate_environment()
 
@@ -92,6 +99,50 @@ def line(**overrides) -> dict:
     }
     base.update(overrides)
     return base
+
+
+def bash_line(
+    command: str, *, cwd: str = "/work/alpha", timestamp="2026-09-12T18:04:11.000Z"
+) -> dict:
+    """An `assistant` line carrying one Bash `tool_use` block, task 3's own shape."""
+    return {
+        "type": "assistant",
+        "cwd": cwd,
+        "timestamp": timestamp,
+        "sessionId": "00000000-0000-4000-8000-000000000001",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": command}}
+            ],
+        },
+    }
+
+
+def tool_result_line(
+    text: str, *, cwd: str = "/work/alpha", timestamp="2026-09-12T18:05:00.000Z"
+) -> dict:
+    """A `user` line carrying a `tool_result` block -- never scanned for evidence."""
+    return {
+        "type": "user",
+        "cwd": cwd,
+        "timestamp": timestamp,
+        "sessionId": "00000000-0000-4000-8000-000000000001",
+        "message": {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": text}],
+        },
+    }
+
+
+def branch_names(sessions) -> list[str]:
+    return [b["name"] for b in sessions[0]["branches"]]
+
+
+def one_branch(sessions) -> dict:
+    branches = sessions[0]["branches"]
+    assert len(branches) == 1, branches
+    return branches[0]
 
 
 class TestProbe(TempConfigCase):
@@ -361,6 +412,159 @@ class TestUsageAndReadOnly(TempConfigCase):
         after_mtimes = {str(p): p.stat().st_mtime for p in self.config_dir.rglob("*")}
         self.assertEqual(before, after)
         self.assertEqual(before_mtimes, after_mtimes)
+
+
+class TestCommandEvidence(TempConfigCase):
+    """docs/adapters.md's `command` evidence shapes -- one test per shape."""
+
+    def sessions_for(self, command: str, **kwargs) -> list[dict]:
+        self.write_transcript([bash_line(command, **kwargs)])
+        return sessions_of(self.config_dir, "--since", "30")
+
+    def test_fr_isolation_up_branch(self):
+        sessions = self.sessions_for("fr isolation up --branch feat/a")
+        branch = one_branch(sessions)
+        self.assertEqual(branch["name"], "feat/a")
+        self.assertEqual(branch["evidence"], "command")
+        self.assertEqual(branch["dir"], "/work/alpha")
+
+    def test_fr_isolation_up_branch_equals_form(self):
+        sessions = self.sessions_for("fr isolation up --branch=feat/a")
+        self.assertEqual(one_branch(sessions)["name"], "feat/a")
+
+    def test_fr_isolation_attach_with_repo_sets_dir(self):
+        sessions = self.sessions_for(
+            "fr isolation attach --session s --branch feat/b --repo /work/r"
+        )
+        branch = one_branch(sessions)
+        self.assertEqual(branch["name"], "feat/b")
+        self.assertEqual(branch["dir"], "/work/r")
+
+    def test_git_checkout_dash_b(self):
+        sessions = self.sessions_for("git checkout -b fix/c")
+        self.assertEqual(one_branch(sessions)["name"], "fix/c")
+
+    def test_git_switch_dash_c(self):
+        sessions = self.sessions_for("git switch -c fix/d")
+        self.assertEqual(one_branch(sessions)["name"], "fix/d")
+
+    def test_git_checkout_dash_cap_b(self):
+        sessions = self.sessions_for("git checkout -B e/f")
+        self.assertEqual(one_branch(sessions)["name"], "e/f")
+
+    def test_git_worktree_add_path_then_branch_flag(self):
+        sessions = self.sessions_for("git worktree add ../wt -b feat/g", cwd="/work/alpha")
+        branch = one_branch(sessions)
+        self.assertEqual(branch["name"], "feat/g")
+        self.assertEqual(branch["dir"], "/work/wt")
+
+    def test_git_worktree_add_branch_flag_then_path(self):
+        sessions = self.sessions_for("git worktree add -b feat/h /work/wt2")
+        branch = one_branch(sessions)
+        self.assertEqual(branch["name"], "feat/h")
+        self.assertEqual(branch["dir"], "/work/wt2")
+
+    def test_git_push_u_origin_branch(self):
+        sessions = self.sessions_for("git push -u origin feat/i")
+        self.assertEqual(one_branch(sessions)["name"], "feat/i")
+
+    def test_git_push_set_upstream_refspec_with_plus_and_colon(self):
+        sessions = self.sessions_for("git push --set-upstream origin +feat/j:feat/j")
+        self.assertEqual(one_branch(sessions)["name"], "feat/j")
+
+    def test_git_push_u_origin_head_is_filtered(self):
+        sessions = self.sessions_for("git push -u origin HEAD")
+        self.assertEqual(branch_names(sessions), [])
+
+    def test_gh_pr_create_head(self):
+        sessions = self.sessions_for("gh pr create --head feat/k")
+        self.assertEqual(one_branch(sessions)["name"], "feat/k")
+
+    def test_gh_pr_create_dash_cap_h_with_owner_prefix(self):
+        sessions = self.sessions_for("gh pr create -H example-user:feat/l")
+        self.assertEqual(one_branch(sessions)["name"], "feat/l")
+
+    def test_cd_then_and_and_sets_dir_for_the_later_segment(self):
+        sessions = self.sessions_for("cd /work/other && git checkout -b feat/m")
+        branch = one_branch(sessions)
+        self.assertEqual(branch["name"], "feat/m")
+        self.assertEqual(branch["dir"], "/work/other")
+
+    def test_git_dash_cap_c_sets_dir_for_its_own_segment_only(self):
+        sessions = self.sessions_for("git -C /work/third switch -c feat/n")
+        branch = one_branch(sessions)
+        self.assertEqual(branch["name"], "feat/n")
+        self.assertEqual(branch["dir"], "/work/third")
+
+    def test_no_spaces_around_the_segment_separator(self):
+        sessions = self.sessions_for("a&&git checkout -b feat/o")
+        self.assertEqual(one_branch(sessions)["name"], "feat/o")
+
+    def test_an_unbalanced_quote_falls_back_to_whitespace_splitting(self):
+        sessions = self.sessions_for('echo "unterminated && git checkout -b feat/p')
+        self.assertEqual(one_branch(sessions)["name"], "feat/p")
+
+    def test_a_shell_variable_reference_is_filtered(self):
+        sessions = self.sessions_for('git checkout -b "$BR"')
+        self.assertEqual(branch_names(sessions), [])
+
+    def test_relative_worktree_add_path_resolves_against_cwd(self):
+        sessions = self.sessions_for(
+            "git worktree add ../sibling -b feat/rel", cwd="/work/checkout"
+        )
+        self.assertEqual(one_branch(sessions)["dir"], "/work/sibling")
+
+
+class TestBranchNameFilterAgreesWithTheRunner(unittest.TestCase):
+    """checklist item 7: this adapter's own copy must not drift from lib/feed.py's.
+
+    Both filters run over the exact same two name lists
+    (tests/helpers/feedlib.py's UNREAL_BRANCH_NAMES / REAL_BRANCH_NAMES,
+    also exercised by tests/test_feed_sessions.py against the runner's own
+    copy) -- proof the two independently-written implementations still
+    agree, not just that each one individually matches the document.
+    """
+
+    def setUp(self) -> None:
+        self.adapter_module = load_adapter_module("claude")
+
+    def test_every_unreal_name_is_rejected_by_the_adapters_own_copy(self):
+        for name in UNREAL_BRANCH_NAMES:
+            self.assertFalse(self.adapter_module.branch_name_ok(name), name)
+
+    def test_every_real_name_is_accepted_by_the_adapters_own_copy(self):
+        for name in REAL_BRANCH_NAMES:
+            self.assertTrue(self.adapter_module.branch_name_ok(name), name)
+
+
+class TestWorktreePathEvidence(TempConfigCase):
+    WT_PATH = "/work/home/.cache/fr/worktrees/example-repo/feat__q"
+
+    def test_a_worktree_path_in_cwd_yields_its_branch(self):
+        self.write_transcript([line(cwd=f"{self.WT_PATH}/src")])
+        sessions = sessions_of(self.config_dir, "--since", "30")
+        branch = one_branch(sessions)
+        self.assertEqual(branch["name"], "feat/q")
+        self.assertEqual(branch["dir"], self.WT_PATH)
+        self.assertEqual(branch["evidence"], "worktree-path")
+
+    def test_a_worktree_path_inside_a_command_yields_its_branch(self):
+        self.write_transcript([bash_line(f"cat {self.WT_PATH}/src/notes.txt", cwd="/work/alpha")])
+        sessions = sessions_of(self.config_dir, "--since", "30")
+        branch = one_branch(sessions)
+        self.assertEqual(branch["name"], "feat/q")
+        self.assertEqual(branch["dir"], self.WT_PATH)
+        self.assertEqual(branch["evidence"], "worktree-path")
+
+    def test_a_worktree_path_inside_a_tool_result_is_not_evidence(self):
+        self.write_transcript(
+            [
+                bash_line("ls", cwd="/work/alpha", timestamp="2026-09-12T18:00:00.000Z"),
+                tool_result_line(f"total 3\n{self.WT_PATH}/src/notes.txt\n"),
+            ]
+        )
+        sessions = sessions_of(self.config_dir, "--since", "30")
+        self.assertEqual(branch_names(sessions), [])
 
 
 if __name__ == "__main__":
