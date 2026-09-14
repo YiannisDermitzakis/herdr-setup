@@ -38,12 +38,14 @@ Never opens the Herdr socket. The runner decides; this adapter only answers.
 
 from __future__ import annotations
 
+import argparse
 import calendar
 import json
 import os
 import re
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 AGENT = "claude"
@@ -55,6 +57,22 @@ SOURCE = "herdr:claude"
 START_TIME_SLACK_SECONDS = 5
 
 SLUG_RE = re.compile(r"[^A-Za-z0-9]")
+
+# An entrypoint an automated caller drove rather than a person -- see
+# cmd_sessions and docs/adapters.md's "sessions" section, "SDK sessions".
+SDK_ENTRYPOINT_PREFIX = "sdk-"
+
+# The runner's own copy of this rule lives in lib/feed.py's branch_name_ok,
+# and re-applies it regardless of what this adapter does. This copy exists
+# because adapters never import lib/feed.py (docs/adapters.md, checklist
+# item 7) -- it must read as the SAME rule, and
+# tests/test_adapter_claude_sessions.py proves the two agree over one shared
+# name list.
+_UNREAL_EXACT_NAMES = frozenset({"", "main", "master", "HEAD"})
+_UNREAL_PREFIX = "worktree-agent-"
+_GIT_INVALID_CHARS = set("~^:?*[\\")
+_GIT_INVALID_SUBSTRINGS = ("..", "@{", "//")
+_TEMPLATE_CHARS = set("<>{}|;&()'\"`")
 
 
 def config_dir() -> Path:
@@ -140,6 +158,225 @@ def candidate_for(pane: dict) -> dict | None:
     return candidate
 
 
+def branch_name_ok(name: str) -> bool:
+    """This adapter's own copy of lib/feed.py's branch_name_ok -- see above."""
+    if not isinstance(name, str) or not name:
+        return False
+    if name in _UNREAL_EXACT_NAMES:
+        return False
+    if name.startswith(_UNREAL_PREFIX):
+        return False
+    if "$" in name:
+        return False
+    if name.startswith("-"):
+        return False
+    if any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F for c in name):
+        return False
+    if any(c in _GIT_INVALID_CHARS for c in name):
+        return False
+    if any(sub in name for sub in _GIT_INVALID_SUBSTRINGS):
+        return False
+    if name.startswith("/") or name.endswith("/"):
+        return False
+    if name.endswith(".") or name.endswith(".lock"):
+        return False
+    if any(part.startswith(".") for part in name.split("/")):
+        return False
+    return not any(c in _TEMPLATE_CHARS for c in name)
+
+
+# --------------------------------------------------------------------------
+# The `sessions` query (docs/adapters.md, "The sessions query" > "Claude Code")
+# --------------------------------------------------------------------------
+
+
+def projects_dir() -> Path:
+    return config_dir() / "projects"
+
+
+def top_level_transcripts() -> list[Path]:
+    """Every top-level transcript file: `<config>/projects/*/*.jsonl`.
+
+    Exactly two path components below `projects/` -- a project slug, then a
+    file -- so a subagent transcript one level deeper
+    (`<slug>/<session-id>/subagents/*.jsonl`) is never matched by this glob
+    at all, without needing its own exclusion rule.
+    """
+    root = projects_dir()
+    if not root.is_dir():
+        return []
+    return sorted(root.glob("*/*.jsonl"))
+
+
+def read_transcript_lines(path: Path):
+    """Yield each usable JSON object out of a transcript file, in order.
+
+    Tolerant per the query's own contract: an unreadable file yields
+    nothing (its session is then skipped for having no lines at all,
+    covering the chmod-000 case), a truncated or unparseable line is
+    skipped without disturbing the lines around it, and a line whose
+    `isSidechain` is true is dropped here so no evidence extractor
+    downstream has to remember to check it. Bytes are decoded with
+    `errors="replace"` rather than raising -- a bad byte in one line must
+    not cost the file's other, well-formed lines.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return
+    for raw_line in data.split(b"\n"):
+        if not raw_line.strip():
+            continue
+        try:
+            obj = json.loads(raw_line.decode("utf-8", errors="replace"))
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if obj.get("isSidechain") is True:
+            continue
+        yield obj
+
+
+def _record_branch(
+    hits: dict[tuple[str, str], dict], *, name, branch_dir, evidence, seen_at
+) -> None:
+    """Add one piece of branch evidence, deduped per (name, dir), latest `seen_at` wins.
+
+    Applies branch_name_ok itself: a name this adapter would drop anyway
+    never occupies a dedup slot a real name might otherwise need.
+    """
+    if not isinstance(name, str) or not branch_name_ok(name):
+        return
+    if not isinstance(branch_dir, str) or not branch_dir:
+        return
+    if not isinstance(seen_at, str) or not seen_at:
+        return
+    key = (name, branch_dir)
+    existing = hits.get(key)
+    if existing is None or seen_at > existing["seen_at"]:
+        hits[key] = {"name": name, "dir": branch_dir, "evidence": evidence, "seen_at": seen_at}
+
+
+def extract_command_evidence(line: dict, branch_hits: dict[tuple[str, str], dict]) -> None:
+    """Evidence `command`: every Bash `tool_use` block's `input.command`.
+
+    A no-op for now -- task 3 (P2.T3) fills this in with the shlex-based
+    parser for `fr isolation`, `git checkout|switch|worktree`, `git push`
+    and `gh pr create`. Kept as its own function, called from the walk
+    above, so that work never has to touch derive_session's own loop.
+    """
+
+
+def extract_worktree_path_evidence(cwd, branch_hits: dict[tuple[str, str], dict]) -> None:
+    """Evidence `worktree-path`, read from a line's own `cwd`.
+
+    A no-op for now -- task 3 fills this in. Command text is also checked
+    for the same pattern, from inside extract_command_evidence, since the
+    contract only allows `cwd` fields and command text, never tool output.
+    """
+
+
+def _file_mtime_z(path: Path) -> str | None:
+    try:
+        epoch = path.stat().st_mtime
+    except OSError:
+        return None
+    return datetime.fromtimestamp(epoch, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def derive_session(path: Path, *, include_sdk: bool) -> dict | None:
+    """One session record out of one transcript file, or None to report nothing.
+
+    None covers every reason a whole session is left out: no readable lines
+    at all, no `cwd` ever seen, or an SDK entrypoint without `--include-sdk`
+    -- all real answers, not failures, so a broken transcript beside a good
+    one never takes the query down (cmd_sessions never sees the difference
+    between "unreadable" and "not this session's business").
+    """
+    cwd: str | None = None
+    last_active: str | None = None
+    entrypoint: str | None = None
+    custom_title: str | None = None
+    ai_title: str | None = None
+    branch_hits: dict[tuple[str, str], dict] = {}
+    saw_a_line = False
+
+    for line in read_transcript_lines(path):
+        saw_a_line = True
+        line_cwd = line.get("cwd")
+        if isinstance(line_cwd, str) and line_cwd:
+            cwd = line_cwd
+        timestamp = line.get("timestamp")
+        if isinstance(timestamp, str) and timestamp:
+            last_active = timestamp
+        line_entrypoint = line.get("entrypoint")
+        if isinstance(line_entrypoint, str) and line_entrypoint:
+            entrypoint = line_entrypoint
+
+        line_type = line.get("type")
+        if line_type == "custom-title" and isinstance(line.get("customTitle"), str):
+            custom_title = line["customTitle"]
+        elif line_type == "ai-title" and isinstance(line.get("aiTitle"), str):
+            ai_title = line["aiTitle"]
+
+        git_branch = line.get("gitBranch")
+        if isinstance(git_branch, str) and git_branch and isinstance(line_cwd, str) and line_cwd:
+            _record_branch(
+                branch_hits,
+                name=git_branch,
+                branch_dir=line_cwd,
+                evidence="git-branch-field",
+                seen_at=timestamp if isinstance(timestamp, str) and timestamp else "",
+            )
+
+        extract_command_evidence(line, branch_hits)
+        extract_worktree_path_evidence(line_cwd, branch_hits)
+
+    if not saw_a_line or not cwd:
+        return None
+    if entrypoint and entrypoint.startswith(SDK_ENTRYPOINT_PREFIX) and not include_sdk:
+        return None
+    if last_active is None:
+        last_active = _file_mtime_z(path)
+        if last_active is None:
+            return None
+
+    session = {
+        "id": path.stem,
+        "cwd": cwd,
+        "last_active": last_active,
+        "branches": list(branch_hits.values()),
+    }
+    title = custom_title or ai_title
+    if title:
+        session["title"] = title
+    return session
+
+
+def cmd_sessions(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="adapters/claude sessions", add_help=False)
+    parser.add_argument("--since", type=int, required=True)
+    parser.add_argument("--include-sdk", action="store_true")
+    args = parser.parse_args(argv)
+
+    cutoff = time.time() - args.since * 86400
+    sessions: list[dict] = []
+    for path in top_level_transcripts():
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < cutoff:
+            continue
+        session = derive_session(path, include_sdk=args.include_sdk)
+        if session is not None:
+            sessions.append(session)
+
+    print(json.dumps({"sessions": sessions}))
+    return 0
+
+
 def cmd_probe() -> int:
     available = sessions_dir().is_dir()
     print(
@@ -149,6 +386,7 @@ def cmd_probe() -> int:
                 "source": SOURCE,
                 "available": available,
                 "confidence": "exact",
+                "sessions": True,
             }
         )
     )
@@ -172,7 +410,11 @@ def main(argv: list[str]) -> int:
         return cmd_probe()
     if len(argv) == 1 and argv[0] == "resolve":
         return cmd_resolve()
-    sys.stderr.write("usage: adapters/claude probe|resolve\n")
+    if argv and argv[0] == "sessions":
+        return cmd_sessions(argv[1:])
+    sys.stderr.write(
+        "usage: adapters/claude probe|resolve|sessions --since <days> [--include-sdk]\n"
+    )
     return 2
 
 

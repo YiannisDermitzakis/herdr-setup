@@ -58,7 +58,7 @@ GOOD_SESSION = {
 }
 
 
-def adapter_for(path: Path, *, sessions: bool = True) -> "feed.Adapter":
+def adapter_for(path: Path, *, sessions: bool = True) -> feed.Adapter:
     """An Adapter record pointing at `path`, the way usable_adapters() builds one."""
     return feed.Adapter(
         path=path,
@@ -159,9 +159,7 @@ class TestParseSessionsDropsBrokenSessions(unittest.TestCase):
             self.assertEqual(dropped, 1)
 
     def test_a_valid_session_beside_a_broken_one_still_comes_through(self):
-        sessions, dropped = feed.parse_sessions(
-            {"sessions": [GOOD_SESSION, {"id": "only-an-id"}]}
-        )
+        sessions, dropped = feed.parse_sessions({"sessions": [GOOD_SESSION, {"id": "only-an-id"}]})
         self.assertEqual(len(sessions), 1)
         self.assertEqual(dropped, 1)
 
@@ -199,12 +197,14 @@ class TestParseSessionsDropsBrokenBranches(unittest.TestCase):
         for key in ("name", "dir", "seen_at"):
             branch = dict(GOOD_SESSION["branches"][0])
             del branch[key]
-            sessions, dropped = feed.parse_sessions({"sessions": [dict(GOOD_SESSION, branches=[branch])]})
+            session = dict(GOOD_SESSION, branches=[branch])
+            sessions, dropped = feed.parse_sessions({"sessions": [session]})
             self.assertEqual(sessions[0]["branches"], [], f"missing {key} must drop the branch")
             self.assertEqual(dropped, 0)
 
     def test_a_non_dict_branch_entry_is_ignored(self):
-        sessions, dropped = feed.parse_sessions({"sessions": [dict(GOOD_SESSION, branches=["nope"])]})
+        session = dict(GOOD_SESSION, branches=["nope"])
+        sessions, dropped = feed.parse_sessions({"sessions": [session]})
         self.assertEqual(sessions[0]["branches"], [])
         self.assertEqual(dropped, 0)
 
@@ -273,8 +273,7 @@ class TestSessionsCall(unittest.TestCase):
         path = write_adapter(
             self.dir,
             "claude",
-            'echo "sessions $*" >&2\n'
-            'printf \'{"sessions":[]}\'\n',
+            'echo "sessions $*" >&2\nprintf \'{"sessions":[]}\'\n',
         )
         result = feed.sessions(adapter_for(path), 30)
         self.assertEqual(result, [])
@@ -298,7 +297,7 @@ class TestSessionsCall(unittest.TestCase):
         self.assertIn("--include-sdk", log.read_text().split())
 
     def test_non_zero_exit_raises_adapter_error(self):
-        path = write_adapter(self.dir, "claude", 'printf \'{"sessions":[]}\'\nexit 1\n')
+        path = write_adapter(self.dir, "claude", "printf '{\"sessions\":[]}'\nexit 1\n")
         with self.assertRaises(feed.AdapterError):
             feed.sessions(adapter_for(path), 30)
 

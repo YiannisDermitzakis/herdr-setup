@@ -627,9 +627,7 @@ def branch_name_ok(name: str) -> bool:
         return False
     if any(part.startswith(".") for part in name.split("/")):
         return False
-    if any(c in _TEMPLATE_CHARS for c in name):
-        return False
-    return True
+    return not any(c in _TEMPLATE_CHARS for c in name)
 
 
 def parse_sessions(obj) -> tuple[list[dict], int]:
@@ -660,7 +658,8 @@ def parse_sessions(obj) -> tuple[list[dict], int]:
         if not isinstance(raw, dict):
             dropped += 1
             continue
-        if not all(isinstance(raw.get(k), str) and raw.get(k) for k in ("id", "cwd", "last_active")):
+        required_keys = ("id", "cwd", "last_active")
+        if not all(isinstance(raw.get(k), str) and raw.get(k) for k in required_keys):
             dropped += 1
             continue
         raw_branches = raw.get("branches")
