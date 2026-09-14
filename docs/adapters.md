@@ -367,7 +367,8 @@ Rules:
     relative path -- for `cd`, `-C`, `--work-tree=`, `--repo`, or a
     `worktree add` path -- resolves against the CURRENT directory (the
     latest `cd` already seen in this command, else the line's own `cwd`),
-    and `~` resolves against `$HOME`, as text only. `cd -` and a bare `cd`
+    and a leading `~`, `$HOME` or `${HOME}` resolves against `$HOME`, as
+    text only. `cd -` and a bare `cd`
     leave the current directory unknown rather than inventing a path,
     falling back to the line's own `cwd`.
   - **Shapes read:**
@@ -395,9 +396,30 @@ Rules:
   is the slug with `__` turned back into `/`, and `dir` is the worktree
   path up to and including the slug; a slug immediately followed by `;`,
   `&`, `|`, `(`, `)`, `<` or `>` does not swallow it into the branch name.
-  - **Where it is read.** Only in `cwd` fields and in Bash command text,
-    never in tool output. `fr isolation status` output lists every worktree
-    on the host and would attribute all of them to whichever session ran it.
+  - **Where it is read.** In a line's own `cwd`, and in each directory a
+    Bash command reaches with `cd <dir>` or `git -C <dir>`. Never in tool
+    output, and never from a path a command merely names (`ls`, `cat`):
+    `fr isolation status` output lists every worktree on the host and would
+    attribute all of them to whichever session ran it.
+- **Scope: a session is credited only with its own repository.** Without
+  this, a session that inspects or cleans up other repositories' worktrees
+  is credited with all of their branches.
+  - `git-branch-field` evidence is always the line's own `cwd`, unchanged.
+  - `worktree-path` evidence counts when the worktree is the line's own
+    `cwd` or contains it; or when a `cd` or `git -C` reaches it AND its
+    `<repo>` equals a path component of the line's `cwd`. fr sessions work
+    through `cd <worktree> && ...` while their recorded `cwd` stays in the
+    base clone, so the second case keeps real fr work.
+  - `command` evidence counts only when the command acts in the line's
+    `cwd` or beneath it, or in an fr worktree of the same repository by the
+    rule above. A command acts where git or gh runs, after `cd`, `-C` and
+    `--work-tree=` -- `git worktree add` included, whose new path is only
+    its `dir` -- and `fr isolation up|attach --repo <path>` acts in `<path>`.
+  - A directory holding an unexpanded variable (`$NAME` or `${NAME}`, other
+    than a leading `$HOME` or `${HOME}`) is not a directory. A command that
+    acts in one yields nothing. A shape whose own `dir` is one, from a
+    command acting in the line's own repository, keeps its evidence with
+    the line's `cwd` as `dir`.
 
 ### Codex
 
