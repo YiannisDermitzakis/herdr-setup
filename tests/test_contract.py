@@ -297,8 +297,22 @@ class TestTheWorkedAdapter(unittest.TestCase):
 # "present" pass with a message naming exactly what to add, rather than
 # silently skipping itself out of the loop.
 
+
+def _claude_home_layout(home: Path) -> None:
+    """`available: true` (a `sessions` dir) AND a genuinely empty PROJECT dir.
+
+    The `sessions` query never reads `.claude/sessions` at all -- it walks
+    `.claude/projects/*/*.jsonl`. Creating only the former would make the
+    "present but empty" sessions conformance test (below) pass by short-
+    circuiting on a MISSING `projects` directory entirely, never actually
+    walking an existing-but-empty one. review item 8.
+    """
+    (home / ".claude" / "sessions").mkdir(parents=True)
+    (home / ".claude" / "projects" / "empty-project").mkdir(parents=True)
+
+
 ADAPTER_HOME_LAYOUT = {
-    "claude": lambda home: (home / ".claude" / "sessions").mkdir(parents=True),
+    "claude": _claude_home_layout,
     "codex": lambda home: (home / ".codex" / "sessions").mkdir(parents=True),
     "opencode": lambda home: write_opencode_db(
         home / ".local" / "share" / "opencode" / "opencode.db", []

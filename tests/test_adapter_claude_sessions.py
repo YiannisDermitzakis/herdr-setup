@@ -26,6 +26,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -174,6 +175,13 @@ class TestIdentityAndFields(TempConfigCase):
         # Normalised to second precision (review item 5): the input carries
         # ".000Z", the output does not.
         self.assertEqual(session["last_active"], "2026-09-12T18:04:11Z")
+
+    def test_last_active_falls_back_to_the_files_own_mtime(self):
+        """review item 8: a transcript with no `timestamp` field anywhere."""
+        path = self.write_transcript([{k: v for k, v in line().items() if k != "timestamp"}])
+        expected = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(path.stat().st_mtime))
+        sessions = sessions_of(self.config_dir, "--since", "30")
+        self.assertEqual(sessions[0]["last_active"], expected)
 
     def test_cwd_is_the_last_one_seen(self):
         self.write_transcript(
