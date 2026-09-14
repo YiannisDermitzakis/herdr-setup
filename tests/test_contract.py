@@ -154,8 +154,9 @@ class TestTheSessionsExamples(unittest.TestCase):
 
     def test_the_sessions_response_example_survives_parse_sessions(self):
         example = json.loads(blocks()["sessions-response"])
-        sessions, dropped = feed.parse_sessions(example)
-        self.assertEqual(dropped, 0)
+        sessions, dropped_sessions, dropped_branches = feed.parse_sessions(example)
+        self.assertEqual(dropped_sessions, 0)
+        self.assertEqual(dropped_branches, 0)
         self.assertGreaterEqual(len(sessions), 1)
         self.assertGreaterEqual(len(sessions[0]["branches"]), 1)
 

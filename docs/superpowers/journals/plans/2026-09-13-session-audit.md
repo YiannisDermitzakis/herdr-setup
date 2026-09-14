@@ -309,3 +309,8 @@ Reconsidered after this review round's item 6 fixes added more flag-skipping log
 ### 33f278bc9afb · discovery · refactor-done: P2.T4.S3 (phase 2)
 
 adapters/codex shares the mtime-window helper's name and shape with adapters/claude by convention, not import: both define SECONDS_PER_DAY = 86400 and a since_cutoff(days) -> float function with the identical docstring wording and identical one-line body (time.time() - days * SECONDS_PER_DAY), and both cmd_sessions functions call cutoff = since_cutoff(args.since) the same way. Missed being journalled with this exact step id when first done; recorded now.
+
+<!-- fr:journal kind=discovery scope=plan id=f101c397c8a8 created=2026-09-14T05:18:34 phase=2 -->
+### f101c397c8a8 · discovery · RED: parse_sessions/sessions() don't count dropped branches (re-review item 1) (phase 2)
+
+Before parse_sessions returned (sessions, dropped_sessions, dropped_branches) and sessions() the same triple: uv run --quiet --script tests/test_feed_sessions.py -> rc=1, 41 tests, 22 errors (every call site unpacking a 2-tuple that no longer matches the test's own 3-tuple expectation, plus the new dedicated branch-drop-count tests: test_a_dropped_branch_is_warned_about_by_name_and_count, test_a_dropped_branch_alone_does_not_raise, test_several_dropped_branches_beside_a_surviving_one_are_all_counted). The underlying bug this proves: a branch dropped for a non-conforming seen_at, an unknown evidence value, or a missing field was previously invisible -- an adapter emitting millisecond seen_at values lost every branch silently and neither parse_sessions nor sessions() ever said so.

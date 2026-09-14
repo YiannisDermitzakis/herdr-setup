@@ -298,13 +298,18 @@ Rules:
   so an adapter that forgets cannot inject noise.
 - **Failing** is as for `resolve`: exit non-zero, or print nothing. An empty
   `sessions` list means "no sessions in the window", never "could not read".
-  Timeout: 120 seconds. A malformed ENTRY within an otherwise-good answer is
-  tolerated (dropped and counted, never fatal on its own) -- but the runner
-  (`lib/feed.py`'s `sessions()`) warns by the adapter's name and the count
-  when anything was dropped, and raises rather than returning an empty list
-  when EVERY entry was malformed: an empty list has to mean "no sessions",
-  and an adapter that answered with nothing but garbage must not be
-  indistinguishable from one that genuinely had nothing to say.
+  Timeout: 120 seconds. A malformed SESSION or a malformed BRANCH within an
+  otherwise-good answer is tolerated -- each is dropped and counted
+  SEPARATELY, never fatal on its own -- but neither count is silently
+  swallowed: the runner (`lib/feed.py`'s `sessions()`) warns by the
+  adapter's name and both counts whenever either is non-zero, and raises
+  rather than returning an empty list when EVERY session was malformed: an
+  empty list has to mean "no sessions", and an adapter that answered with
+  nothing but garbage must not be indistinguishable from one that genuinely
+  had nothing to say. A session that survives whole but loses every branch
+  to a malformed `seen_at` is NOT this case -- "no branches" is itself a
+  valid answer for a session, so a non-zero dropped-BRANCH count alone never
+  raises, only warns.
 
 ### Claude Code
 

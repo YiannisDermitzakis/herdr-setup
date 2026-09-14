@@ -282,7 +282,15 @@ Rules:
   inject noise.
 - **Failing** is as for `resolve`: exit non-zero, or print nothing. An empty
   `sessions` list means "no sessions in the window", never "could not read".
-  Timeout: 120 seconds.
+  Timeout: 120 seconds. A malformed SESSION or a malformed BRANCH within an
+  otherwise-good answer is tolerated -- each is dropped and counted
+  SEPARATELY, never fatal on its own -- but neither count is silently
+  swallowed: the runner warns by the adapter's name and both counts
+  whenever either is non-zero, and raises rather than returning an empty
+  list when EVERY session was malformed. A session that survives whole but
+  loses every branch to a malformed `seen_at` is NOT this case -- "no
+  branches" is itself a valid answer for a session, so a non-zero
+  dropped-BRANCH count alone never raises, only warns.
 
 ### Claude Code
 

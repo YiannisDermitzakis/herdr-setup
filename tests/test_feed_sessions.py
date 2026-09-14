@@ -134,91 +134,131 @@ class TestParseSessionsTopLevel(unittest.TestCase):
                 feed.parse_sessions({"sessions": value})
 
     def test_an_empty_list_is_fine(self):
-        sessions, dropped = feed.parse_sessions({"sessions": []})
+        sessions, dropped_sessions, dropped_branches = feed.parse_sessions({"sessions": []})
         self.assertEqual(sessions, [])
-        self.assertEqual(dropped, 0)
+        self.assertEqual(dropped_sessions, 0)
+        self.assertEqual(dropped_branches, 0)
 
     def test_the_documented_example_survives_whole(self):
-        sessions, dropped = feed.parse_sessions({"sessions": [GOOD_SESSION]})
-        self.assertEqual(dropped, 0)
+        sessions, dropped_sessions, dropped_branches = feed.parse_sessions(
+            {"sessions": [GOOD_SESSION]}
+        )
+        self.assertEqual(dropped_sessions, 0)
+        self.assertEqual(dropped_branches, 0)
         self.assertEqual(len(sessions), 1)
         self.assertEqual(len(sessions[0]["branches"]), 1)
 
 
 class TestParseSessionsDropsBrokenSessions(unittest.TestCase):
     def test_a_non_object_session_is_dropped_and_counted(self):
-        sessions, dropped = feed.parse_sessions({"sessions": ["not an object"]})
+        sessions, dropped_sessions, dropped_branches = feed.parse_sessions(
+            {"sessions": ["not an object"]}
+        )
         self.assertEqual(sessions, [])
-        self.assertEqual(dropped, 1)
+        self.assertEqual(dropped_sessions, 1)
+        self.assertEqual(dropped_branches, 0)
 
     def test_missing_id_cwd_or_last_active_is_dropped_and_counted(self):
         for key in ("id", "cwd", "last_active"):
             broken = {k: v for k, v in GOOD_SESSION.items() if k != key}
-            sessions, dropped = feed.parse_sessions({"sessions": [broken]})
+            sessions, dropped_sessions, _ = feed.parse_sessions({"sessions": [broken]})
             self.assertEqual(sessions, [], f"missing {key} must be dropped")
-            self.assertEqual(dropped, 1, f"missing {key} must be counted")
+            self.assertEqual(dropped_sessions, 1, f"missing {key} must be counted")
 
     def test_a_non_list_branches_is_dropped_and_counted(self):
         for value in ("nope", {}, None):
             broken = dict(GOOD_SESSION, branches=value)
-            sessions, dropped = feed.parse_sessions({"sessions": [broken]})
+            sessions, dropped_sessions, _ = feed.parse_sessions({"sessions": [broken]})
             self.assertEqual(sessions, [])
-            self.assertEqual(dropped, 1)
+            self.assertEqual(dropped_sessions, 1)
 
     def test_a_valid_session_beside_a_broken_one_still_comes_through(self):
-        sessions, dropped = feed.parse_sessions({"sessions": [GOOD_SESSION, {"id": "only-an-id"}]})
+        sessions, dropped_sessions, _ = feed.parse_sessions(
+            {"sessions": [GOOD_SESSION, {"id": "only-an-id"}]}
+        )
         self.assertEqual(len(sessions), 1)
-        self.assertEqual(dropped, 1)
+        self.assertEqual(dropped_sessions, 1)
 
     def test_missing_branches_key_entirely_is_dropped(self):
         broken = {k: v for k, v in GOOD_SESSION.items() if k != "branches"}
-        sessions, dropped = feed.parse_sessions({"sessions": [broken]})
+        sessions, dropped_sessions, _ = feed.parse_sessions({"sessions": [broken]})
         self.assertEqual(sessions, [])
-        self.assertEqual(dropped, 1)
+        self.assertEqual(dropped_sessions, 1)
 
     def test_title_is_omitted_when_absent_rather_than_null(self):
         no_title = {k: v for k, v in GOOD_SESSION.items() if k != "title"}
-        sessions, _ = feed.parse_sessions({"sessions": [no_title]})
+        sessions, _, _ = feed.parse_sessions({"sessions": [no_title]})
         self.assertNotIn("title", sessions[0])
 
 
 class TestParseSessionsDropsBrokenBranches(unittest.TestCase):
+    """A dropped BRANCH must be counted too (review re-round item 1) -- a
+    session that survives whole but silently loses every branch to a
+    malformed `seen_at` must not be indistinguishable from one that
+    genuinely has no branches."""
+
     def _branch(self, **overrides):
         branch = dict(GOOD_SESSION["branches"][0])
         branch.update(overrides)
         return dict(GOOD_SESSION, branches=[branch])
 
-    def test_an_evidence_outside_the_documented_four_is_dropped(self):
+    def test_an_evidence_outside_the_documented_four_is_dropped_and_counted(self):
         for value in ("guess", "", None, "SESSION-META"):
-            sessions, dropped = feed.parse_sessions({"sessions": [self._branch(evidence=value)]})
+            sessions, dropped_sessions, dropped_branches = feed.parse_sessions(
+                {"sessions": [self._branch(evidence=value)]}
+            )
             self.assertEqual(sessions[0]["branches"], [], f"evidence={value!r} must be dropped")
-            # The SESSION survives; only the one bad branch is dropped, silently.
-            self.assertEqual(dropped, 0)
+            # The SESSION survives; only the one bad branch is dropped.
+            self.assertEqual(dropped_sessions, 0)
+            self.assertEqual(dropped_branches, 1, f"evidence={value!r} must be counted")
 
     def test_every_documented_evidence_value_is_accepted(self):
         for value in feed.EVIDENCE:
-            sessions, _ = feed.parse_sessions({"sessions": [self._branch(evidence=value)]})
+            sessions, _, dropped_branches = feed.parse_sessions(
+                {"sessions": [self._branch(evidence=value)]}
+            )
             self.assertEqual(len(sessions[0]["branches"]), 1, value)
+            self.assertEqual(dropped_branches, 0, value)
 
-    def test_a_missing_name_dir_or_seen_at_drops_just_the_branch(self):
+    def test_a_missing_name_dir_or_seen_at_drops_and_counts_just_the_branch(self):
         for key in ("name", "dir", "seen_at"):
             branch = dict(GOOD_SESSION["branches"][0])
             del branch[key]
             session = dict(GOOD_SESSION, branches=[branch])
-            sessions, dropped = feed.parse_sessions({"sessions": [session]})
+            sessions, dropped_sessions, dropped_branches = feed.parse_sessions(
+                {"sessions": [session]}
+            )
             self.assertEqual(sessions[0]["branches"], [], f"missing {key} must drop the branch")
-            self.assertEqual(dropped, 0)
+            self.assertEqual(dropped_sessions, 0)
+            self.assertEqual(dropped_branches, 1, f"missing {key} must be counted")
 
-    def test_a_non_dict_branch_entry_is_ignored(self):
+    def test_a_non_dict_branch_entry_is_ignored_and_counted(self):
         session = dict(GOOD_SESSION, branches=["nope"])
-        sessions, dropped = feed.parse_sessions({"sessions": [session]})
+        sessions, dropped_sessions, dropped_branches = feed.parse_sessions({"sessions": [session]})
         self.assertEqual(sessions[0]["branches"], [])
-        self.assertEqual(dropped, 0)
+        self.assertEqual(dropped_sessions, 0)
+        self.assertEqual(dropped_branches, 1)
 
-    def test_parse_sessions_re_applies_branch_name_ok(self):
+    def test_parse_sessions_re_applies_branch_name_ok_and_counts_it(self):
         """An adapter that forgot its own filter must not inject noise through here."""
-        sessions, _ = feed.parse_sessions({"sessions": [self._branch(name="main")]})
+        sessions, dropped_sessions, dropped_branches = feed.parse_sessions(
+            {"sessions": [self._branch(name="main")]}
+        )
         self.assertEqual(sessions[0]["branches"], [])
+        self.assertEqual(dropped_sessions, 0)
+        self.assertEqual(dropped_branches, 1)
+
+    def test_several_dropped_branches_beside_a_surviving_one_are_all_counted(self):
+        branches = [
+            dict(GOOD_SESSION["branches"][0]),  # survives
+            dict(GOOD_SESSION["branches"][0], evidence="bogus"),  # dropped
+            dict(GOOD_SESSION["branches"][0], name="main"),  # dropped
+        ]
+        session = dict(GOOD_SESSION, branches=branches)
+        sessions, dropped_sessions, dropped_branches = feed.parse_sessions({"sessions": [session]})
+        self.assertEqual(len(sessions[0]["branches"]), 1)
+        self.assertEqual(dropped_sessions, 0)
+        self.assertEqual(dropped_branches, 2)
 
 
 class TestParseSessionsValidatesTimestamps(unittest.TestCase):
@@ -241,21 +281,32 @@ class TestParseSessionsValidatesTimestamps(unittest.TestCase):
     def test_a_malformed_last_active_drops_and_counts_the_session(self):
         for bad in self.BAD_TIMESTAMPS:
             session = dict(GOOD_SESSION, last_active=bad)
-            sessions, dropped = feed.parse_sessions({"sessions": [session]})
+            sessions, dropped_sessions, dropped_branches = feed.parse_sessions(
+                {"sessions": [session]}
+            )
             self.assertEqual(sessions, [], f"last_active={bad!r} must be dropped")
-            self.assertEqual(dropped, 1, f"last_active={bad!r} must be counted")
+            self.assertEqual(dropped_sessions, 1, f"last_active={bad!r} must be counted")
+            self.assertEqual(dropped_branches, 0)
 
-    def test_a_malformed_seen_at_drops_only_the_branch(self):
+    def test_a_malformed_seen_at_drops_and_counts_only_the_branch(self):
         for bad in self.BAD_TIMESTAMPS:
             branch = dict(GOOD_SESSION["branches"][0], seen_at=bad)
             session = dict(GOOD_SESSION, branches=[branch])
-            sessions, dropped = feed.parse_sessions({"sessions": [session]})
+            sessions, dropped_sessions, dropped_branches = feed.parse_sessions(
+                {"sessions": [session]}
+            )
             self.assertEqual(sessions[0]["branches"], [], f"seen_at={bad!r} must drop the branch")
-            self.assertEqual(dropped, 0, f"seen_at={bad!r} must not drop the whole session")
+            self.assertEqual(
+                dropped_sessions, 0, f"seen_at={bad!r} must not drop the whole session"
+            )
+            self.assertEqual(dropped_branches, 1, f"seen_at={bad!r} must be counted")
 
     def test_a_second_precision_z_timestamp_is_accepted(self):
-        sessions, dropped = feed.parse_sessions({"sessions": [GOOD_SESSION]})
-        self.assertEqual(dropped, 0)
+        sessions, dropped_sessions, dropped_branches = feed.parse_sessions(
+            {"sessions": [GOOD_SESSION]}
+        )
+        self.assertEqual(dropped_sessions, 0)
+        self.assertEqual(dropped_branches, 0)
         self.assertEqual(len(sessions), 1)
         self.assertEqual(len(sessions[0]["branches"]), 1)
 
@@ -290,9 +341,10 @@ class TestSessionsCall(unittest.TestCase):
             "claude",
             'echo "sessions $*" >&2\nprintf \'{"sessions":[]}\'\n',
         )
-        result, dropped = feed.sessions(adapter_for(path), 30)
+        result, dropped_sessions, dropped_branches = feed.sessions(adapter_for(path), 30)
         self.assertEqual(result, [])
-        self.assertEqual(dropped, 0)
+        self.assertEqual(dropped_sessions, 0)
+        self.assertEqual(dropped_branches, 0)
 
     def test_it_forwards_since_as_an_argument(self):
         log = self.dir / "log"
@@ -335,12 +387,13 @@ class TestSessionsCall(unittest.TestCase):
     def test_the_result_has_already_passed_parse_sessions(self):
         payload = json.dumps({"sessions": [GOOD_SESSION, {"id": "broken-only"}]})
         path = write_adapter(self.dir, "real", f"cat <<'JSON'\n{payload}\nJSON\n")
-        result, dropped = feed.sessions(adapter_for(path), 30)
+        result, dropped_sessions, dropped_branches = feed.sessions(adapter_for(path), 30)
         self.assertEqual(len(result), 1, "the broken second session must already be dropped")
         self.assertEqual(result[0]["id"], GOOD_SESSION["id"])
-        self.assertEqual(dropped, 1)
+        self.assertEqual(dropped_sessions, 1)
+        self.assertEqual(dropped_branches, 0)
 
-    def test_a_dropped_entry_is_warned_about_by_name_and_count(self):
+    def test_a_dropped_session_is_warned_about_by_name_and_count(self):
         """A malformed entry beside good ones must not vanish silently.
 
         parse_sessions already tolerates and counts a broken entry; sessions()
@@ -351,10 +404,29 @@ class TestSessionsCall(unittest.TestCase):
         payload = json.dumps({"sessions": [GOOD_SESSION, {"id": "broken-1"}, {"id": "broken-2"}]})
         path = write_adapter(self.dir, "flaky-adapter", f"cat <<'JSON'\n{payload}\nJSON\n")
         warnings: list[str] = []
-        result, dropped = feed.sessions(adapter_for(path), 30, warn=warnings.append)
+        result, dropped_sessions, dropped_branches = feed.sessions(
+            adapter_for(path), 30, warn=warnings.append
+        )
         self.assertEqual(len(result), 1)
-        self.assertEqual(dropped, 2)
+        self.assertEqual(dropped_sessions, 2)
+        self.assertEqual(dropped_branches, 0)
         self.assertTrue(any("flaky-adapter" in w and "2" in w for w in warnings), warnings)
+
+    def test_a_dropped_branch_is_warned_about_by_name_and_count(self):
+        """review re-round item 1: a branch-only drop must warn too, not just a session drop."""
+        branch = dict(GOOD_SESSION["branches"][0], seen_at="2026-09-12T18:04:11.123Z")
+        session = dict(GOOD_SESSION, branches=[branch])
+        payload = json.dumps({"sessions": [session]})
+        path = write_adapter(self.dir, "flaky-adapter", f"cat <<'JSON'\n{payload}\nJSON\n")
+        warnings: list[str] = []
+        result, dropped_sessions, dropped_branches = feed.sessions(
+            adapter_for(path), 30, warn=warnings.append
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["branches"], [])
+        self.assertEqual(dropped_sessions, 0)
+        self.assertEqual(dropped_branches, 1)
+        self.assertTrue(any("flaky-adapter" in w and "1" in w for w in warnings), warnings)
 
     def test_no_warning_when_nothing_was_dropped(self):
         payload = json.dumps({"sessions": [GOOD_SESSION]})
@@ -374,6 +446,19 @@ class TestSessionsCall(unittest.TestCase):
         path = write_adapter(self.dir, "flaky-adapter", f"cat <<'JSON'\n{payload}\nJSON\n")
         with self.assertRaises(feed.AdapterError):
             feed.sessions(adapter_for(path), 30, warn=lambda _msg: None)
+
+    def test_a_dropped_branch_alone_does_not_raise(self):
+        """Every session surviving with an empty branches list is still a valid answer."""
+        branch = dict(GOOD_SESSION["branches"][0], seen_at="garbage")
+        session = dict(GOOD_SESSION, branches=[branch])
+        payload = json.dumps({"sessions": [session]})
+        path = write_adapter(self.dir, "claude", f"cat <<'JSON'\n{payload}\nJSON\n")
+        result, dropped_sessions, dropped_branches = feed.sessions(
+            adapter_for(path), 30, warn=lambda _msg: None
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(dropped_sessions, 0)
+        self.assertEqual(dropped_branches, 1)
 
 
 if __name__ == "__main__":

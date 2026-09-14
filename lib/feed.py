@@ -649,17 +649,20 @@ def branch_name_ok(name: str) -> bool:
     return not any(c in _TEMPLATE_CHARS for c in name)
 
 
-def parse_sessions(obj) -> tuple[list[dict], int]:
+def parse_sessions(obj) -> tuple[list[dict], int, int]:
     """Validate and normalise a `sessions` answer into the runner's own shape.
 
-    Returns `(sessions, dropped)`. Raises AdapterError only when there is
-    nothing to salvage at all -- the top-level object is not a dict, or
-    `sessions` is missing or not a list. Below that, the query's own
-    "tolerant" rule (docs/adapters.md) applies: a single broken SESSION is
-    dropped and counted rather than failing the whole answer, and a broken
-    BRANCH within an otherwise-good session is dropped silently -- it is
-    exactly the kind of per-item noise an adapter walking a real session
-    store will occasionally produce.
+    Returns `(sessions, dropped_sessions, dropped_branches)`. Raises
+    AdapterError only when there is nothing to salvage at all -- the
+    top-level object is not a dict, or `sessions` is missing or not a list.
+    Below that, the query's own "tolerant" rule (docs/adapters.md) applies:
+    a single broken SESSION is dropped and counted rather than failing the
+    whole answer, and a broken BRANCH within an otherwise-good session is
+    dropped and counted SEPARATELY -- it is exactly the kind of per-item
+    noise an adapter walking a real session store will occasionally
+    produce, but a dropped branch must never be invisible: an adapter
+    emitting a malformed `seen_at` on every branch would otherwise lose all
+    of them and still look like a session with clean, empty history.
 
     `branch_name_ok` is re-applied here even though every adapter is
     supposed to have applied its own copy already: this function is the one
@@ -667,7 +670,7 @@ def parse_sessions(obj) -> tuple[list[dict], int]:
     same is true of TIMESTAMP_RE: `last_active` and `seen_at` must already
     be exactly second-precision UTC (docs/adapters.md), and a value that is
     not is treated as malformed -- the session is dropped and counted for
-    `last_active`, the one branch dropped silently for `seen_at`.
+    `last_active`, the one branch dropped and counted for `seen_at`.
     """
     if not isinstance(obj, dict):
         raise AdapterError(f"sessions must print a JSON object, got {type(obj).__name__}")
@@ -675,39 +678,45 @@ def parse_sessions(obj) -> tuple[list[dict], int]:
     if not isinstance(raw_sessions, list):
         raise AdapterError("sessions is missing the required 'sessions' list")
 
-    dropped = 0
+    dropped_sessions = 0
+    dropped_branches = 0
     result: list[dict] = []
     for raw in raw_sessions:
         if not isinstance(raw, dict):
-            dropped += 1
+            dropped_sessions += 1
             continue
         required_keys = ("id", "cwd", "last_active")
         if not all(isinstance(raw.get(k), str) and raw.get(k) for k in required_keys):
-            dropped += 1
+            dropped_sessions += 1
             continue
         if not TIMESTAMP_RE.match(raw["last_active"]):
-            dropped += 1
+            dropped_sessions += 1
             continue
         raw_branches = raw.get("branches")
         if not isinstance(raw_branches, list):
-            dropped += 1
+            dropped_sessions += 1
             continue
 
         branches: list[dict] = []
         for raw_branch in raw_branches:
             if not isinstance(raw_branch, dict):
+                dropped_branches += 1
                 continue
             name = raw_branch.get("name")
             branch_dir = raw_branch.get("dir")
             evidence = raw_branch.get("evidence")
             seen_at = raw_branch.get("seen_at")
             if not isinstance(name, str) or not name or not branch_name_ok(name):
+                dropped_branches += 1
                 continue
             if not isinstance(branch_dir, str) or not branch_dir:
+                dropped_branches += 1
                 continue
             if evidence not in EVIDENCE:
+                dropped_branches += 1
                 continue
             if not isinstance(seen_at, str) or not seen_at or not TIMESTAMP_RE.match(seen_at):
+                dropped_branches += 1
                 continue
             branches.append(
                 {"name": name, "dir": branch_dir, "evidence": evidence, "seen_at": seen_at}
@@ -724,7 +733,7 @@ def parse_sessions(obj) -> tuple[list[dict], int]:
             session["title"] = title
         result.append(session)
 
-    return result, dropped
+    return result, dropped_sessions, dropped_branches
 
 
 def sessions(
@@ -734,7 +743,7 @@ def sessions(
     include_sdk: bool = False,
     timeout: float = SESSIONS_TIMEOUT,
     warn=warn,
-) -> tuple[list[dict], int]:
+) -> tuple[list[dict], int, int]:
     """Ask `adapter` for its sessions from the last `since` days.
 
     Runs `<adapter> sessions --since <since>`, adding `--include-sdk` only
@@ -744,15 +753,18 @@ def sessions(
     the call can fail: a non-zero exit, no output, output that is not JSON,
     or a timeout.
 
-    Returns `(sessions, dropped)`. The list has already passed
-    parse_sessions, so a caller gets validated sessions, never a raw blob it
-    must re-check -- but the dropped count is not silently swallowed: this
-    is the one place that knows the adapter's own name, so a non-zero count
-    is warned about by name, and if NOTHING survived, it raises rather than
+    Returns `(sessions, dropped_sessions, dropped_branches)`. The list has
+    already passed parse_sessions, so a caller gets validated sessions,
+    never a raw blob it must re-check -- but neither count is silently
+    swallowed: this is the one place that knows the adapter's own name, so
+    either count being non-zero is warned about by name, and if every
+    SESSION was malformed (nothing survived at all), it raises rather than
     returning `[]`. An empty `sessions` list has to mean "no sessions in the
     window" (docs/adapters.md's own Failing rule) -- an adapter whose every
     entry was malformed and still got `[]` back would be silently
-    indistinguishable from that.
+    indistinguishable from that. A session surviving with every branch
+    dropped is NOT this case -- "no branches" is itself a valid answer -- so
+    only `dropped_sessions` (not `dropped_branches`) can raise.
     """
     args = [str(adapter.path), "sessions", "--since", str(since)]
     if include_sdk:
@@ -779,13 +791,19 @@ def sessions(
     except ValueError as exc:
         raise AdapterError(f"sessions printed something that is not JSON: {exc}") from exc
 
-    parsed, dropped = parse_sessions(obj)
-    if dropped:
-        word = "entry" if dropped == 1 else "entries"
-        warn(f"adapter {adapter.name}: sessions: {dropped} malformed {word} dropped")
-        if not parsed:
-            raise AdapterError(f"sessions: every entry was malformed ({dropped} dropped)")
-    return parsed, dropped
+    parsed, dropped_sessions, dropped_branches = parse_sessions(obj)
+    if dropped_sessions or dropped_branches:
+        session_word = "session" if dropped_sessions == 1 else "sessions"
+        branch_word = "branch" if dropped_branches == 1 else "branches"
+        warn(
+            f"adapter {adapter.name}: sessions: {dropped_sessions} malformed {session_word}, "
+            f"{dropped_branches} malformed {branch_word} dropped"
+        )
+        if dropped_sessions and not parsed:
+            raise AdapterError(
+                f"sessions: every session was malformed ({dropped_sessions} dropped)"
+            )
+    return parsed, dropped_sessions, dropped_branches
 
 
 # --------------------------------------------------------------------------
