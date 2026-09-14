@@ -857,9 +857,13 @@ class TestCommandEvidence(TempConfigCase):
     # already decided it is filtered out. --
 
     def test_sdk_early_exit_avoids_reading_a_huge_remainder(self):
+        """Calibrated empirically: on this machine, reading and failing to
+        parse 1,000,000 garbage lines one at a time takes ~5s; exiting on
+        the first (SDK) line takes ~0.4s regardless of what follows it. 2s
+        sits comfortably between the two, with margin either way."""
         path = self.write_transcript([line(entrypoint="sdk-cli")])
         with path.open("a", encoding="utf-8") as handle:
-            for _ in range(300_000):
+            for _ in range(1_000_000):
                 handle.write("not json at all, and long enough to matter if ever read\n")
         start = time.monotonic()
         sessions = sessions_of(self.config_dir, "--since", "30")
@@ -868,7 +872,7 @@ class TestCommandEvidence(TempConfigCase):
         self.assertLess(
             elapsed,
             2.0,
-            "reading 300,000 garbage lines one at a time takes much longer than this",
+            "reading 1,000,000 garbage lines one at a time takes much longer than this",
         )
 
 
