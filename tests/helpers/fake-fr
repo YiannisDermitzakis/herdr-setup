@@ -1,0 +1,94 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.13"
+# dependencies = []
+# ///
+# tests/helpers/fake-fr
+#
+# A stand-in for the real `fr` command line, so no test can read (or, far
+# worse, create) a real fr workspace. The `fr` symlink beside this file is what
+# PATH resolution finds, as `herdr` finds fake-herdr and `gh` finds fake-gh.
+#
+# That "far worse" is not hypothetical. The first RED run of
+# tests/test_fake_fr.py, before this file existed, fell through PATH to the
+# host's real fr and ran `fr isolation up --branch feat/x`, which created a
+# branch and a workspace. The fake refuses everything it does not model, and
+# the tests refuse to run a `fr` that is not this file.
+#
+# What it answers:
+#
+#   fr isolation status --format json --repo <path>
+#       prints the JSON list in the file named by FAKE_FR_STATUS. The list's
+#       shape is the operator's business (the audit reads each workspace's
+#       `branch`, `worktree` and `sessions[].session_id`); the fake passes it
+#       through without inventing any of it.
+#
+# Switches:
+#
+#   FAKE_FR_STATUS=<file>
+#       The answer. Unset, unreadable, or not a JSON list: exit 2. An fr that
+#       could not answer must never look like an fr with no workspaces.
+#   FAKE_FR_FAIL=1
+#       Exit 1 with a plain stderr line and nothing on stdout, for any call.
+#       The audit treats fr as optional enrichment; this is what lets a test
+#       prove a failing fr is a warning and nothing more.
+#
+# Anything else -- another subcommand, a missing --repo, --format text -- is
+# refused with exit 2.
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+
+def refuse(message: str) -> int:
+    sys.stderr.write(f"fake fr: {message}\n")
+    return 2
+
+
+def main(argv: list[str]) -> int:
+    if os.environ.get("FAKE_FR_FAIL") == "1":
+        sys.stderr.write("fr: isolation status failed (FAKE_FR_FAIL)\n")
+        return 1
+    if argv[:2] != ["isolation", "status"]:
+        return refuse(f"not faked: fr {' '.join(argv)}")
+
+    options = {}
+    rest = argv[2:]
+    index = 0
+    while index < len(rest):
+        word = rest[index]
+        if word.startswith("--") and "=" in word:
+            name, value = word.split("=", 1)
+            index += 1
+        elif word in ("--format", "--repo") and index + 1 < len(rest):
+            name, value = word, rest[index + 1]
+            index += 2
+        else:
+            return refuse(f"isolation status: {word!r} is not faked")
+        if name not in ("--format", "--repo"):
+            return refuse(f"isolation status: {name!r} is not faked")
+        options[name] = value
+    if options.get("--format") != "json":
+        return refuse("isolation status: only --format json is faked")
+    if not options.get("--repo"):
+        return refuse("isolation status: --repo is required")
+
+    path = os.environ.get("FAKE_FR_STATUS", "")
+    if not path:
+        return refuse("FAKE_FR_STATUS is not set; this fake has no answer to give")
+    try:
+        status = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return refuse(f"FAKE_FR_STATUS {path}: {exc}")
+    if not isinstance(status, list):
+        return refuse(f"FAKE_FR_STATUS {path}: must hold a JSON list")
+    sys.stdout.write(json.dumps(status, indent=2) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

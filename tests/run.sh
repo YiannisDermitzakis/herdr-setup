@@ -18,9 +18,10 @@
 # so a suite run from inside a Herdr pane inherits the operator's LIVE
 # socket. A test that means to exercise the "no server" path then finds a
 # real one and quietly proves nothing. Tests that need such a variable set
-# it themselves. The FAKE_HERDR_* switches are cleared for the same reason
-# from the other direction: one left set in the developer's own shell would
-# silently reconfigure the fake herdr under every test file.
+# it themselves. The FAKE_HERDR_*, FAKE_GH_* and FAKE_FR_* switches are
+# cleared for the same reason from the other direction: one left set in the
+# developer's own shell would silently reconfigure a fake under every test
+# file.
 #
 # This script is self-contained by design: copying it, tests/helpers/, and
 # a set of test_*.sh files anywhere runs the same way, which is what lets
@@ -80,6 +81,8 @@ for test_file in "$script_dir"/test_*.sh "$script_dir"/test_*.py; do
          -u FAKE_HERDR_LOG -u FAKE_HERDR_FIXTURES -u FAKE_HERDR_PROTOCOL_MISMATCH \
          -u FAKE_HERDR_ERROR_CODE -u FAKE_HERDR_ERROR_STREAM -u FAKE_HERDR_FAIL \
          -u FAKE_HERDR_STDERR_NOTE -u FAKE_HERDR_PROMPT -u FAKE_HERDR_ERROR_EXIT \
+         -u FAKE_GH_STATE -u FAKE_GH_LOG -u FAKE_GH_FAIL -u FAKE_GH_UNAUTH \
+         -u FAKE_GH_GRAPHQL_ERRORS -u FAKE_GH_PAGE_SIZE -u FAKE_FR_STATUS -u FAKE_FR_FAIL \
          HOME="$tmp_home" PATH="$helpers_dir:$PATH" "${runner[@]}"; then
     echo "PASS: $name"
   else

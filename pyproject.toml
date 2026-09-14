@@ -29,7 +29,11 @@ line-length = 100
 # A future non-Python file under adapters/ -- a README, matching what
 # lib/feed.py's own discover() already ignores -- must not be swept in and
 # handed to ruff as if it were Python, so `.md` is carved back out.
-extend-include = ["adapters/*"]
+#
+# The fake gh and fake fr in tests/helpers/ are PEP 723 scripts with no
+# suffix for the same reason (they are found on PATH by command name), so
+# they are named here too rather than left unlinted.
+extend-include = ["adapters/*", "tests/helpers/fake-gh", "tests/helpers/fake-fr"]
 extend-exclude = ["adapters/*.md"]
 
 [tool.ruff.lint]
