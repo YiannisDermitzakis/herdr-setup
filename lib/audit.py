@@ -42,8 +42,14 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
+
+# lib/feed.py from this script's own directory: discovery, probing, probe
+# validation, herdr_json and the agent-list reader have one implementation.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import feed  # noqa: E402
 
 # Mirrors the design doc's own table (Commands > audit): a positive integer
 # up to 3650 (ten years), which is generous enough that no real session
@@ -1101,6 +1107,219 @@ def resolve_branches(entries) -> Resolutions:
 
     resolved = {key: replace(value, sources=tuple(sources[key])) for key, value in results.items()}
     return Resolutions(resolved, index)
+
+
+# --------------------------------------------------------------------------
+# The sources and the join (spec: "The audit runner", "Sources")
+# --------------------------------------------------------------------------
+#
+# Three sources, each failing closed in its own way. Herdr (panes and tab
+# labels) raises feed.HerdrError: without it there is no report. An adapter's
+# session history that cannot be read is warned about by name and makes the
+# report incomplete, because one broken adapter must not hide the others.
+# A pane's own directory is text: an fr worktree path names its branch, which
+# is how an agent with no session history still shows what it works on. The
+# audit never runs `fr`.
+
+# Why a pane has no branch rows, in the order they are decided.
+NOTE_NO_ADAPTER = "no adapter"
+NOTE_UNSUPPORTED = "no session history (unsupported)"
+NOTE_ADAPTER_FAILED = "session history unavailable (adapter failed)"
+NOTE_NOT_REPORTED = "session not reported to Herdr"
+NOTE_NOT_FOUND = "session not found in history (outside --since, or SDK-driven)"
+NOTE_NO_EVIDENCE = "no branch evidence"
+
+# An fr worktree: `.../.cache/fr/worktrees/<repo>/<slug>`, where the slug is
+# the branch with `/` written as `__` -- adapters/claude's worktree-path rule,
+# read here from a pane's absolute cwd, so no `~` or `$HOME` forms arise.
+_PANE_WORKTREE_RE = re.compile(r"(?P<dir>/.*?/\.cache/fr/worktrees/[^/]+/(?P<slug>[^/]+))(?:/.*)?")
+
+
+def warn(message: str) -> None:
+    sys.stderr.write(f"herdr-setup: audit: {message}\n")
+
+
+def panes() -> list[dict]:
+    """Every agent pane Herdr lists: pane_id, agent, session, cwd and tab label.
+
+    `herdr agent list` then `herdr tab list`, both through feed.herdr_json, so
+    a failed or unreadable call raises feed.HerdrError. `session` is
+    `agent_session.value`, None when Herdr has none; `tab` is the label of the
+    pane's tab, None when the tab list does not name it.
+    """
+    agents = feed._agent_entries(feed.herdr_json(["agent", "list"]))
+    label = "herdr tab list"
+    tabs = feed._result(feed.herdr_json(["tab", "list"]), label).get("tabs")
+    if not isinstance(tabs, list):
+        raise feed.HerdrError(f"{label}: answer carries no 'tabs' list")
+    labels: dict[str, str | None] = {}
+    for tab in tabs:
+        if not isinstance(tab, dict) or not isinstance(tab.get("tab_id"), str):
+            raise feed.HerdrError(f"{label}: a tab carries no readable tab_id")
+        text = tab.get("label")
+        labels[tab["tab_id"]] = text if isinstance(text, str) and text else None
+
+    found: list[dict] = []
+    for entry in agents:
+        pane_id = entry.get("pane_id") if isinstance(entry, dict) else None
+        agent = entry.get("agent") if isinstance(entry, dict) else None
+        if not (isinstance(pane_id, str) and pane_id and isinstance(agent, str) and agent):
+            raise feed.HerdrError(
+                "herdr agent list: an entry carries no readable pane_id and agent"
+            )
+        session = entry.get("agent_session")
+        value = session.get("value") if isinstance(session, dict) else None
+        cwd = entry.get("cwd") or entry.get("foreground_cwd")
+        found.append(
+            {
+                "pane_id": pane_id,
+                "agent": agent,
+                "session": value if isinstance(value, str) and value else None,
+                "cwd": cwd if isinstance(cwd, str) and cwd else None,
+                "tab": labels.get(entry.get("tab_id")),
+            }
+        )
+    return found
+
+
+def load_adapters(adapter_dir, warn=warn) -> tuple[list, list[str]]:
+    """The usable adapters, and an incomplete reason for every probe that failed.
+
+    feed.usable_adapters is the one discovery and probe policy. A failed probe
+    is also a source this run could not read -- its agent's sessions are
+    missing and its panes would read "no adapter" -- so unlike `feed`, the
+    audit marks the report incomplete for it.
+    """
+    skipped: list[tuple[str, str]] = []
+    adapters = feed.usable_adapters(adapter_dir, warn=warn, skipped=skipped)
+    return adapters, [f"adapter {name}: probe failed: {reason}" for name, reason in skipped]
+
+
+@dataclass(frozen=True)
+class Gathered:
+    """Session history from every adapter that declared `sessions`."""
+
+    sessions: list[dict]  # feed.parse_sessions' records, each with its `agent`
+    failed: dict[str, str]  # agent -> why its adapter could not answer
+    incomplete: list[str]  # one reason per failed adapter
+
+
+def gather_sessions(
+    adapters,
+    since: int,
+    *,
+    include_sdk: bool = False,
+    warn=warn,
+    timeout: float = feed.SESSIONS_TIMEOUT,
+) -> Gathered:
+    """Ask every adapter declaring `sessions` once; a failure is incomplete, not fatal."""
+    sessions: list[dict] = []
+    failed: dict[str, str] = {}
+    incomplete: list[str] = []
+    for adapter in adapters:
+        if not adapter.sessions:
+            continue
+        try:
+            found, _, _ = feed.sessions(
+                adapter, since, include_sdk=include_sdk, timeout=timeout, warn=warn
+            )
+        except feed.AdapterError as exc:
+            reason = f"adapter {adapter.name}: {exc}"
+            warn(f"{reason}; its {adapter.agent} sessions are missing from this report")
+            failed[adapter.agent] = reason
+            incomplete.append(reason)
+            continue
+        sessions.extend({**session, "agent": adapter.agent} for session in found)
+    return Gathered(sessions=sessions, failed=failed, incomplete=incomplete)
+
+
+def pane_worktree(cwd) -> dict | None:
+    """{name, dir} when `cwd` is in an fr worktree whose slug is a plausible branch."""
+    if not isinstance(cwd, str) or not cwd:
+        return None
+    match = _PANE_WORKTREE_RE.fullmatch(cwd)
+    if match is None:
+        return None
+    name = match["slug"].replace("__", "/")
+    if not feed.branch_name_ok(name):
+        return None
+    return {"name": name, "dir": match["dir"]}
+
+
+def join(pane_list: list[dict], adapters, gathered: Gathered) -> list[dict]:
+    """One record per pane: its branch entries, or the note saying why it has none.
+
+    A pane's session is looked up under its own agent. Its entries are that
+    session's branches (with the session's cwd, the resolver's fallback) plus
+    a worktree-path branch when the pane's own cwd is in an fr worktree.
+    """
+    by_agent: dict[str, object] = {}
+    for adapter in adapters:
+        by_agent.setdefault(adapter.agent, adapter)
+    history = {(session["agent"], session["id"]): session for session in gathered.sessions}
+
+    joined: list[dict] = []
+    for pane in pane_list:
+        adapter = by_agent.get(pane["agent"])
+        found = history.get((pane["agent"], pane["session"])) if pane["session"] else None
+        entries = []
+        if found is not None:
+            entries.extend(
+                {
+                    "name": branch["name"],
+                    "dir": branch["dir"],
+                    "cwd": found["cwd"],
+                    "evidence": branch["evidence"],
+                }
+                for branch in found["branches"]
+            )
+        worktree = pane_worktree(pane["cwd"])
+        if worktree is not None:
+            entries.append({**worktree, "cwd": pane["cwd"], "evidence": "worktree-path"})
+
+        note = None
+        if not entries:
+            if adapter is None:
+                note = NOTE_NO_ADAPTER
+            elif not adapter.sessions:
+                note = NOTE_UNSUPPORTED
+            elif pane["agent"] in gathered.failed:
+                note = NOTE_ADAPTER_FAILED
+            elif pane["session"] is None:
+                note = NOTE_NOT_REPORTED
+            elif found is None:
+                note = NOTE_NOT_FOUND
+            else:
+                note = NOTE_NO_EVIDENCE
+        joined.append(
+            {
+                "pane_id": pane["pane_id"],
+                "tab": pane["tab"],
+                "agent": pane["agent"],
+                "session_id": pane["session"],
+                "note": note,
+                "entries": entries,
+            }
+        )
+    return joined
+
+
+def resolution_entries(joined: list[dict], gathered: Gathered) -> list[dict]:
+    """Every (name, dir, cwd) to resolve: each session's branches, each pane's, once."""
+    seen: set[tuple] = set()
+    entries: list[dict] = []
+    candidates = [
+        (branch["name"], branch["dir"], session["cwd"])
+        for session in gathered.sessions
+        for branch in session["branches"]
+    ] + [
+        (entry["name"], entry["dir"], entry["cwd"]) for pane in joined for entry in pane["entries"]
+    ]
+    for name, directory, cwd in candidates:
+        if (name, directory, cwd) not in seen:
+            seen.add((name, directory, cwd))
+            entries.append({"name": name, "dir": directory, "cwd": cwd})
+    return entries
 
 
 # --------------------------------------------------------------------------

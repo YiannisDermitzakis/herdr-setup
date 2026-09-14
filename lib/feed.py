@@ -215,8 +215,14 @@ def probe(path, timeout: float = PROBE_TIMEOUT) -> dict:
     return validate_probe(obj)
 
 
-def usable_adapters(adapter_dir, warn=warn, timeout: float = PROBE_TIMEOUT) -> list[Adapter]:
+def usable_adapters(
+    adapter_dir, warn=warn, timeout: float = PROBE_TIMEOUT, skipped: list | None = None
+) -> list[Adapter]:
     """Discover and probe every adapter, and return the ones the run will use.
+
+    `skipped`, when given, also receives `(adapter name, reason)` for every
+    probe that failed. `feed` only warns; `audit` must also mark its report
+    incomplete, and reads that from here rather than from warning text.
 
     The skip policy, in the order it matters:
 
@@ -236,6 +242,8 @@ def usable_adapters(adapter_dir, warn=warn, timeout: float = PROBE_TIMEOUT) -> l
             obj = probe(path, timeout=timeout)
         except AdapterError as exc:
             warn(f"adapter {path.name}: skipped: {exc}")
+            if skipped is not None:
+                skipped.append((path.name, str(exc)))
             continue
         if not obj["available"]:
             continue
