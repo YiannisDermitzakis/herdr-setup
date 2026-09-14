@@ -449,7 +449,12 @@ rows:
       history, and agents without it are reported as unsupported.
     origin:
     - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
-    levels: {}
+    levels:
+      unit:
+      - herdr-setup:tests/test_feed_sessions.py
+      - herdr-setup:tests/test_adapter_claude_sessions.py
+      - herdr-setup:tests/test_adapter_codex_sessions.py
+      - herdr-setup:tests/test_contract.py
     status: not-implemented
     notes: Born with the spec (not-implemented). Phase 2 of the 2026-09-13-session-audit
       plan lands and verifies the contract half in full -- docs/adapters.md's sessions-probe/sessions-response
