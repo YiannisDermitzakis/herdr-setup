@@ -543,4 +543,58 @@ assert_status "18: an unexpected argument exits 2" 2 "$status"
 assert_contains "18: stderr names the unexpected argument" "$(cat "$err")" "some-extra-argument"
 [ ! -e "$home18/.local" ] && pass || fail "18: install wrote something despite the refusal"
 
+# ---------------------------------------------------------------------
+# 19. a PATH entry containing a literal '*' does not glob-expand into
+#     unrelated directories when the shadow check walks PATH
+# ---------------------------------------------------------------------
+entry19="$(hs_test_sandbox)"
+home19="$work/home19"
+mkdir -p "$home19"
+star_dir="$work/star*dir"
+sibling_dir="$work/starXdir"
+mkdir -p "$star_dir" "$sibling_dir"
+# The star_dir PATH entry itself carries no herdr-setup at all -- only the
+# GLOB-MATCHED sibling does, so a fixed (noglob) walk finds nothing there
+# and moves on to $home19/.local/bin (this run's own, freshly installed
+# link, which matches the target and warns nothing); a broken (globbing)
+# walk expands "$work/star*dir" into BOTH directories and wrongly treats
+# the sibling's decoy as a PATH entry that was never actually on PATH.
+cat > "$sibling_dir/herdr-setup" <<'EOF'
+#!/bin/sh
+echo "decoy, glob-matched, never actually on PATH"
+EOF
+chmod +x "$sibling_dir/herdr-setup"
+out="$work/out19"; err="$work/err19"
+status="$(run_install "$entry19" "$home19" "$star_dir:$home19/.local/bin:/usr/bin:/bin" "$out" "$err")"
+assert_status "19: install still succeeds" 0 "$status"
+case "$(cat "$err")" in
+  *"shadows"*) fail "19: a '*' PATH entry glob-expanded into an unrelated directory: $(cat "$err")" ;;
+  *) pass ;;
+esac
+
+# ---------------------------------------------------------------------
+# 20. the shadow warning's wording when $dir (~/.local/bin) is not on
+#     PATH at all -- it must not say "ahead of" a position that does not
+#     exist on PATH
+# ---------------------------------------------------------------------
+entry20="$(hs_test_sandbox)"
+home20="$work/home20"
+mkdir -p "$home20"
+decoy_dir20="$work/decoy-bin-20"
+mkdir -p "$decoy_dir20"
+cat > "$decoy_dir20/herdr-setup" <<'EOF'
+#!/bin/sh
+echo "not the real thing"
+EOF
+chmod +x "$decoy_dir20/herdr-setup"
+out="$work/out20"; err="$work/err20"
+# $home20/.local/bin is deliberately NOT on this PATH.
+status="$(run_install "$entry20" "$home20" "$decoy_dir20:/usr/bin:/bin" "$out" "$err")"
+assert_status "20: install still succeeds" 0 "$status"
+assert_contains "20: it still names the shadowing executable" "$(cat "$err")" "$decoy_dir20/herdr-setup"
+case "$(cat "$err")" in
+  *"ahead of"*) fail "20: worded as if \$dir were on PATH when it is not: $(cat "$err")" ;;
+  *) pass ;;
+esac
+
 hs_test_report

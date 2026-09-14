@@ -284,15 +284,47 @@ cmd_install_warn() {
 # exist yet, so <link>'s own resolve is tried first and the checkout's
 # target ($HS_ROOT/herdr-setup, already a real path) is the fallback -- a
 # dry run must warn exactly as a completed real run would.
+#
+# The message is worded differently depending on whether <dir> is itself on
+# PATH: "ahead of <dir>" implies <dir> HAS a position on PATH to be ahead
+# of, which is false when it has none at all -- the whole reason this
+# function walks the entire PATH in that case (see above) rather than
+# stopping partway.
+#
+# $PATH is split into words ONCE, via `set -- $PATH` under `set -f`
+# (mirroring hs_manifest_plugins' own had_noglob-guarded pattern in
+# lib/common.sh), never with a bare `for entry in $PATH`: IFS=':' controls
+# WORD-splitting but not PATHNAME expansion, so an unquoted PATH component
+# containing a glob metacharacter (a directory literally named with a `*`,
+# say) would otherwise be expanded against the filesystem, and could match
+# an unrelated directory that was never really on PATH at all.
 cmd_install_warn_shadow() {
   local dir="$1" link="$2"
   local target
   target="$(hs_resolve_path "$link" 2>/dev/null)" || target="$HS_ROOT/herdr-setup"
 
-  local saved_ifs="$IFS" entry candidate resolved
+  local dir_on_path=0
+  case ":$PATH:" in
+    *":$dir:"*|*":$dir/:"*) dir_on_path=1 ;;
+  esac
+
+  local had_noglob=0
+  case "$-" in
+    *f*) had_noglob=1 ;;
+  esac
+
+  local saved_ifs="$IFS"
   IFS=':'
-  for entry in $PATH; do
-    IFS="$saved_ifs"
+  set -f
+  # shellcheck disable=SC2086
+  set -- $PATH
+  if [ "$had_noglob" -eq 0 ]; then
+    set +f
+  fi
+  IFS="$saved_ifs"
+
+  local entry candidate resolved
+  for entry in "$@"; do
     [ -z "$entry" ] && continue
     if [ "${entry%/}" = "${dir%/}" ]; then
       return 0
@@ -301,13 +333,15 @@ cmd_install_warn_shadow() {
     if [ -x "$candidate" ]; then
       resolved="$(hs_resolve_path "$candidate" 2>/dev/null)" || resolved="$candidate"
       if [ "$resolved" != "$target" ]; then
-        echo "herdr-setup: install: $candidate is on PATH ahead of $dir and shadows it." >&2
+        if [ "$dir_on_path" -eq 1 ]; then
+          echo "herdr-setup: install: $candidate is on PATH ahead of $dir and shadows it." >&2
+        else
+          echo "herdr-setup: install: $candidate is on PATH; $dir is not on PATH at all, so $candidate shadows it." >&2
+        fi
       fi
       return 0
     fi
-    IFS=':'
   done
-  IFS="$saved_ifs"
 }
 # cmd_diff: read-only. hs_preflight_banner prints first, so a mismatched
 # or serverless host says so up front. Each section below reports its own
