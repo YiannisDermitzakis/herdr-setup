@@ -55,6 +55,10 @@ class GhError(AuditError):
     """A gh call failed, answered with errors, or answered something unreadable."""
 
 
+class GitError(AuditError):
+    """A git command failed, or warned, inside a repository that exists."""
+
+
 def flatten(text) -> str:
     """Fold text onto one line (lib/feed.py's flatten, for the one-line messages)."""
     return " ".join(str(text).split())
@@ -577,6 +581,178 @@ def compare(owner: str, name: str, branches: list[str]) -> dict[str, str]:
                 raise GhError(f"{label}: answer carries no readable status for {branch!r}")
             result[branch] = status
     return result
+
+
+# --------------------------------------------------------------------------
+# The git layer (spec: "Resolving a branch", "Merge state")
+# --------------------------------------------------------------------------
+#
+# One function per git question, each a single `git -C <dir> <read-only
+# subcommand>` whose exit status is read explicitly. Nothing here fetches:
+# remote state comes from GitHub, and refs/remotes/origin/<b> is as stale as
+# the last fetch. GIT_OPTIONAL_LOCKS=0 keeps even git's opportunistic index
+# refresh from writing.
+
+GIT_TIMEOUT = 60.0
+
+# `owner/name` from a remote URL whose host is github.com: https (with or
+# without credentials and `.git`), scp-like `git@github.com:`, and ssh://.
+# Matched whole, so a lookalike host such as github.com.example.invalid is not
+# GitHub.
+_GITHUB_REMOTE_RES = tuple(
+    re.compile(prefix + r"(?P<owner>[A-Za-z0-9-]+)/(?P<name>[A-Za-z0-9._-]+?)(?:\.git)?/?", re.I)
+    for prefix in (
+        r"https://(?:[^@/]+@)?github\.com/",
+        r"git@github\.com:",
+        r"ssh://git@github\.com(?::\d+)?/",
+    )
+)
+
+
+@dataclass(frozen=True)
+class Repo:
+    """A repository a branch lives in, as git names it."""
+
+    toplevel: str  # the work tree the directory is in (a linked worktree's own root)
+    main_checkout: str  # the main worktree: the same for every linked worktree of it
+    slug: str | None  # `owner/name` when the chosen remote is on github.com
+
+
+def _git(directory: str, args: tuple[str, ...]) -> subprocess.CompletedProcess:
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        return subprocess.run(  # noqa: S603
+            ["git", "-C", directory, *args],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise GitError(f"git in {directory}: {' '.join(args)} did not answer") from exc
+    except OSError as exc:
+        raise GitError(f"git in {directory}: {' '.join(args)}: {exc}") from exc
+
+
+def _git_failure(directory: str, args: tuple[str, ...], proc) -> GitError:
+    what = f"exited {proc.returncode}" if proc.returncode else "warned"
+    detail = flatten(proc.stderr) or flatten(proc.stdout) or "no output"
+    return GitError(f"git in {directory}: {' '.join(args)} {what}: {detail}")
+
+
+def github_slug(url: str) -> str | None:
+    """`owner/name` for a github.com remote URL, else None."""
+    for pattern in _GITHUB_REMOTE_RES:
+        match = pattern.fullmatch(url.strip())
+        if match:
+            return f"{match['owner']}/{match['name']}"
+    return None
+
+
+def _toplevel(directory: str | None) -> str | None:
+    """The work tree `directory` is in, or None when it is not in one.
+
+    A directory that no longer exists is simply not a work tree: that is the
+    ordinary fate of a removed worktree, not an error.
+    """
+    if not directory or not os.path.isdir(directory):
+        return None
+    proc = _git(directory, ("rev-parse", "--show-toplevel"))
+    toplevel = proc.stdout.strip()
+    return toplevel if proc.returncode == 0 and toplevel else None
+
+
+def _main_checkout(toplevel: str) -> str:
+    args = ("worktree", "list", "--porcelain")
+    proc = _git(toplevel, args)
+    if proc.returncode != 0:
+        raise _git_failure(toplevel, args, proc)
+    for line in proc.stdout.splitlines():
+        if line.startswith("worktree "):
+            return line[len("worktree ") :]
+    raise GitError(f"git in {toplevel}: {' '.join(args)} named no main worktree")
+
+
+def _slug(toplevel: str) -> str | None:
+    """The slug of `origin`, else of the only remote; None with neither."""
+    args = ("remote",)
+    proc = _git(toplevel, args)
+    if proc.returncode != 0:
+        raise _git_failure(toplevel, args, proc)
+    remotes = proc.stdout.split()
+    if "origin" in remotes:
+        remote = "origin"
+    elif len(remotes) == 1:
+        remote = remotes[0]
+    else:
+        return None
+    args = ("remote", "get-url", remote)
+    proc = _git(toplevel, args)
+    if proc.returncode != 0:
+        raise _git_failure(toplevel, args, proc)
+    return github_slug(proc.stdout)
+
+
+def repo_for(directory: str | None, fallback: str | None) -> Repo | None:
+    """The repository `directory` is in, else the one `fallback` is in, else None."""
+    for candidate in (directory, fallback):
+        toplevel = _toplevel(candidate)
+        if toplevel is not None:
+            return Repo(toplevel, _main_checkout(toplevel), _slug(toplevel))
+    return None
+
+
+def _ref_exists(repo: Repo, ref: str) -> bool:
+    """Whether the fully qualified `ref` exists, telling broken from absent.
+
+    `show-ref --verify --quiet` and `rev-parse --verify --quiet` both exit 1
+    for a ref git cannot read, exactly as for one that is not there.
+    `for-each-ref` also exits 0 for it, but says `ignoring broken ref` on
+    stderr -- so anything on stderr is an error, never an absence.
+    """
+    args = ("for-each-ref", "--format=%(refname)", ref)
+    proc = _git(repo.toplevel, args)
+    if proc.returncode != 0 or proc.stderr.strip():
+        raise _git_failure(repo.toplevel, args, proc)
+    return ref in proc.stdout.splitlines()
+
+
+def local_ref(repo: Repo, name: str) -> bool:
+    """Whether the local branch refs/heads/<name> exists."""
+    return _ref_exists(repo, f"refs/heads/{name}")
+
+
+def is_ancestor(repo: Repo, name: str, default: str) -> bool:
+    """Whether refs/heads/<name> is reachable from the default branch.
+
+    The default branch is refs/remotes/origin/<default> when that exists,
+    else refs/heads/<default>. Exit 0 is contained, exit 1 is not, and any
+    other exit is a GitError naming the repository.
+    """
+    remote_default = f"refs/remotes/origin/{default}"
+    target = remote_default if _ref_exists(repo, remote_default) else f"refs/heads/{default}"
+    args = ("merge-base", "--is-ancestor", f"refs/heads/{name}", target)
+    proc = _git(repo.toplevel, args)
+    if proc.returncode == 0:
+        return True
+    if proc.returncode == 1:
+        return False
+    raise _git_failure(repo.toplevel, args, proc)
+
+
+def local_default(repo: Repo) -> str | None:
+    """The branch refs/remotes/origin/HEAD points at, or None when it is not set."""
+    args = ("symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+    proc = _git(repo.toplevel, args)
+    if proc.returncode == 1:
+        return None
+    if proc.returncode != 0:
+        raise _git_failure(repo.toplevel, args, proc)
+    target = proc.stdout.strip()
+    prefix = "refs/remotes/origin/"
+    if not target.startswith(prefix) or target == prefix:
+        raise GitError(f"git in {repo.toplevel}: refs/remotes/origin/HEAD points at {target!r}")
+    return target[len(prefix) :]
 
 
 # --------------------------------------------------------------------------

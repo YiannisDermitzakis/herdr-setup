@@ -152,9 +152,10 @@ class TestOwners(GhCase):
     def test_a_login_that_cannot_be_a_github_login_is_refused_by_name(self):
         self.use(gh_state())
         for bad in ("", "example org", "example-org/example-repo", "-example"):
-            with self.subTest(login=bad), self.assertRaises(audit.GhError) as ctx:
-                audit.owners([bad])
-            self.assertIn(repr(bad), str(ctx.exception))
+            with self.subTest(login=bad):
+                with self.assertRaises(audit.GhError) as ctx:
+                    audit.owners([bad])
+                self.assertIn(repr(bad), str(ctx.exception))
         self.assertEqual(self.fake.calls(), [])
 
     def test_a_failing_user_call_raises_quoting_gh(self):
@@ -347,16 +348,18 @@ class TestEveryErrorIsAFailure(GhCase):
     def test_a_non_zero_gh_exit_raises_quoting_gh(self):
         self.use(self.state, FAKE_GH_FAIL="api")
         for name, call in self.calls():
-            with self.subTest(call=name), self.assertRaises(audit.GhError) as ctx:
-                call()
-            self.assertIn("failed (FAKE_GH_FAIL)", str(ctx.exception))
+            with self.subTest(call=name):
+                with self.assertRaises(audit.GhError) as ctx:
+                    call()
+                self.assertIn("failed (FAKE_GH_FAIL)", str(ctx.exception))
 
     def test_errors_returned_with_exit_zero_raise_quoting_the_message(self):
         self.use(self.state, FAKE_GH_GRAPHQL_ERRORS=1)
         for name, call in self.calls()[1:]:
-            with self.subTest(call=name), self.assertRaises(audit.GhError) as ctx:
-                call()
-            self.assertIn("Resource not accessible by integration", str(ctx.exception))
+            with self.subTest(call=name):
+                with self.assertRaises(audit.GhError) as ctx:
+                    call()
+                self.assertIn("Resource not accessible by integration", str(ctx.exception))
 
     def test_a_missing_repository_raises(self):
         self.use(gh_state(repos={}))
