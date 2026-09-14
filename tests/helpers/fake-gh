@@ -30,7 +30,10 @@
 #        "compare": {"feat/x": "AHEAD"},
 #        "prs": [{"number", "title", "url", "head", "head_repo" (null: fork
 #                 deleted), "state" (OPEN|MERGED|CLOSED), "draft",
-#                 "updated_at", "author" (null, or {"login", "__typename"})}]}}}
+#                 "updated_at", "author" (null, or {"login", "__typename"})}],
+#        "collaborators": ["example-user"]}}}
+#                                      (optional: logins that collaborate on
+#                                      this repository without owning it)
 #
 # What it answers:
 #
@@ -69,7 +72,16 @@
 #   no error); the unknown-repository NOT_FOUND wording; the variable-coercion
 #   error body beyond its message; the invalid-cursor error; the
 #   FAKE_GH_GRAPHQL_ERRORS error entry; how pages of `user/orgs` are separated
-#   (nothing -- the strictest reading of "each page is a separate JSON array").
+#   (nothing -- the strictest reading of "each page is a separate JSON array");
+#   and collaborator repositories. `repositoryOwner(login:).repositories`
+#   without `ownerAffiliations` also returns the repositories the login
+#   collaborates on (GitHub's documented default is [OWNER, COLLABORATOR]);
+#   a live audit saw 10 of 45 such repositories for one user, but no response
+#   was captured. Here a repository listing the login in `collaborators` is
+#   returned under that login unless the query passes
+#   `ownerAffiliations: [OWNER]`, and its `nameWithOwner` is still its real
+#   owner's. `ownerAffiliations` accepts OWNER and COLLABORATOR; any other
+#   value is refused.
 #
 # Switches. A fake that can only succeed can only prove the happy path, so each
 # of these exists to make one failure reachable from a test:
@@ -638,26 +650,48 @@ def query_root(state: dict) -> dict:
     if not isinstance(repos, dict):
         refuse("state: 'repos' must be an object keyed by owner/name")
 
+    def collaborators(repo: dict) -> list[str]:
+        logins = repo.get("collaborators", [])
+        if not isinstance(logins, list) or not all(isinstance(c, str) for c in logins):
+            refuse("state: a repository's 'collaborators' must be a list of logins")
+        return logins
+
     def repository_owner(args):
         login = str(args.get("login"))
-        known = [state.get("user")] + list(state.get("orgs", [])) + [k.split("/")[0] for k in repos]
+        known = (
+            [state.get("user")]
+            + list(state.get("orgs", []))
+            + [k.split("/")[0] for k in repos]
+            + [c for repo in repos.values() for c in collaborators(repo)]
+        )
         canonical = next(
             (k for k in known if isinstance(k, str) and k.lower() == login.lower()), None
         )
         if canonical is None:
             return None
-        owned = [
-            (key, repo)
-            for key, repo in sorted(repos.items())
-            if key.split("/")[0].lower() == login.lower()
-        ]
+
+        def affiliation(key: str, repo: dict) -> str | None:
+            if key.split("/")[0].lower() == login.lower():
+                return "OWNER"
+            if any(c.lower() == login.lower() for c in collaborators(repo)):
+                return "COLLABORATOR"
+            return None
 
         def repositories(conn_args):
             archived = conn_args.get("isArchived")
+            wanted = conn_args.get("ownerAffiliations")
+            if wanted is None:
+                wanted = ["OWNER", "COLLABORATOR"]
+            elif isinstance(wanted, str):
+                wanted = [wanted]
+            unknown = sorted(set(wanted) - {"OWNER", "COLLABORATOR"})
+            if unknown:
+                refuse(f"graphql: ownerAffiliations {unknown} are not faked")
             kept = [
                 repository_object(key, repo)
-                for key, repo in owned
-                if archived is None or bool(repo.get("archived", False)) == archived
+                for key, repo in sorted(repos.items())
+                if affiliation(key, repo) in wanted
+                and (archived is None or bool(repo.get("archived", False)) == archived)
             ]
             return connection(kept, conn_args, f"repositories:{canonical}")
 

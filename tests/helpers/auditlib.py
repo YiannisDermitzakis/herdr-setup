@@ -148,7 +148,16 @@ def gh_pr(number: int, head: str, *, state: str = "OPEN", repo: str = REPO_SLUG,
 
 def gh_repo(**values) -> dict:
     """One repository in fake-gh's state. `values` overrides any key."""
-    record = {"default": "main", "archived": False, "refs": {}, "compare": {}, "prs": []}
+    record = {
+        "default": "main",
+        "archived": False,
+        "refs": {},
+        "compare": {},
+        "prs": [],
+        # Logins that collaborate on this repository without owning it: a
+        # construction (see tests/helpers/fake-gh's header).
+        "collaborators": [],
+    }
     for key in values:
         if key not in record:
             raise KeyError(f"{key!r} is not a repository key fake-gh reads")

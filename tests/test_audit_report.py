@@ -802,6 +802,17 @@ class TestRun(unittest.TestCase):
         self.assertIn("deps/x", prs)
         self.assertIn("0 bot PRs hidden", out)
 
+    def test_an_open_pull_request_two_owners_both_list_is_reported_once(self):
+        # The open_prs stage answers the same pull requests for both owners,
+        # as GitHub did for a repository one owner owns and the other
+        # collaborates on: section 3 lists each (repository, number) once.
+        _, out, _, calls = self.run_audit(["--json", "--include-bots"])
+        self.assertEqual(calls.count("open_prs"), 2)
+        rows = json.loads(out)["unmatched_prs"]
+        keys = [(row["repo"].lower(), row["number"]) for row in rows]
+        self.assertTrue(keys)
+        self.assertEqual(len(keys), len(set(keys)), keys)
+
     def test_without_flags_the_defaults_reach_them(self):
         _, out, _, _ = self.run_audit([])
         self.assertEqual(self.received["owners"], [(([],), {})])

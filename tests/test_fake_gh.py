@@ -360,6 +360,40 @@ class TestQuerySemantics(FakeGhCase):
         names = [n["name"] for n in both["data"]["repositoryOwner"]["repositories"]["nodes"]]
         self.assertEqual(names, ["example-repo-1", "example-repo-2"])
 
+    def test_collaborator_repositories_are_returned_only_without_the_owner_filter(self):
+        repos = {
+            "example-org/example-repo": repo(collaborators=["example-user"]),
+            "example-user/example-repo-1": repo(),
+        }
+        self.write_state({"user": "example-user", "orgs": ["example-org"], "repos": repos})
+        selecting = OWNER_QUERY.replace("        name\n", "        name nameWithOwner\n")
+        self.assertNotEqual(selecting, OWNER_QUERY)
+
+        def listed(query: str, login: str) -> list[str]:
+            answer = self.ok_json(self.graphql(query, raw=[f"login={login}"]))
+            nodes = answer["data"]["repositoryOwner"]["repositories"]["nodes"]
+            return [node["nameWithOwner"] for node in nodes]
+
+        def affiliated(values: str) -> str:
+            return selecting.replace(
+                "isArchived: false,", f"isArchived: false, ownerAffiliations: {values},"
+            )
+
+        self.assertEqual(
+            listed(selecting, "example-user"),
+            ["example-org/example-repo", "example-user/example-repo-1"],
+        )
+        self.assertEqual(
+            listed(affiliated("[OWNER]"), "example-user"), ["example-user/example-repo-1"]
+        )
+        self.assertEqual(
+            listed(affiliated("[COLLABORATOR]"), "example-user"), ["example-org/example-repo"]
+        )
+        self.assertEqual(listed(affiliated("[OWNER]"), "example-org"), ["example-org/example-repo"])
+        refused = self.graphql(affiliated("[ORGANIZATION_MEMBER]"), raw=["login=example-user"])
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("ownerAffiliations", refused.stderr)
+
     def test_pull_request_states_and_head_filters_are_honoured(self):
         prs = [
             pr(1, "feat/x", state="OPEN"),

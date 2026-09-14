@@ -115,18 +115,22 @@ COMPARE_STATUSES = ("AHEAD", "BEHIND", "DIVERGED", "IDENTICAL")
 # builds and compares the answer with the capture of the same operation in
 # tests/fixtures/gh/.
 #
-# One addition to the spec's selection, a named construction: the nested
-# `pullRequests` connection also selects `pageInfo { hasNextPage endCursor }`.
-# Without it a repository with more than 100 open pull requests cannot be told
+# Two additions to the spec's selection, each a named construction. The nested
+# `pullRequests` connection also selects `pageInfo { hasNextPage endCursor }`:
+# without it a repository with more than 100 open pull requests cannot be told
 # from one with exactly 100, and the spec's own HsRepoOpenPullRequests
-# follow-up could never be triggered.
+# follow-up could never be triggered. And `repositories` passes
+# `ownerAffiliations: [OWNER]` and selects `nameWithOwner`: GitHub's default
+# also lists the repositories a user collaborates on, which a live audit found
+# named `<user>/<name>` and listed twice
+# (docs/superpowers/specs/2026-09-14-audit-live-host-findings-design.md).
 QUERY_OWNER_PULL_REQUESTS = """
 query HsOwnerPullRequests($login: String!, $after: String) {
   repositoryOwner(login: $login) {
-    repositories(first: 50, isArchived: false, after: $after) {
+    repositories(first: 50, isArchived: false, ownerAffiliations: [OWNER], after: $after) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        name
+        name nameWithOwner
         pullRequests(states: OPEN, first: 100) {
           pageInfo { hasNextPage endCursor }
           nodes {
@@ -487,15 +491,18 @@ def _open_pr(repo: str, node: dict, label: str) -> dict:
 
 
 def open_prs(login: str) -> list[dict]:
-    """Every open pull request in the non-archived repositories of `login`.
+    """Every open pull request in the non-archived repositories `login` owns.
 
     Pages the owner's repositories 50 at a time, and any repository whose
     open pull requests do not fit in the first 100 through
     HsRepoOpenPullRequests. An owner GitHub does not know raises, naming it.
 
-    Each record's `repo` is `<login>/<name>` with the login spelled as given,
-    so a caller matching it against a remote's slug compares ignoring case,
-    as GitHub does.
+    Owned repositories only: without `ownerAffiliations: [OWNER]` GitHub also
+    lists the repositories a user collaborates on, which a live audit found
+    listed under the wrong owner and twice. Each record's `repo` is the
+    repository's own `nameWithOwner`, never `<login>/<name>`, and a follow-up
+    page is asked by that owner and name. A caller matching `repo` against a
+    remote's slug still compares ignoring case, as GitHub does.
     """
     label = f"gh api graphql HsOwnerPullRequests {login}"
     records: list[dict] = []
@@ -513,17 +520,19 @@ def open_prs(login: str) -> list[dict]:
             owner.get("repositories") if isinstance(owner, dict) else None, label
         )
         for repository in repositories:
-            name = repository.get("name") if isinstance(repository, dict) else None
-            if not isinstance(name, str) or not name:
-                raise GhError(f"{label}: a repository carries no readable name")
+            full = repository.get("nameWithOwner") if isinstance(repository, dict) else None
+            parts = full.split("/") if isinstance(full, str) else []
+            if len(parts) != 2 or not all(parts):
+                raise GhError(f"{label}: a repository carries no readable nameWithOwner")
+            repo_owner, name = parts
             nodes, more_prs, prs_cursor = _connection(repository.get("pullRequests"), label)
             nodes = list(nodes)
             while more_prs:
-                page_label = f"gh api graphql HsRepoOpenPullRequests {login}/{name}"
+                page_label = f"gh api graphql HsRepoOpenPullRequests {full}"
                 page = graphql(
                     "HsRepoOpenPullRequests",
                     QUERY_REPO_OPEN_PULL_REQUESTS,
-                    {"owner": login, "name": name, "after": prs_cursor},
+                    {"owner": repo_owner, "name": name, "after": prs_cursor},
                 )
                 found = page.get("repository")
                 if not isinstance(found, dict):
@@ -535,12 +544,31 @@ def open_prs(login: str) -> list[dict]:
                 if more_prs and prs_cursor == previous:
                     raise GhError(f"{page_label}: pagination did not advance")
                 nodes.extend(more_nodes)
-            records.extend(_open_pr(f"{login}/{name}", node, label) for node in nodes)
+            records.extend(_open_pr(full, node, label) for node in nodes)
         if not more_repositories:
             return records
         if repositories_cursor == after:
             raise GhError(f"{label}: pagination did not advance")
         after = repositories_cursor
+
+
+def open_prs_for(owner_list: list[str]) -> list[dict]:
+    """Every owner's open pull requests, each (repository, number) once, in owner order.
+
+    A safety net across owners. open_prs asks for owned repositories only,
+    which already keeps one repository from appearing under two logins;
+    nothing here relies on GitHub never doing so. The repository compares
+    ignoring case, as GitHub's names do.
+    """
+    records: list[dict] = []
+    seen: set[tuple[str, int]] = set()
+    for login in owner_list:
+        for record in open_prs(login):
+            key = (record["repo"].lower(), record["number"])
+            if key not in seen:
+                seen.add(key)
+                records.append(record)
+    return records
 
 
 @dataclass(frozen=True)
@@ -1791,7 +1819,7 @@ def run(args, *, out, err, now=_now) -> int:
         gathered = gather_sessions(adapters, args.since, include_sdk=args.include_sdk, warn=say)
         joined = join(pane_list, adapters, gathered, failed_probes=failed_probes)
         resolutions = resolve_branches(resolution_entries(joined, gathered))
-        prs = [pr for login in owner_list for pr in open_prs(login)]
+        prs = open_prs_for(owner_list)
     except (AuditError, feed.HerdrError) as exc:
         say(str(exc))
         return 2
