@@ -20,17 +20,14 @@ tasks:
   - id: P4.T1.S1
     text: |
       RED. tests/test_audit_join.py with the fake herdr (captured agent-list
-      and tab-list fixtures), inline shell adapters declaring sessions, and
-      fake fr:
+      and tab-list fixtures) and inline shell adapters declaring sessions:
       - panes() returns pane_id, agent, session value (None when absent),
         cwd, tab label; a failing herdr call raises HerdrError;
       - gather_sessions() asks only adapters declaring sessions, passes
         --since and --include-sdk, and records a failing adapter as an
         incomplete reason naming it;
-      - a pane cwd inside an fr worktree adds a worktree-path branch;
-      - fr bindings add fr-binding branches by session id, called once per
-        main checkout; FAKE_FR_FAIL=1 or fr absent (inject the lookup) is a
-        warning only;
+      - a pane cwd inside an fr worktree adds a worktree-path branch, and no
+        test or code path runs `fr`;
       - each section 1 note: no branch evidence; session not reported to
         Herdr; session not found in history (outside --since, or
         SDK-driven); no session history (unsupported); no adapter.
@@ -82,7 +79,7 @@ tasks:
     text: |
       RED. Extend tests/test_audit_entrypoint.sh (sandbox checkout with the
       real adapters, a CLAUDE_CONFIG_DIR and CODEX_HOME store built from the
-      fixtures, make_repo-style git repos, fake gh state, fake fr):
+      fixtures, make_repo-style git repos, fake gh state):
       - findings present -> exit 1, all three section headings on stdout;
       - a clean state -> exit 0;
       - FAKE_GH_FAIL="api graphql" -> exit 2, one stderr line, no section

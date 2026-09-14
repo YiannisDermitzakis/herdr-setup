@@ -69,3 +69,13 @@ Phase 2 re-review: once seen_at became strict, an uncounted drop would turn a fo
 ### d-spec-entrypoint-first-wins · decision · A transcript's first entrypoint decides the SDK skip
 
 Phase 2 re-review: a resumed session can carry a later, different entrypoint; the first records how the session began, and reading only to it keeps the skip cheap.
+
+<!-- fr:journal kind=decision scope=spec id=d-drop-fr-enrichment created=2026-09-14T11:13:08 -->
+### d-drop-fr-enrichment · decision · The audit does not call fr; the fake fr is removed
+
+Operator decision before phase 4, replacing an earlier choice to keep a fake fr. The optional fr isolation status source and its fr-binding evidence are out of scope, so the fake fr, its test and its switches were removed and the test guard covers herdr and gh only. Worktree-path evidence stays: it is text matching on worktree paths, with no fr command involved. herdr-setup is a public Herdr tool, and a runtime dependency on the operator's own workflow CLI did not belong in it.
+
+<!-- fr:journal kind=decision scope=spec id=d-keep-json-output created=2026-09-14T11:13:45 -->
+### d-keep-json-output · decision · Phase 4 keeps --json output
+
+Operator decision before phase 4, when --json and the fr enrichment were offered as the optional parts of its scope: --json stays, the fr enrichment goes.

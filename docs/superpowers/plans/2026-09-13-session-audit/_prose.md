@@ -9,8 +9,8 @@ Four phases, each depending on the one before it.
    against.
 2. **The adapter `sessions` query.** First the contract and its runner-side
    validation, then Claude Code, then Codex.
-3. **The audit runner's evidence machinery.** A fake `gh` and a fake `fr` that
-   can fail, the GitHub layer, the git layer, and merge state.
+3. **The audit runner's evidence machinery.** A fake `gh` that can fail, the
+   GitHub layer, the git layer, and merge state.
 4. **The report.** The three sections, text and JSON, exit codes, an end-to-end
    run through the entrypoint, the documentation, and the acceptance matrix.
 
@@ -67,9 +67,8 @@ it.
 
 ## Testing without GitHub, Herdr or a real home
 
-`tests/helpers/` gains a fake `gh` and a fake `fr` beside the fake `herdr`, so
-every one of the three commands the audit calls resolves to a stand-in in
-every test. Each fake can fail in the ways its real counterpart fails. Their
+`tests/helpers/` gains a fake `gh` beside the fake `herdr`, so both commands
+the audit calls resolve to a stand-in in every test. Each fake can fail in the ways its real counterpart fails. Their
 response shapes are pinned to captures taken in phase 1, because a fixture
 built from a guess agrees with whatever code was written from the same guess.
 Merge state is tested against real git repositories built in temporary

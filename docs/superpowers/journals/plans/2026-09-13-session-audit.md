@@ -640,3 +640,63 @@ p3-green-t4s2 said Resolution.sources made mapping a session back to its key a d
 ### p3r-fake-fr-removed · discovery · fake fr removed: the fr enrichment was dropped from scope by the operator (phase 3)
 
 Removed tests/helpers/fake-fr, the tests/helpers/fr symlink and tests/test_fake_fr.py (git rm); FAKE_FR_STATUS and FAKE_FR_FAIL from tests/run.sh env -u and feedlib.LEAKY_VARS, and the FAKE_FR_ names from tests/test_fake_gh.py s switch test; fake-fr from pyproject ruff extend-include; fr from feedlib.require_fakes, the tests/run.sh preflight and the tests/helpers/assert.sh check (herdr and gh only); the fake fr copy from tests/test_harness.sh; fr wording from lib/common.sh s hs_audit comment and lib/audit.py s docstring. lib/audit.py and auditlib had no fr code. Worktree-path evidence is untouched. grep -rn fake-fr/FAKE_FR_ over tests lib pyproject.toml finds nothing.
+
+<!-- fr:journal kind=finding scope=plan id=f3-missing-default-ref-aborts created=2026-09-14T11:11:23 phase=3 state=fixed -->
+### f3-missing-default-ref-aborts · finding [fixed] · A missing local default ref aborted the whole audit (phase 3)
+
+is_ancestor fell back to refs/heads/<default> without checking it existed, so a pre-rename, single-branch or fork clone made merge-base exit 128 and the run exit 2. The branch is now unresolved with the reason recorded; a GitError remains only for git failing on refs that exist.
+
+<!-- fr:journal kind=finding scope=plan id=f3-remote-name-inconsistent created=2026-09-14T11:11:30 phase=3 state=fixed -->
+### f3-remote-name-inconsistent · finding [fixed] · Slug and ancestry used different remotes (phase 3)
+
+The slug came from origin-else-the-sole-remote while ancestry was hard-coded to origin, so a repo whose only remote is upstream over-reported or crashed. The chosen remote is carried on Repo and used everywhere; the spec names the chosen remote.
+
+<!-- fr:journal kind=finding scope=plan id=f3-fakes-guard-not-central created=2026-09-14T11:11:38 phase=3 state=fixed -->
+### f3-fakes-guard-not-central · finding [fixed] · The guard against reaching real tools lived in one helper only (phase 3)
+
+require_fakes now runs inside feedlib.isolate_environment, tests/run.sh refuses to start unless herdr and gh resolve to the fakes, and the sourced shell helper checks the same, so a test run on its own is protected too. fr is no longer covered because the audit no longer calls it.
+
+<!-- fr:journal kind=finding scope=plan id=f3-repo-state-misses-refs created=2026-09-14T11:11:46 phase=3 state=fixed -->
+### f3-repo-state-misses-refs · finding [fixed] · run.sh's repo-state check could not see a branch or worktree created elsewhere (phase 3)
+
+The fingerprint now includes for-each-ref and worktree list, the exact footprint the real-fr incident left.
+
+<!-- fr:journal kind=finding scope=plan id=f3-pr-page-truncation created=2026-09-14T11:11:54 phase=3 state=fixed -->
+### f3-pr-page-truncation · finding [fixed] · Per-branch pull requests were capped at 20 with no pageInfo (phase 3)
+
+A branch name shared by more than 20 open or merged PRs could push the repository's own merged PR off the page. The per-branch list now selects pageInfo and is paged until the repository's own head is found, so no decision is made on a truncated list.
+
+<!-- fr:journal kind=finding scope=plan id=f3-remote-url-shapes created=2026-09-14T11:12:01 phase=3 state=fixed -->
+### f3-remote-url-shapes · finding [fixed] · Some GitHub remote URL shapes gave no slug (phase 3)
+
+ssh://github.com/o/r, github.com:o/r, any user before @, an uppercase host and trailing-slash forms now resolve. SSH host aliases cannot be recognised without reading ssh config and are a stated known limit (ancestry only).
+
+<!-- fr:journal kind=finding scope=plan id=f3-toplevel-failure-rule created=2026-09-14T11:12:12 phase=3 state=fixed -->
+### f3-toplevel-failure-rule · finding [fixed] · Any git failure in _toplevel read as not a work tree (phase 3)
+
+A missing directory or git's not-a-repository answer is not a work tree; any other failure in an existing directory, such as a safe.directory refusal, is a GitError and exit 2, as the spec's rule says.
+
+<!-- fr:journal kind=finding scope=plan id=f3-fake-gh-details created=2026-09-14T11:12:22 phase=3 state=fixed -->
+### f3-fake-gh-details · finding [fixed] · Fake gh diverged from gh in small ways (phase 3)
+
+-F inference uses ASCII digits only, the mutation tripwire is checked before FAKE_GH_FAIL, the exit-0-with-errors switch is named a construction in the header, and the fixtures README no longer says a later phase.
+
+<!-- fr:journal kind=finding scope=plan id=f3-auth-status-active created=2026-09-14T11:12:42 phase=3 state=fixed -->
+### f3-auth-status-active · finding [fixed] · gh auth status could fail on a stale inactive account (phase 3)
+
+Checked against the host's gh --help; the preflight uses --active when gh supports it, so an inactive second account does not fail it. The fake and spec follow.
+
+<!-- fr:journal kind=finding scope=plan id=f3-sources-index created=2026-09-14T11:12:55 phase=3 state=fixed -->
+### f3-sources-index · finding [fixed] · Resolution back-mapping was a scan, not an index (phase 3)
+
+A {(name, dir, cwd): key} index is exposed alongside the resolutions with Path and str normalised, so phase 4 looks sessions up directly; the journal's earlier wording was corrected.
+
+<!-- fr:journal kind=decision scope=plan id=d-opus-for-development created=2026-09-14T11:13:20 -->
+### d-opus-for-development · decision · Phase executors run on Opus
+
+Operator decision after phase 3, overriding d-tier-models for development: every remaining phase executor is dispatched on Opus, regardless of its tier, because executor-quality defects were driving extra review rounds.
+
+<!-- fr:journal kind=decision scope=plan id=d-review-fix-all-no-rereview created=2026-09-14T11:13:33 -->
+### d-review-fix-all-no-rereview · decision · Every review finding is fixed, and fixes are not re-reviewed
+
+Operator decision after phase 3, prompted by review and fix rounds costing as much wall time as development: each phase gets one review, every finding including Minor is fixed with tests, and there is no re-review of the fixes. The orchestrator verifies the fix round with its own gate run and spot checks.

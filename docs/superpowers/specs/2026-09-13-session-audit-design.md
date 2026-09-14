@@ -402,7 +402,7 @@ No `sessions` key in `probe`. Unchanged otherwise.
 
 `lib/audit.py`, a PEP 723 script reached through a new door, `hs_audit` in
 `lib/common.sh`, beside `hs_feed`. Like `feed.py` it is its own program: it
-spawns adapters, `git`, `gh` and `fr`, which none of `hs.py`'s batched helpers
+spawns adapters, `git` and `gh`, which none of `hs.py`'s batched helpers
 do. It imports `lib/feed.py` from its own directory, so discovery, probing,
 probe validation, `herdr_json` and the agent-list reader have one
 implementation.
@@ -419,13 +419,9 @@ implementation.
 3. **Pane directories.** A pane whose own `cwd` is an fr worktree path gets that
    branch, by the same `worktree-path` rule. This is how an unsupported agent's
    pane still shows what it works on.
-4. **fr bindings.** An optional enrichment, used only when `fr` is on `PATH`.
-   For each distinct main checkout among the resolved directories, the runner
-   runs `fr isolation status --format json --repo <main-checkout>`. Each
-   `sessions[].session_id` bound to a workspace adds that workspace's `branch`,
-   with `worktree` as `dir` and evidence `fr-binding`. The match is by session
-   id, whatever the agent. A failing or unreadable `fr` is a warning and nothing
-   more: the bindings are traceability, not the audit's evidence.
+
+The audit never runs `fr`. Worktree-path evidence is text matching on a path,
+not a call to the tool that made it.
 
 ### Resolving a branch
 
@@ -620,12 +616,8 @@ and only `audit` needs it.
     - `FAKE_GH_LOG`: logs argv.
   - **Capture checks.** Its response shapes are checked against sanitised
     captures in `tests/fixtures/gh/`.
-- **A fake `fr`** lives at `tests/helpers/fake-fr`, with an `fr` symlink. It
-  answers `isolation status --format json` from `FAKE_FR_STATUS` and fails on
-  `FAKE_FR_FAIL=1`. The case where `fr` is absent is tested by injecting the
-  lookup.
 - **Environment.** `tests/run.sh` and `feedlib.LEAKY_VARS` clear the new
-  `FAKE_GH_*` and `FAKE_FR_*` variables.
+  `FAKE_GH_*` variables.
 - **Adapter `sessions`** is tested against fixture stores built in temporary
   directories, from sanitised captured line shapes
   (`tests/fixtures/claude/transcript.jsonl`, the Codex `session-meta` files).
@@ -662,7 +654,6 @@ and only `audit` needs it.
   - section 2 exclusions and `+N`;
   - section 3 matching (base and head repository), with bots hidden and shown,
     and drafts labelled;
-  - fr enrichment and fr failure;
   - JSON shape;
   - each exit status: incomplete, `gh` failure, git failure, Herdr failure
     after the preflight;
@@ -734,9 +725,9 @@ Claude Code and Codex panes, where the 2026-09-12 hand audit was done.
 | Branch names go in GraphQL variables with `-f` | Interpolation is injection-shaped. `-F` type-infers, and would turn a branch named `123` into a number. |
 | `audit` is gated on the preflight like `feed` | It needs `herdr agent list`. The hard rule stops on an unreachable socket. |
 | A `gh` failure stops the report; an adapter failure marks it incomplete | Without `gh`, no merge state exists at all. One broken adapter should not hide the others, which is `feed`'s own policy, but the exit status still says the report is partial. |
-| fr bindings are optional enrichment | `fr` is not a prerequisite of this tool, and its bindings are traceability rather than evidence. |
+| The audit does not call `fr` | Operator decision before phase 4. herdr-setup is a public Herdr tool, so the optional `fr isolation status` source and its fake were removed. Worktree-path evidence stays, because it matches text in a path rather than calling `fr`. |
 | `worktree-path` evidence is read only from `cwd` fields and command text | Tool output such as `fr isolation status` lists every worktree on the host, and would attribute all of them to one session. |
 | SDK-driven Claude sessions are skipped by default | Most transcripts on the design host are automated observer and review runs. |
 | Codex sub-threads are skipped | They are Codex's subagent transcripts, which the Claude side skips by layout. |
-| `hs_audit` is its own door beside `hs_feed`, importing `feed.py` | `audit.py` spawns adapters, `git`, `gh` and `fr` like `feed.py` does. One discovery and probe implementation, not two. |
+| `hs_audit` is its own door beside `hs_feed`, importing `feed.py` | `audit.py` spawns adapters, `git` and `gh`, much as `feed.py` spawns adapters. One discovery and probe implementation, not two. |
 | `contained` covers a branch with no commits of its own | There is nothing on it to strand, so listing it would be noise. |
