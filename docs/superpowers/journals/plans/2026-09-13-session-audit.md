@@ -380,3 +380,103 @@ Entry 7ea4241661ab (Performance: stream transcript lines and exit early on an SD
 ### f2r-sdk-exit-timing-test · finding [fixed] · The SDK early-exit test proved its point by wall-clock time (phase 2)
 
 It bounded an adapter subprocess (uv startup included) at 2 s after 1,000,000 garbage lines, a margin already widened once: a slow CI runner fails it with no bug. Replaced by the orchestrator with a count: derive_session is called on the loaded adapter with read_transcript_lines wrapped in a counter; an SDK transcript of 50 lines must consume exactly 1, and a control with --include-sdk must consume all 50, so a counter that never counted cannot pass. Mutation (the skip deferred to after the loop, the pre-fix behaviour): the test fails with 50 != 1 while the control passes.
+
+<!-- fr:journal kind=finding scope=plan id=f2-multiline-command-evidence created=2026-09-14T06:38:33 phase=2 state=fixed -->
+### f2-multiline-command-evidence · finding [fixed] · Multi-line Bash commands lost all command evidence (phase 2)
+
+shlex treats a newline as whitespace, so every line fused into one segment and a leading cd swallowed the rest. Commands are now split per line (backslash continuations joined) with the current directory carried across lines.
+
+<!-- fr:journal kind=finding scope=plan id=f2-sessions-dropped-count created=2026-09-14T06:38:35 phase=2 state=fixed -->
+### f2-sessions-dropped-count · finding [fixed] · sessions() discarded the dropped count (phase 2)
+
+An adapter whose every entry was malformed returned an empty list, which the contract says must mean no sessions. sessions() now returns the count, warns naming the adapter, and raises AdapterError when entries were dropped and none survived.
+
+<!-- fr:journal kind=finding scope=plan id=f2-tilde-untested created=2026-09-14T06:38:37 phase=2 state=fixed -->
+### f2-tilde-untested · finding [fixed] · Tilde expansion was untested (phase 2)
+
+cd ~/x and git -C ~/x cases added; a never-expand mutation now fails.
+
+<!-- fr:journal kind=finding scope=plan id=f2-relative-to-line-cwd created=2026-09-14T06:38:38 phase=2 state=fixed -->
+### f2-relative-to-line-cwd · finding [fixed] · Relative paths resolved against the line's cwd, not the current cd (phase 2)
+
+Every relative path now resolves against the latest cd in the command, else the line's cwd. The spec and docs/adapters.md were corrected to say so.
+
+<!-- fr:journal kind=finding scope=plan id=f2-timestamps-unnormalised created=2026-09-14T06:38:40 phase=2 state=fixed -->
+### f2-timestamps-unnormalised · finding [fixed] · Timestamps were neither validated nor normalised (phase 2)
+
+Adapters emit second-precision UTC with Z; parse_sessions drops and counts any other form, so runner-side comparisons across adapters are exact.
+
+<!-- fr:journal kind=finding scope=plan id=f2-command-parsing-gaps created=2026-09-14T06:38:42 phase=2 state=fixed -->
+### f2-command-parsing-gaps · finding [fixed] · Several command shapes produced noise or were missed (phase 2)
+
+push flags before the remote, a refs/heads/ source, worktree add --reason values, checkout -q, git -c k=v, subshell parentheses, cd -, ~/.cache/fr paths and a slug followed by shell punctuation are all handled and tested.
+
+<!-- fr:journal kind=finding scope=plan id=f2-filter-accepts-git-invalid created=2026-09-14T06:38:43 phase=2 state=fixed -->
+### f2-filter-accepts-git-invalid · finding [fixed] · The name filter accepted @ and a component ending in .lock (phase 2)
+
+All three copies tightened to match git's ref rules; the agreement tests and the spec wording follow.
+
+<!-- fr:journal kind=finding scope=plan id=f2-conformance-store-and-mtime created=2026-09-14T06:38:45 phase=2 state=fixed -->
+### f2-conformance-store-and-mtime · finding [fixed] · Conformance empty-store case equalled the empty home; mtime fallback untested (phase 2)
+
+The Claude empty-store case now creates an empty projects/<slug>/, and a transcript without timestamps proves the mtime fallback.
+
+<!-- fr:journal kind=finding scope=plan id=f2-stale-docstring-ref created=2026-09-14T06:38:47 phase=2 state=fixed -->
+### f2-stale-docstring-ref · finding [fixed] · A docstring pointed at the wrong test file (phase 2)
+
+lib/feed.py now names the real agreement tests.
+
+<!-- fr:journal kind=finding scope=plan id=f2-missing-refactor-notes created=2026-09-14T06:38:48 phase=2 state=fixed -->
+### f2-missing-refactor-notes · finding [fixed] · Refactor steps T1-T4 left no record (phase 2)
+
+Honest refactor or no-refactor-because notes journalled for each, including whether the extractors were table-driven.
+
+<!-- fr:journal kind=finding scope=plan id=f2-transcripts-read-whole created=2026-09-14T06:38:50 phase=2 state=fixed -->
+### f2-transcripts-read-whole · finding [fixed] · Transcripts were read whole and SDK ones fully parsed before being skipped (phase 2)
+
+A real 30-day window (837 transcripts, 805 MB) took 20 s at 270 MB peak memory. Lines are now streamed from an open file and the SDK decision is taken at the first entrypoint-bearing line.
+
+<!-- fr:journal kind=finding scope=plan id=f2-acceptance-levels-empty created=2026-09-14T06:38:51 phase=2 state=fixed -->
+### f2-acceptance-levels-empty · finding [fixed] · adapter-sessions-query cited its tests only in notes (phase 2)
+
+levels.unit now names the four test files; status stays not-implemented until phase 4 reports unsupported agents.
+
+<!-- fr:journal kind=finding scope=plan id=f2r-dropped-branches-uncounted created=2026-09-14T06:38:58 phase=2 state=fixed -->
+### f2r-dropped-branches-uncounted · finding [fixed] · Dropped branches were not counted, so bad seen_at values erased evidence silently (phase 2)
+
+parse_sessions counted dropped sessions only. An adapter emitting a non-conforming seen_at lost every branch and the audit could exit 0 as clean. Both counts are now returned and warned by adapter name; the spec and docs Failing rules agree.
+
+<!-- fr:journal kind=finding scope=plan id=f2r-timestamp-overflow created=2026-09-14T06:39:00 phase=2 state=fixed -->
+### f2r-timestamp-overflow · finding [fixed] · An out-of-range offset crashed the whole sessions query (phase 2)
+
+normalize_timestamp caught only TypeError and ValueError; astimezone raises OverflowError. Caught, and the naive-is-UTC and date-only-is-not-a-timestamp rules are now stated and tested.
+
+<!-- fr:journal kind=finding scope=plan id=f2r-push-delete-false-positive created=2026-09-14T06:39:01 phase=2 state=fixed -->
+### f2r-push-delete-false-positive · finding [fixed] · git push -u origin --delete <b> reported the deleted branch (phase 2)
+
+Option skipping made the refspec after --delete visible. A push carrying --delete or -d yields nothing, and the option-value skip list is tested.
+
+<!-- fr:journal kind=finding scope=plan id=f2r-heredoc-and-subshell-cd created=2026-09-14T06:39:03 phase=2 state=fixed -->
+### f2r-heredoc-and-subshell-cd · finding [fixed] · Per-line splitting parsed heredoc bodies and leaked cd out of subshells (phase 2)
+
+Heredoc bodies are skipped up to their terminator, and a cd inside parentheses is scoped to them.
+
+<!-- fr:journal kind=finding scope=plan id=f2r-parsing-gaps-round2 created=2026-09-14T06:39:05 phase=2 state=fixed -->
+### f2r-parsing-gaps-round2 · finding [fixed] · git global options, & as a separator, > after a slug, and $HOME worktree paths (phase 2)
+
+--no-pager, -P and --work-tree are handled, a single & splits segments, the slug excludes < and >, and $HOME/${HOME} worktree paths are matched.
+
+<!-- fr:journal kind=finding scope=plan id=f2r-test-gaps-round2 created=2026-09-14T06:39:06 phase=2 state=fixed -->
+### f2r-test-gaps-round2 · finding [fixed] · Surviving mutations: relative paths after cd, mtime fallback, cross-block cd, SDK early exit (phase 2)
+
+Each now has a test that a mutation of the behaviour fails.
+
+<!-- fr:journal kind=finding scope=plan id=f2r-entrypoint-first-wins created=2026-09-14T06:39:08 phase=2 state=fixed -->
+### f2r-entrypoint-first-wins · finding [fixed] · The mid-file entrypoint rule silently reversed to first-wins (phase 2)
+
+First-wins is kept, because it records how the session started; the rule is stated in the spec and docs and tested in both orders.
+
+<!-- fr:journal kind=finding scope=plan id=f2r-journal-count-nit created=2026-09-14T06:39:10 phase=2 state=fixed -->
+### f2r-journal-count-nit · finding [fixed] · A journal note misstated a test count (phase 2)
+
+Corrected by an appended discovery; the original entry is left as written.

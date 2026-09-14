@@ -39,3 +39,33 @@ Q&A answer: mkdir -p counts as adding, so it is allowed; install says it created
 ### r-spec-review-1 · review · Spec review against Q&A answers and codebase reality
 
 Checked every named helper and shape: hs_resolve_root (entrypoint), feed.herdr_json/_agent_entries/validate_probe, feedlib.LEAKY_VARS, tests/run.sh env clearing, test_public_hygiene.sh, herdr tab list (result.tabs[].label/tab_id), fr isolation status --format json (list of {repo, branch, worktree, sessions[].session_id}), GraphQL repositoryOwner.repositories(isArchived:false), pullRequests(headRefName, states), Ref.compare (partial data + NOT_FOUND + gh exit 1 on a missing ref, captured). All four Q&A answers are encoded. Fixed: (1) gh auth status now scoped to --hostname github.com, since a stale login on another host fails the unscoped form; (2) a PR whose headRepository is null (deleted fork) is not evidence of a merge for this repo; (3) added a Documentation section -- README install/commands/exit table, and AGENTS.md's 'hs_py is the only sanctioned door' sentence, already contradicted by hs_feed, now names the doors; (4) section 1's missing-session note also covers SDK-skipped sessions; (5) testing names the contract wrong-type test for the new sessions key. Acceptance rows added: audit-reports-stranded-work, audit-merge-state-sees-squash-merges, audit-fails-closed, adapter-sessions-query, install-adds-never-overwrites.
+
+<!-- fr:journal kind=decision scope=spec id=d-spec-relative-paths-current-dir created=2026-09-14T06:38:53 -->
+### d-spec-relative-paths-current-dir · decision · Relative paths in command evidence resolve against the current directory
+
+Phase 2 review: the spec said relative paths resolve against the line's cwd, which gives the wrong directory after a cd earlier in the same command. The spec now says the latest cd in the command, else the line's cwd.
+
+<!-- fr:journal kind=decision scope=spec id=d-spec-timestamps-second-precision created=2026-09-14T06:38:55 -->
+### d-spec-timestamps-second-precision · decision · Session timestamps are second-precision UTC with Z
+
+Phase 2 review: Claude Code writes milliseconds and offsets can appear, while Codex timestamps come from mtimes. Normalising in the adapter and validating in the runner makes cross-adapter comparisons exact.
+
+<!-- fr:journal kind=decision scope=spec id=d-spec-filter-git-ref-rules created=2026-09-14T06:38:56 -->
+### d-spec-filter-git-ref-rules · decision · The branch-name filter follows git's ref rules for @ and .lock
+
+Phase 2 review: the filter accepted the single character @ and a component ending in .lock, both of which git rejects. The spec wording is tightened to match.
+
+<!-- fr:journal kind=decision scope=spec id=d-spec-naive-timestamps-utc created=2026-09-14T06:39:11 -->
+### d-spec-naive-timestamps-utc · decision · A timestamp with no zone is read as UTC; a date alone is not a timestamp
+
+Phase 2 re-review: both agents write Z, so a zoneless value is most likely UTC; a bare date carries no time and is rejected rather than invented.
+
+<!-- fr:journal kind=decision scope=spec id=d-spec-dropped-branches-counted created=2026-09-14T06:39:13 -->
+### d-spec-dropped-branches-counted · decision · Dropped branches are counted and warned, like dropped sessions
+
+Phase 2 re-review: once seen_at became strict, an uncounted drop would turn a format slip into a false clean audit.
+
+<!-- fr:journal kind=decision scope=spec id=d-spec-entrypoint-first-wins created=2026-09-14T06:39:15 -->
+### d-spec-entrypoint-first-wins · decision · A transcript's first entrypoint decides the SDK skip
+
+Phase 2 re-review: a resumed session can carry a later, different entrypoint; the first records how the session began, and reading only to it keeps the skip cheap.
