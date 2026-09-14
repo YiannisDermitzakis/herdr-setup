@@ -719,7 +719,8 @@ def sessions(
     *,
     include_sdk: bool = False,
     timeout: float = SESSIONS_TIMEOUT,
-) -> list[dict]:
+    warn=warn,
+) -> tuple[list[dict], int]:
     """Ask `adapter` for its sessions from the last `since` days.
 
     Runs `<adapter> sessions --since <since>`, adding `--include-sdk` only
@@ -727,8 +728,17 @@ def sessions(
     from a human one is allowed to ignore the flag, but this runner never
     sends it unless the caller wants it. Raises AdapterError on every way
     the call can fail: a non-zero exit, no output, output that is not JSON,
-    or a timeout. The list returned has already passed parse_sessions, so a
-    caller gets validated sessions, never a raw blob it must re-check.
+    or a timeout.
+
+    Returns `(sessions, dropped)`. The list has already passed
+    parse_sessions, so a caller gets validated sessions, never a raw blob it
+    must re-check -- but the dropped count is not silently swallowed: this
+    is the one place that knows the adapter's own name, so a non-zero count
+    is warned about by name, and if NOTHING survived, it raises rather than
+    returning `[]`. An empty `sessions` list has to mean "no sessions in the
+    window" (docs/adapters.md's own Failing rule) -- an adapter whose every
+    entry was malformed and still got `[]` back would be silently
+    indistinguishable from that.
     """
     args = [str(adapter.path), "sessions", "--since", str(since)]
     if include_sdk:
@@ -755,8 +765,13 @@ def sessions(
     except ValueError as exc:
         raise AdapterError(f"sessions printed something that is not JSON: {exc}") from exc
 
-    parsed, _dropped = parse_sessions(obj)
-    return parsed
+    parsed, dropped = parse_sessions(obj)
+    if dropped:
+        word = "entry" if dropped == 1 else "entries"
+        warn(f"adapter {adapter.name}: sessions: {dropped} malformed {word} dropped")
+        if not parsed:
+            raise AdapterError(f"sessions: every entry was malformed ({dropped} dropped)")
+    return parsed, dropped
 
 
 # --------------------------------------------------------------------------

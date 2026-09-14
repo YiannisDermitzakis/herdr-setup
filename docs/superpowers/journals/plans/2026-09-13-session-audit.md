@@ -264,3 +264,8 @@ Before adapters/claude gained newline-aware tokenising, current-dir-based relati
 ### 4be84f7e3452 · discovery · RED: branch filter accepts bare @ and a.lock component (review item 7) (phase 2)
 
 Added '@' and 'a.lock/b' to tests/helpers/feedlib.py's shared UNREAL_BRANCH_NAMES. Before tightening all three branch_name_ok copies: uv run --quiet --script tests/test_feed_sessions.py -> rc=1, 1 failure (test_every_unreal_name_is_rejected); tests/test_adapter_claude_sessions.py -> rc=1, 1 failure (test_every_unreal_name_is_rejected_by_the_adapters_own_copy); tests/test_adapter_codex_sessions.py -> rc=1, same failure. All three copies accepted the bare '@' (git's HEAD-alias shorthand) and 'a.lock/b' (a non-final component ending in .lock, which git's ref rules reject per-component, not just for the whole name).
+
+<!-- fr:journal kind=discovery scope=plan id=9e4832105f2e created=2026-09-14T04:25:40 phase=2 -->
+### 9e4832105f2e · discovery · RED: sessions() discards parse_sessions' dropped count (review item 2) (phase 2)
+
+Before sessions() returned (sessions, dropped) and warned/raised on drops: uv run --quiet --script tests/test_feed_sessions.py -> rc=1, 35 tests, 5 errors (test_it_runs_sessions_with_since_and_parses_the_answer, test_the_result_has_already_passed_parse_sessions -- both unpack a 2-tuple sessions() did not return -- plus the three new tests: test_a_dropped_entry_is_warned_about_by_name_and_count, test_no_warning_when_nothing_was_dropped, test_every_entry_malformed_raises_rather_than_returning_an_empty_list, all erroring the same way). An adapter whose every entry was malformed previously returned [] silently, indistinguishable from a genuinely empty window -- the exact ambiguity the sessions contract's Failing rule forbids.

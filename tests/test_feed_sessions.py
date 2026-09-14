@@ -251,8 +251,9 @@ class TestSessionsCall(unittest.TestCase):
             "claude",
             'echo "sessions $*" >&2\nprintf \'{"sessions":[]}\'\n',
         )
-        result = feed.sessions(adapter_for(path), 30)
+        result, dropped = feed.sessions(adapter_for(path), 30)
         self.assertEqual(result, [])
+        self.assertEqual(dropped, 0)
 
     def test_it_forwards_since_as_an_argument(self):
         log = self.dir / "log"
@@ -295,9 +296,45 @@ class TestSessionsCall(unittest.TestCase):
     def test_the_result_has_already_passed_parse_sessions(self):
         payload = json.dumps({"sessions": [GOOD_SESSION, {"id": "broken-only"}]})
         path = write_adapter(self.dir, "real", f"cat <<'JSON'\n{payload}\nJSON\n")
-        result = feed.sessions(adapter_for(path), 30)
+        result, dropped = feed.sessions(adapter_for(path), 30)
         self.assertEqual(len(result), 1, "the broken second session must already be dropped")
         self.assertEqual(result[0]["id"], GOOD_SESSION["id"])
+        self.assertEqual(dropped, 1)
+
+    def test_a_dropped_entry_is_warned_about_by_name_and_count(self):
+        """A malformed entry beside good ones must not vanish silently.
+
+        parse_sessions already tolerates and counts a broken entry; sessions()
+        is the one place that KNOWS the adapter's name, so it is the one
+        place that can say so. The sessions that did survive are still
+        returned -- a warning, not a failure.
+        """
+        payload = json.dumps({"sessions": [GOOD_SESSION, {"id": "broken-1"}, {"id": "broken-2"}]})
+        path = write_adapter(self.dir, "flaky-adapter", f"cat <<'JSON'\n{payload}\nJSON\n")
+        warnings: list[str] = []
+        result, dropped = feed.sessions(adapter_for(path), 30, warn=warnings.append)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(dropped, 2)
+        self.assertTrue(any("flaky-adapter" in w and "2" in w for w in warnings), warnings)
+
+    def test_no_warning_when_nothing_was_dropped(self):
+        payload = json.dumps({"sessions": [GOOD_SESSION]})
+        path = write_adapter(self.dir, "claude", f"cat <<'JSON'\n{payload}\nJSON\n")
+        warnings: list[str] = []
+        feed.sessions(adapter_for(path), 30, warn=warnings.append)
+        self.assertEqual(warnings, [])
+
+    def test_every_entry_malformed_raises_rather_than_returning_an_empty_list(self):
+        """An empty `sessions` list must mean 'no sessions', never 'could not read'.
+
+        If every entry parse_sessions saw was malformed, silently returning
+        `[]` would be indistinguishable from a genuinely empty window -- the
+        exact ambiguity the sessions contract's own Failing rule forbids.
+        """
+        payload = json.dumps({"sessions": [{"id": "broken-1"}, {"id": "broken-2"}]})
+        path = write_adapter(self.dir, "flaky-adapter", f"cat <<'JSON'\n{payload}\nJSON\n")
+        with self.assertRaises(feed.AdapterError):
+            feed.sessions(adapter_for(path), 30, warn=lambda _msg: None)
 
 
 if __name__ == "__main__":
