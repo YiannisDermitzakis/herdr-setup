@@ -4,12 +4,12 @@
       "pullRequests": {
         "nodes": [
           {
-            "number": 31,
+            "number": 101,
             "title": "chore(deps): bump the pinned dependency version",
-            "url": "https://github.com/example-org/example-repo/pull/31",
+            "url": "https://github.com/example-org/example-repo/pull/101",
             "headRefName": "dependabot/npm_and_yarn/example-dependency-2.0.0",
             "isDraft": false,
-            "updatedAt": "2026-08-04T06:46:21Z",
+            "updatedAt": "2026-01-01T00:00:00Z",
             "author": {
               "login": "dependabot",
               "__typename": "Bot"
@@ -19,12 +19,12 @@
             }
           },
           {
-            "number": 12,
+            "number": 102,
             "title": "Add support for a custom configuration option",
-            "url": "https://github.com/example-org/example-repo/pull/12",
+            "url": "https://github.com/example-org/example-repo/pull/102",
             "headRefName": "feat/example-branch",
             "isDraft": false,
-            "updatedAt": "2025-08-01T20:13:38Z",
+            "updatedAt": "2026-01-01T00:00:00Z",
             "author": {
               "login": "example-user",
               "__typename": "User"

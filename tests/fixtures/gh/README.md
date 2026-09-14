@@ -43,22 +43,23 @@ shape is kept and their values are replaced.").
 | `owner-pull-requests.json`'s `pageInfo.endCursor` | a real opaque pagination cursor (GitHub's own cursor encoding embeds a real repository id -- decoding it is not a hypothetical) | a synthetic cursor, the base64 encoding of the literal string `cursor:v2:placeholder`, which decodes to nothing but that placeholder text |
 | every organisation in `user-orgs.json` | the account's own real organisation logins, ids and avatar URLs | one entry, `example-org`, id `2`, and matching placeholder URLs |
 | `user.json`'s `id`, `node_id`, every `*_url`, `name`, `company`, `blog`, `location`, `public_repos`, `followers`, `following`, `created_at` | this account's real numbers and profile text | small placeholder numbers and generic text; `company`, `location`, `bio` etc. set to `null` (real values were themselves personal, not merely realistic) |
-| `open-pull-requests.json`'s two repository names, its `title`s, `headRefName`s and `url`s, and its `User` author's `login` | two real public repositories, two real pull request titles and branch names, and one real person's login | `example-org/example-repo`, neutral titles, `feat/example-branch`, placeholder urls, `example-user`. The `Bot` author's login, `dependabot`, is kept: it is a public GitHub App login, not a person, and the design doc's own bot rule (`author.__typename == "Bot"`, or a login ending in `[bot]`) reads it directly. |
+| `open-pull-requests.json`'s two repository names, its `title`s, `headRefName`s, `url`s, `number`s and `updatedAt` timestamps, and its `User` author's `login` | two real public repositories, two real pull request numbers, titles, branch names and timestamps, and one real person's login | `example-org/example-repo`, neutral titles, placeholder urls built from the placeholder numbers `101`/`102`, and `2026-01-01T00:00:00Z` for both timestamps; `example-user` for the person. Kept, deliberately: the `Bot` author's own `login`, `dependabot` (a public GitHub App login, not a person -- the design doc's own bot rule, `author.__typename == "Bot"` or a login ending in `[bot]`, reads it directly), the `Bot` node's `headRefName` SHAPE (`dependabot/npm_and_yarn/<dependency>-<version>`, a fixed pattern dependabot itself generates, not this account's own naming), and its `__typename` value itself. |
 
 **Kept as captured**, because it carries no identity: every GraphQL key
 structure and nesting; `defaultBranchRef.name` (`"main"`, already the least
 specific value it could have been); `state`, `isDraft`, `status` and every
 other enum value; `user.json`'s `type`, `user_view_type`, `site_admin`,
 `gravatar_id`, `hireable`, `twitter_username`, `notification_email`,
-`public_gists`, `updated_at`; `open-pull-requests.json`'s `updatedAt`
-timestamps and `isDraft`/`__typename` values.
+`public_gists`, `updated_at`; `open-pull-requests.json`'s `isDraft`,
+`__typename` values, and (as named in the table above) the `Bot` node's
+`login` and `headRefName` shape.
 
 ## What was NOT seen on this host, and is therefore a construction later
 
-- **Any OPEN pull request on this account, anywhere.** So
-  `owner-pull-requests.json`'s `pullRequests.nodes` is `[]` on both captured
-  repositories, and `repo-branches.json`'s own `p1` (for the second branch)
-  is empty for the same reason (nothing has it as a head branch).
+- **An OPEN pull request in `owner-pull-requests.json` or
+  `repo-branches.json`.** `owner-pull-requests.json`'s `pullRequests.nodes`
+  is `[]` on both captured repositories, and `repo-branches.json`'s own `p1`
+  (for the second branch) is empty too (nothing has it as a head branch).
   `open-pull-requests.json` (above) supplies the OPEN-pull-request node
   shape instead, captured from two OTHER, unrelated public repositories
   chosen for having real open pull requests of each author kind.
