@@ -3,8 +3,8 @@
 # requires-python = ">=3.13"
 # dependencies = []
 # ///
-"""Scan tests/fixtures/gh/ for a GraphQL pagination cursor that decodes to
-more than the sanctioned placeholder.
+"""Scan any tracked file under tests/fixtures/ for a GraphQL pagination
+cursor that decodes to more than the sanctioned placeholder.
 
 GitHub's own `endCursor` encoding is `base64("cursor:v2:<opaque-id>")`, and
 that opaque id has been observed to embed a real repository id -- decoding a
@@ -42,8 +42,15 @@ PREFIX = b"cursor:v2:"
 def offending_tokens(text: str) -> list[str]:
     found = []
     for token in TOKEN_RE.findall(text):
+        # Padding restored before decoding, and validated only AFTER that:
+        # GitHub (and other real captures) sometimes emit unpadded base64
+        # (the base64url convention strips trailing `=`), and
+        # `b64decode(..., validate=True)` on an unpadded token raises rather
+        # than accepting it, so the token was silently skipped -- exactly
+        # the "did not even look" failure this scan exists to avoid.
+        padded = token + "=" * (-len(token) % 4)
         try:
-            decoded = base64.b64decode(token, validate=True)
+            decoded = base64.b64decode(padded, validate=True)
         except (binascii.Error, ValueError):
             continue
         if decoded.startswith(PREFIX) and decoded != PLACEHOLDER:

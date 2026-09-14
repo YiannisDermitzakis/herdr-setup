@@ -20,9 +20,12 @@
 #      exists to catch if this repository is ever forked or renamed) must not
 #      appear, case-insensitively, in any file git tracks under
 #      tests/fixtures/.
-#   2. No base64 token under tests/fixtures/gh/ may decode to `cursor:v2:`
-#      followed by anything other than the one sanctioned placeholder
-#      payload (tests/helpers/check_fixture_cursors.py).
+#   2. No base64 token under tests/fixtures/ (any of it, not only gh/ --
+#      nothing rules out a cursor-shaped string turning up in a captured
+#      transcript line) may decode to `cursor:v2:` followed by anything
+#      other than the one sanctioned placeholder payload
+#      (tests/helpers/check_fixture_cursors.py), padded or not: GitHub (and
+#      other real captures) sometimes emit unpadded base64.
 #
 # Bash 3.2 safe (no associative arrays, no `local -n`, no `mapfile`).
 set -u
@@ -73,15 +76,17 @@ else
 $hits"
 fi
 
-# --- check 2: a gh fixture cursor decoding to more than the placeholder ---
-if [ -d tests/fixtures/gh ]; then
+# --- check 2: any fixture cursor decoding to more than the placeholder,
+# anywhere under tests/fixtures/ -- not scoped to gh/, since nothing rules
+# out a cursor-shaped token turning up in some other capture ---
+if [ -d tests/fixtures ]; then
   if command -v uv >/dev/null 2>&1; then
-    cursor_out="$(uv run --quiet --script "$test_dir/helpers/check_fixture_cursors.py" tests/fixtures/gh 2>&1)"
+    cursor_out="$(uv run --quiet --script "$test_dir/helpers/check_fixture_cursors.py" tests/fixtures 2>&1)"
     cursor_rc=$?
     if [ "$cursor_rc" -eq 0 ]; then
       pass
     else
-      fail "a gh fixture cursor decodes to more than the sanctioned placeholder:
+      fail "a fixture cursor decodes to more than the sanctioned placeholder:
 $cursor_out"
     fi
   else
