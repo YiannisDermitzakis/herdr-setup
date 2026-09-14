@@ -120,6 +120,34 @@ def bash_line(
     }
 
 
+def bash_line_multi(
+    commands: list[str], *, cwd: str = "/work/alpha", timestamp="2026-09-12T18:04:11.000Z"
+) -> dict:
+    """An `assistant` line carrying SEVERAL Bash `tool_use` blocks, one per command.
+
+    review re-round item 6(e): each block is its own, independent Bash
+    invocation -- state from one (like a `cd`) must not carry into the next.
+    """
+    return {
+        "type": "assistant",
+        "cwd": cwd,
+        "timestamp": timestamp,
+        "sessionId": "00000000-0000-4000-8000-000000000001",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": f"toolu_{index}",
+                    "name": "Bash",
+                    "input": {"command": command},
+                }
+                for index, command in enumerate(commands)
+            ],
+        },
+    }
+
+
 def tool_result_line(
     text: str, *, cwd: str = "/work/alpha", timestamp="2026-09-12T18:05:00.000Z"
 ) -> dict:
@@ -182,6 +210,19 @@ class TestIdentityAndFields(TempConfigCase):
         expected = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(path.stat().st_mtime))
         sessions = sessions_of(self.config_dir, "--since", "30")
         self.assertEqual(sessions[0]["last_active"], expected)
+
+    def test_last_active_falls_back_to_a_specific_fixed_mtime(self):
+        """review re-round item 6(d): a FIXED mtime, set with os.utime, not
+
+        whatever the file's own current mtime happens to be -- pins the
+        exact string the fallback must produce, not just that it agrees
+        with a second read of the same clock.
+        """
+        path = self.write_transcript([{k: v for k, v in line().items() if k != "timestamp"}])
+        fixed_epoch = 1_700_000_000  # 2023-11-14T22:13:20Z
+        os.utime(path, (fixed_epoch, fixed_epoch))
+        sessions = sessions_of(self.config_dir, "--since", "36500")
+        self.assertEqual(sessions[0]["last_active"], "2023-11-14T22:13:20Z")
 
     def test_cwd_is_the_last_one_seen(self):
         self.write_transcript(
@@ -773,6 +814,57 @@ class TestCommandEvidence(TempConfigCase):
         branch = one_branch(sessions)
         self.assertEqual(branch["name"], "feat/x")
         self.assertEqual(branch["dir"], f"{home}/.cache/fr/worktrees/example-repo/feat__x")
+
+    # -- item 6(a,b,c): a relative path resolves against a PRIOR `cd` in the
+    # same command, for every shape that carries one, not just `cd` itself. --
+
+    def test_worktree_add_relative_path_resolves_against_a_prior_cd(self):
+        sessions = self.sessions_for("cd /work/x && git worktree add ../wt -b b", cwd="/work/alpha")
+        self.assertEqual(one_branch(sessions)["dir"], "/work/wt")
+
+    def test_git_dash_cap_c_relative_dir_resolves_against_a_prior_cd(self):
+        sessions = self.sessions_for("cd /work/x && git -C sub checkout -b b", cwd="/work/alpha")
+        self.assertEqual(one_branch(sessions)["dir"], "/work/x/sub")
+
+    def test_fr_isolation_repo_relative_path_resolves_against_a_prior_cd(self):
+        sessions = self.sessions_for(
+            "cd /work/x && fr isolation up --branch b --repo rr", cwd="/work/alpha"
+        )
+        self.assertEqual(one_branch(sessions)["dir"], "/work/x/rr")
+
+    # -- item 6(e): a `cd` in one Bash tool_use block is scoped to that
+    # block; it must not carry into a LATER, separate block. --
+
+    def test_a_cd_in_one_tool_use_block_does_not_carry_into_a_later_block(self):
+        transcript_line = bash_line_multi(
+            ["cd /work/x", "git worktree add ../wt -b b"], cwd="/work/deep/nested"
+        )
+        self.write_transcript([transcript_line])
+        sessions = sessions_of(self.config_dir, "--since", "30")
+        # If `cd /work/x` (block 1) leaked into block 2, "../wt" would
+        # resolve to "/work/wt" instead of against the line's own cwd.
+        self.assertEqual(one_branch(sessions)["dir"], "/work/deep/wt")
+
+    # -- item 6(f): the SDK early exit really stops reading, not merely
+    # tolerates whatever garbage follows. A huge remainder that would take
+    # a measurable amount of time to read and fail to parse, one line at a
+    # time, must not cost this transcript anything once the first line has
+    # already decided it is filtered out. --
+
+    def test_sdk_early_exit_avoids_reading_a_huge_remainder(self):
+        path = self.write_transcript([line(entrypoint="sdk-cli")])
+        with path.open("a", encoding="utf-8") as handle:
+            for _ in range(300_000):
+                handle.write("not json at all, and long enough to matter if ever read\n")
+        start = time.monotonic()
+        sessions = sessions_of(self.config_dir, "--since", "30")
+        elapsed = time.monotonic() - start
+        self.assertEqual(sessions, [])
+        self.assertLess(
+            elapsed,
+            2.0,
+            "reading 300,000 garbage lines one at a time takes much longer than this",
+        )
 
 
 class TestBranchNameFilterAgreesWithTheRunner(unittest.TestCase):
