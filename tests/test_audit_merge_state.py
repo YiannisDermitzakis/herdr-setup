@@ -23,10 +23,12 @@ is never an ancestor of anything.
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "helpers"))
 
@@ -43,6 +45,7 @@ from auditlib import (  # noqa: E402
     isolate_audit_environment,
     load_audit,
     make_repo,
+    recording_git,
 )
 
 isolate_audit_environment()
@@ -242,7 +245,23 @@ class TestWhatIsAsked(MergeStateCase):
             entry("feat/shared", worktree, self.root / "other-cwd"),
             entry("feat/shared", self.root / "removed", self.repo),
         ]
-        results = audit.resolve_branches(entries)
+        bin_dir, git_log = recording_git(self.root / "record")
+        with mock.patch.dict(os.environ, {"PATH": bin_dir + os.pathsep + os.environ["PATH"]}):
+            results = audit.resolve_branches(entries)
+        # "Resolve once" means the work is done once, not only that one answer
+        # comes back: the local ref is looked up, and its ancestry asked,
+        # exactly one time for the four entries.
+        recorded = git_log.read_text(encoding="utf-8").splitlines()
+        lookups = [
+            line
+            for line in recorded
+            if line.endswith("for-each-ref " + "--format=%(refname) refs/heads/feat/shared")
+        ]
+        ancestry = [
+            line for line in recorded if " merge-base " in line and "refs/heads/feat/shared" in line
+        ]
+        self.assertEqual(len(lookups), 1, recorded)
+        self.assertEqual(len(ancestry), 1, recorded)
         self.assertEqual(list(results), [(str(self.repo), "feat/shared")])
         self.assertEqual(results[(str(self.repo), "feat/shared")].state, "unmerged")
         calls = self.fake.graphql_calls("HsRepoBranches")
@@ -264,6 +283,184 @@ class TestWhatIsAsked(MergeStateCase):
         self.github()
         with self.assertRaises(audit.GitError):
             self.resolve("feat/broken")
+
+
+def pull(number: int, state: str, *, head_repo=REPO_SLUG, draft: bool = False) -> dict:
+    """A pull request as RepoBranches.prs carries it."""
+    return {
+        "number": number,
+        "state": state,
+        "draft": draft,
+        "url": f"https://github.com/{REPO_SLUG}/pull/{number}",
+        "head_repo": head_repo,
+    }
+
+
+class TestClassifyIsAPureTable(unittest.TestCase):
+    """The same table, from facts alone: no repository, no gh, no subprocess.
+
+    Every row names only the facts that row needs; anything the table would
+    have to consult and was not given is a ValueError, not a guess.
+    """
+
+    ROWS = (
+        # (label, Facts, expected state)
+        (
+            "merged beats an open pull request",
+            audit.Facts(REPO_SLUG, "main", (pull(4, "MERGED"), pull(5, "OPEN"))),
+            "merged",
+        ),
+        (
+            "merged needs no ref at all",
+            audit.Facts(REPO_SLUG, "main", (pull(4, "MERGED"),)),
+            "merged",
+        ),
+        ("open-pr", audit.Facts(REPO_SLUG, "main", (pull(5, "OPEN"),)), "open-pr"),
+        (
+            "the head repository matches ignoring case",
+            audit.Facts(REPO_SLUG, "main", (pull(4, "MERGED", head_repo=REPO_SLUG.upper()),)),
+            "merged",
+        ),
+        (
+            "a fork's merged pull request is not used",
+            audit.Facts(
+                REPO_SLUG,
+                "main",
+                (pull(4, "MERGED", head_repo=FORK),),
+                local_ref=True,
+                local_contained=False,
+                remote_ref=False,
+            ),
+            "unmerged",
+        ),
+        (
+            "a fork's open pull request is not used",
+            audit.Facts(
+                REPO_SLUG,
+                "main",
+                (pull(5, "OPEN", head_repo=FORK),),
+                local_ref=False,
+                remote_ref=False,
+            ),
+            "gone",
+        ),
+        (
+            "a null head repository is not used",
+            audit.Facts(
+                REPO_SLUG,
+                "main",
+                (pull(4, "MERGED", head_repo=None),),
+                local_ref=False,
+                remote_ref=False,
+            ),
+            "gone",
+        ),
+        ("no GitHub default branch", audit.Facts(REPO_SLUG, None), "unresolved"),
+        ("no GitHub remote and no origin/HEAD", audit.Facts(None, None), "unresolved"),
+        (
+            "a contained local ref alone",
+            audit.Facts(REPO_SLUG, "main", local_ref=True, local_contained=True, remote_ref=False),
+            "contained",
+        ),
+        (
+            "an uncontained local ref alone",
+            audit.Facts(REPO_SLUG, "main", local_ref=True, local_contained=False, remote_ref=False),
+            "unmerged",
+        ),
+        (
+            "a GitHub ref IDENTICAL",
+            audit.Facts(
+                REPO_SLUG, "main", local_ref=False, remote_ref=True, remote_status="IDENTICAL"
+            ),
+            "contained",
+        ),
+        (
+            "a GitHub ref BEHIND",
+            audit.Facts(
+                REPO_SLUG, "main", local_ref=False, remote_ref=True, remote_status="BEHIND"
+            ),
+            "contained",
+        ),
+        (
+            "a GitHub ref AHEAD",
+            audit.Facts(REPO_SLUG, "main", local_ref=False, remote_ref=True, remote_status="AHEAD"),
+            "unmerged",
+        ),
+        (
+            "a GitHub ref DIVERGED",
+            audit.Facts(
+                REPO_SLUG, "main", local_ref=False, remote_ref=True, remote_status="DIVERGED"
+            ),
+            "unmerged",
+        ),
+        (
+            "contained locally but AHEAD on GitHub",
+            audit.Facts(
+                REPO_SLUG,
+                "main",
+                local_ref=True,
+                local_contained=True,
+                remote_ref=True,
+                remote_status="AHEAD",
+            ),
+            "unmerged",
+        ),
+        (
+            "uncontained locally but IDENTICAL on GitHub",
+            audit.Facts(
+                REPO_SLUG,
+                "main",
+                local_ref=True,
+                local_contained=False,
+                remote_ref=True,
+                remote_status="IDENTICAL",
+            ),
+            "unmerged",
+        ),
+        (
+            "no ref anywhere and no pull request",
+            audit.Facts(REPO_SLUG, "main", local_ref=False, remote_ref=False),
+            "gone",
+        ),
+        (
+            "not on GitHub, contained locally",
+            audit.Facts(None, "main", local_ref=True, local_contained=True),
+            "contained",
+        ),
+        ("not on GitHub, no local ref", audit.Facts(None, "main", local_ref=False), "gone"),
+        (
+            "not on GitHub, pull requests are never consulted",
+            audit.Facts(None, "main", (pull(4, "MERGED"),), local_ref=False),
+            "gone",
+        ),
+    )
+
+    def test_every_row_of_the_table(self):
+        forbidden = AssertionError("classify ran a subprocess")
+        with mock.patch.object(audit.subprocess, "run", side_effect=forbidden):
+            for label, facts, expected in self.ROWS:
+                with self.subTest(row=label):
+                    self.assertEqual(audit.classify(facts).state, expected)
+
+    def test_the_chosen_pull_request_is_the_highest_numbered_of_its_state(self):
+        facts = audit.Facts(REPO_SLUG, "main", (pull(4, "MERGED"), pull(9, "MERGED")))
+        self.assertEqual(
+            audit.classify(facts).pr,
+            {"number": 9, "draft": False, "url": f"https://github.com/{REPO_SLUG}/pull/9"},
+        )
+        drafted = audit.Facts(REPO_SLUG, "main", (pull(5, "OPEN", draft=True),))
+        self.assertTrue(audit.classify(drafted).pr["draft"])
+
+    def test_a_fact_the_table_needs_and_was_never_gathered_is_refused(self):
+        missing = (
+            audit.Facts(REPO_SLUG, "main", remote_ref=False),
+            audit.Facts(REPO_SLUG, "main", local_ref=True, remote_ref=False),
+            audit.Facts(REPO_SLUG, "main", local_ref=False),
+            audit.Facts(REPO_SLUG, "main", local_ref=False, remote_ref=True),
+        )
+        for facts in missing:
+            with self.subTest(facts=facts), self.assertRaises(ValueError):
+                audit.classify(facts)
 
 
 if __name__ == "__main__":
