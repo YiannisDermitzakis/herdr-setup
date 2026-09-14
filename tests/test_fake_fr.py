@@ -23,9 +23,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "helpers"))
 
-from feedlib import HELPERS_DIR, isolate_environment  # noqa: E402
+from auditlib import isolate_audit_environment, require_fakes  # noqa: E402
+from feedlib import HELPERS_DIR  # noqa: E402
 
-isolate_environment()
+isolate_audit_environment()
 
 # The key structure `fr isolation status --format json` prints, observed on a
 # host (keys only; every value here is a placeholder).
@@ -63,9 +64,10 @@ class TestFakeFr(unittest.TestCase):
         # file's first RED run, with no fake on PATH yet, ran the host's REAL
         # fr -- including `isolation up --branch feat/x`, which created a
         # branch and a workspace. Never again.
-        found = shutil.which("fr")
-        if found is None or Path(found).resolve() != HELPERS_DIR / "fake-fr":
-            self.fail(f"fr resolves to {found}, not tests/helpers/fake-fr; refusing to run it")
+        try:
+            require_fakes()
+        except RuntimeError as exc:
+            self.fail(str(exc))
         env = {k: v for k, v in os.environ.items() if not k.startswith(("FAKE_GH_", "FAKE_FR_"))}
         env["FAKE_FR_STATUS"] = str(self.status_path)
         env.update({k: str(v) for k, v in extra_env.items()})

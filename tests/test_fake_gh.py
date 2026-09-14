@@ -31,12 +31,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "helpers"))
 
-from feedlib import HELPERS_DIR, LEAKY_VARS, TESTS_DIR, isolate_environment  # noqa: E402
+from auditlib import (  # noqa: E402
+    GH_CAPTURES,
+    ZERO_OID,
+    capture,
+    isolate_audit_environment,
+    require_fakes,
+    shape,
+)
+from auditlib import gh_pr as pr  # noqa: E402
+from auditlib import gh_repo as repo  # noqa: E402
+from feedlib import HELPERS_DIR, LEAKY_VARS, TESTS_DIR  # noqa: E402
 
-isolate_environment()
-
-GH_CAPTURES = TESTS_DIR / "fixtures" / "gh"
-ZERO_OID = "0" * 40
+isolate_audit_environment()
 
 # The spec's own field selections ("GitHub queries"), exactly as the captures
 # were taken. HsCompare starts with a newline: the captured NOT_FOUND error
@@ -120,47 +127,6 @@ FAKE_SWITCHES = (
 )
 
 
-def pr(number, head, *, state="OPEN", repo="example-org/example-repo", **values) -> dict:
-    """One pull request in the fake's state file."""
-    record = {
-        "number": number,
-        "title": f"placeholder title {number}",
-        "url": f"https://github.com/{repo}/pull/{number}",
-        "head": head,
-        "head_repo": repo,
-        "state": state,
-        "draft": False,
-        "updated_at": "2026-01-01T00:00:00Z",
-        "author": {"login": "example-user", "__typename": "User"},
-    }
-    record.update(values)
-    return record
-
-
-def repo(**values) -> dict:
-    record = {"default": "main", "archived": False, "refs": {}, "compare": {}, "prs": []}
-    record.update(values)
-    return record
-
-
-def shape(obj):
-    """The key structure of a JSON value, with leaf types, for comparison.
-
-    A list becomes the sorted distinct shapes of its elements, so two nodes
-    of the same shape count once and an empty list stays distinguishable.
-    """
-    if isinstance(obj, dict):
-        return {key: shape(value) for key, value in obj.items()}
-    if isinstance(obj, list):
-        distinct = {json.dumps(shape(item), sort_keys=True) for item in obj}
-        return [json.loads(item) for item in sorted(distinct)]
-    return type(obj).__name__
-
-
-def capture(name: str):
-    return json.loads((GH_CAPTURES / name).read_text(encoding="utf-8"))
-
-
 class FakeGhCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -179,9 +145,10 @@ class FakeGhCase(unittest.TestCase):
         # Refuse before running anything when `gh` is not the fake. Without
         # this, a missing or broken fake falls through PATH to the host's REAL
         # gh, and this file's first RED run did exactly that.
-        found = shutil.which("gh")
-        if found is None or Path(found).resolve() != HELPERS_DIR / "fake-gh":
-            self.fail(f"gh resolves to {found}, not tests/helpers/fake-gh; refusing to run it")
+        try:
+            require_fakes()
+        except RuntimeError as exc:
+            self.fail(str(exc))
         env = {k: v for k, v in os.environ.items() if not k.startswith(("FAKE_GH_", "FAKE_FR_"))}
         env["FAKE_GH_STATE"] = str(self.state_path)
         env["FAKE_GH_LOG"] = str(self.log_path)
