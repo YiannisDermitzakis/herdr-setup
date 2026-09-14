@@ -420,10 +420,20 @@ rows:
       as work to act on.
     origin:
     - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
-    levels: {}
+    levels:
+      unit:
+      - herdr-setup:tests/test_audit_merge_state.py
     status: not-implemented
-    notes: Born with the spec (not-implemented). The 2026-09-13-session-audit plan adds
-      the verifying tests and moves this row up.
+    notes: Born with the spec (not-implemented). Phase 3 of the 2026-09-13-session-audit
+      plan verifies the merge-state half against real git repositories and the fake gh
+      (herdr-setup:tests/test_audit_merge_state.py) -- a squash-merged branch resolves
+      to merged because a MERGED pull request with the same head and head repository is
+      checked before ancestry, a fork's same-named or head-less pull request never
+      counts, and a branch with no local ref, no GitHub ref and no open or merged pull
+      request resolves to gone; the same table is also pinned as a pure function of
+      gathered facts. Left not-implemented because the other half -- gone counted in
+      the footer rather than listed, and neither state reported as work to act on --
+      is the report, which is phase 4's work.
   - id: audit-fails-closed
     capability: Session audit
     acceptance: audit exits 3 when Herdr is unreachable and 2 with no report when git
@@ -432,7 +442,10 @@ rows:
       empty section.
     origin:
     - herdr-setup:docs/superpowers/specs/2026-09-13-session-audit-design.md
-    levels: {}
+    levels:
+      unit:
+      - herdr-setup:tests/test_audit_github.py
+      - herdr-setup:tests/test_audit_git.py
     status: not-implemented
     notes: Born with the spec (not-implemented). Phase 1 of the 2026-09-13-session-audit
       plan lands the walking skeleton -- cmd_audit gates on hs_require_socket exactly
@@ -441,7 +454,12 @@ rows:
       "incomplete" line and exit 2 rather than an empty report -- but the git/gh-missing
       and adapter-incomplete clauses this acceptance names have no surface yet (phases
       2-4). Left not-implemented rather than flipped early on a partial slice; a later
-      phase moves this row to ci once the whole acceptance holds.
+      phase moves this row to ci once the whole acceptance holds. Phase 3 adds the
+      failures the report will turn into exit 2 with no report -- ToolError when git or
+      gh is not on PATH or gh auth status fails for github.com, GhError for any non-zero
+      gh exit and for an errors array returned with exit 0, GitError for a git command
+      that fails or warns inside an existing repository (herdr-setup:tests/test_audit_github.py,
+      herdr-setup:tests/test_audit_git.py); the exit-code wiring itself is still phase 4.
   - id: adapter-sessions-query
     capability: Session audit
     acceptance: The adapter contract documents an optional read-only sessions query

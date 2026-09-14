@@ -11,11 +11,20 @@ runner" and "`audit` (read-only)".
 
 What exists so far is the evidence machinery, layer by layer:
 
-- **The GitHub layer.** `gh` calls, each read-only and each failing closed:
-  a non-zero exit, and an `errors` array returned with exit 0, both raise.
-- **The git layer** and **merge state** (phase 3, later tasks).
+- **The GitHub layer.** `gh api` calls, each read-only and each failing
+  closed: a non-zero exit, and an `errors` array returned with exit 0, both
+  raise GhError. `require_tools`, `owners`, `open_prs`, `repo_branches`,
+  `compare`.
+- **The git layer.** One read-only git question per function, its exit
+  status read explicitly: `repo_for`, `local_ref`, `is_ancestor`,
+  `local_default`.
+- **Merge state.** `classify`, the spec's table as a pure function of
+  gathered facts, and `resolve_branches`, which gathers them once per
+  (repository, branch).
 
-`main()` still does not join or report anything. Until the report arrives
+The sources (Herdr panes, adapter session history, fr bindings), the join
+and the report are phase 4, and `main()` calls none of this yet. Until the
+report arrives
 (phase 4) it FAILS CLOSED -- AGENTS.md's own rule -- rather than printing an
 empty, clean-looking report a partial run could not back up. An incomplete
 report is exit 2 per the design doc's exit-code table ("An incomplete report
@@ -444,6 +453,10 @@ def open_prs(login: str) -> list[dict]:
     Pages the owner's repositories 50 at a time, and any repository whose
     open pull requests do not fit in the first 100 through
     HsRepoOpenPullRequests. An owner GitHub does not know raises, naming it.
+
+    Each record's `repo` is `<login>/<name>` with the login spelled as given,
+    so a caller matching it against a remote's slug compares ignoring case,
+    as GitHub does.
     """
     label = f"gh api graphql HsOwnerPullRequests {login}"
     records: list[dict] = []

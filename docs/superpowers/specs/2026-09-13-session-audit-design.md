@@ -480,8 +480,10 @@ deleted) cannot show that, so it is not used for `merged` or `open-pr`.
 
 ### GitHub queries
 
-Every call is `gh api` and read-only. Every GraphQL request has a fixed
-operation name, so the fake `gh` can answer by name. Branch names are always
+Every call is `gh api --hostname github.com` and read-only, so the host
+queried is the host `gh auth status --hostname github.com` checked, whatever
+`GH_HOST` says. Every GraphQL request has a fixed operation name, so the fake
+`gh` can answer by name. Branch names are always
 passed as GraphQL variables with `-f` (a raw string), never interpolated into
 the query and never with `-F`, which type-infers: a branch named `123` or
 `true` would reach GitHub as a number or a boolean.
@@ -492,7 +494,9 @@ the query and never with `-F`, which type-infers: a branch named `123` or
    - It pages `repositoryOwner.repositories(first: 50, isArchived: false)`.
    - For each repository it asks for `pullRequests(states: OPEN, first: 100)`:
      `number title url headRefName isDraft updatedAt author { login __typename }
-     headRepository { nameWithOwner }`.
+     headRepository { nameWithOwner }`, and that connection's `pageInfo {
+     hasNextPage endCursor }` -- without it, a repository with more than 100
+     open pull requests cannot be told from one with exactly 100.
    - Open pull requests are queried directly, not searched: the hand audit
      showed a recency window misses old open pull requests.
    - A repository with more than 100 open pull requests is paged with
