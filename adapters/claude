@@ -295,9 +295,11 @@ def _record_branch(
 # (`cd .../feat__x; ls`, `cd .../feat__x&&ls`, `cat .../feat__x>out`) does
 # not swallow it into the branch name. `~`, `$HOME` and `${HOME}` are all
 # accepted as the home-directory prefix, expanded to `$HOME` below.
-# docs/adapters.md's own wording, verbatim: "Only in cwd fields and in Bash
-# command text, never in tool output" -- see _bash_commands below, which
-# only ever looks at a `tool_use` Bash block, never a `tool_result`.
+# It is matched against a line's own `cwd` only (extract_worktree_path_evidence).
+# The directories a Bash command reaches with `cd` or `git -C` are matched as
+# resolved paths instead (_same_repository_fr_worktree), so a worktree path a
+# command merely names credits nothing; and only a `tool_use` Bash block is
+# ever read, never a `tool_result` (_bash_commands).
 WORKTREE_PATH_RE = re.compile(
     r"((?:~|\$\{HOME\}|\$HOME|/[^\s\"';&|()<>]*?)/\.cache/fr/worktrees/"
     r"[^/\s\"';&|()<>]+/([^/\s\"';&|()<>]+))"
@@ -408,15 +410,121 @@ def _resolve_dir(raw: str | None, current_dir: str | None) -> str | None:
     """
     if not raw:
         return current_dir
+    home = os.environ.get("HOME")
     if raw.startswith("~"):
-        home = os.environ.get("HOME")
         if home:
             raw = home + raw[1:]
+    else:
+        # `$HOME` and `${HOME}` as a whole first component, the same prefixes
+        # WORKTREE_PATH_RE accepts. Any other variable stays in the text,
+        # which makes the directory not a directory (_in_own_repository).
+        for prefix in ("${HOME}", "$HOME"):
+            if home and (raw == prefix or raw.startswith(prefix + "/")):
+                raw = home + raw[len(prefix) :]
+                break
     if raw.startswith("/"):
         return os.path.normpath(raw)
     if not current_dir:
         return raw
     return os.path.normpath(os.path.join(current_dir, raw))
+
+
+# --------------------------------------------------------------------------
+# A session's own repository (docs/adapters.md, "Claude Code", "Scope")
+# --------------------------------------------------------------------------
+#
+# A session is credited only with branches in its own repository. A live
+# audit credited one hand-audit session, which inspected and cleaned up every
+# repository's worktrees, with about 20 branches across 8 repositories.
+
+# An unexpanded shell variable, `$NAME` or `${NAME}`. A directory holding one
+# names a directory this adapter cannot know, so it is not a directory.
+_VARIABLE_RE = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]*\})")
+
+# A resolved directory at or beneath an fr worktree:
+# `<dir>` is `.../.cache/fr/worktrees/<repo>/<slug>`, then anything below it.
+_FR_WORKTREE_DIR_RE = re.compile(
+    r"(?P<dir>(?:/.*?)?/\.cache/fr/worktrees/(?P<repo>[^/]+)/(?P<slug>[^/]+))(?:/.*)?"
+)
+
+
+def _within(path: str, root: str) -> bool:
+    """Whether `path` is `root` or beneath it, compared as path text."""
+    path, root = os.path.normpath(path), os.path.normpath(root)
+    return path == root or path.startswith(root.rstrip("/") + "/")
+
+
+# A path at or beneath fr's worktree root: `<prefix>/.cache/fr/worktrees`, then
+# optionally `<repo>`, then anything. None of `.cache`, `fr`, `worktrees` or the
+# slug below `<repo>` names a repository.
+_FR_WORKTREES_PATH_RE = re.compile(
+    r"(?P<prefix>(?:/.*?)?)/\.cache/fr/worktrees(?:/(?P<repo>[^/]+)(?:/.*)?)?"
+)
+
+
+def _session_repositories(own_cwd: str) -> frozenset[str]:
+    """The names the session's own repository may have, from the line's `cwd`.
+
+    A `cwd` inside an fr worktree belongs to that worktree's `<repo>`, and to
+    nothing else on its path. Otherwise the repository is one of the `cwd`'s
+    path components -- fr names a repository's worktrees after its checkout
+    -- leaving out fr's own `.cache/fr/worktrees` components and everything
+    below them. The adapter has no git, so it cannot tell WHICH component is
+    the checkout: a generic name such as `work` in `/work/a` still matches.
+    """
+    fr_path = _FR_WORKTREES_PATH_RE.fullmatch(own_cwd)
+    if fr_path is not None and fr_path["repo"]:
+        return frozenset({fr_path["repo"]})
+    head = fr_path["prefix"] if fr_path is not None else own_cwd
+    return frozenset(part for part in head.split("/") if part)
+
+
+def _same_repository_fr_worktree(directory: str | None, own_cwd: str | None):
+    """The fr worktree match when `directory` is in an fr worktree of the line's repository.
+
+    The same repository means the worktree's `<repo>` is one of
+    _session_repositories(own_cwd): fr names a repository's worktrees after
+    its checkout, and a session working through `cd <worktree>` keeps its
+    recorded `cwd` in that checkout.
+    """
+    if not directory or not own_cwd or _VARIABLE_RE.search(directory):
+        return None
+    match = _FR_WORKTREE_DIR_RE.fullmatch(directory)
+    if match is None or match["repo"] not in _session_repositories(own_cwd):
+        return None
+    return match
+
+
+def _names_own_repository(repository: str, own_cwd: str | None) -> bool:
+    """Whether a `gh --repo [HOST/]OWNER/NAME` value names the line's own repository.
+
+    Only NAME can be compared: the `cwd` carries no owner.
+    """
+    if not own_cwd or _VARIABLE_RE.search(repository):
+        return False
+    name = repository.rstrip("/").rsplit("/", 1)[-1]
+    return bool(name) and name in _session_repositories(own_cwd)
+
+
+def _in_own_repository(directory: str | None, own_cwd: str | None) -> bool:
+    """Whether a command acting in `directory` acts in the line's own repository.
+
+    A directory inside an fr worktree counts only when it is an fr worktree
+    of the same repository -- even beneath the `cwd`, since a home-directory
+    session has every fr worktree beneath it. Any other directory counts when
+    it is the line's `cwd` or beneath it: a branch created in a checkout
+    beneath a non-repository `cwd` is still that session's work, because
+    without git the adapter cannot see where one repository ends. A relative
+    directory (no `cwd` to resolve it against) and one holding an unexpanded
+    variable never count.
+    """
+    if not directory or not own_cwd or not directory.startswith("/"):
+        return False
+    if _VARIABLE_RE.search(directory) or _VARIABLE_RE.search(own_cwd):
+        return False
+    if _FR_WORKTREE_DIR_RE.fullmatch(directory) is not None:
+        return _same_repository_fr_worktree(directory, own_cwd) is not None
+    return _within(directory, own_cwd)
 
 
 def _flag_value(tokens: list[str], *names: str) -> str | None:
@@ -435,7 +543,7 @@ def _flag_value(tokens: list[str], *names: str) -> str | None:
 _GIT_NOOP_GLOBAL_FLAGS = frozenset({"--no-pager", "-P", "--paginate", "-p", "--no-replace-objects"})
 
 
-def _strip_git_global_options(segment: list[str]) -> tuple[list[str], str | None]:
+def _strip_git_global_options(segment: list[str]) -> tuple[list[str], str | None, str | None]:
     """Consume `git`'s own global options before the subcommand.
 
     `git -c k=v checkout -b x`, `git -C <dir> switch -c x`,
@@ -443,17 +551,21 @@ def _strip_git_global_options(segment: list[str]) -> tuple[list[str], str | None
     all name `checkout`/`switch` as their real subcommand, not the global
     option in front of it -- without this, the shape checks below never see
     past it. Returns the remaining tokens (starting with the subcommand,
-    `git` itself dropped) and a directory override if one was present
+    `git` itself dropped), a directory override if one was present
     (`-C <dir>` or `--work-tree=<dir>`; `--git-dir=<dir>` is skipped but
-    never sets `dir` -- it names git's metadata store, not a working tree).
+    never sets `dir` -- it names git's metadata store, not a working tree),
+    and the raw `-C <dir>` alone, which is how a command REACHES a directory
+    (worktree-path evidence counts `cd` and `-C`, not `--work-tree=`).
     `segment[0]` is assumed to already be `git`.
     """
     index = 1
     dir_override: str | None = None
+    dash_cap_c: str | None = None
     while index < len(segment):
         token = segment[index]
         if token == "-C" and index + 1 < len(segment):
             dir_override = segment[index + 1]
+            dash_cap_c = segment[index + 1]
             index += 2
             continue
         if token == "-c" and index + 1 < len(segment):
@@ -470,7 +582,7 @@ def _strip_git_global_options(segment: list[str]) -> tuple[list[str], str | None
             index += 1
             continue
         break
-    return segment[index:], dir_override
+    return segment[index:], dir_override, dash_cap_c
 
 
 def _match_command_shape(segment: list[str], *, segment_dir, current_dir) -> tuple[str, str] | None:
@@ -589,9 +701,29 @@ def _process_bash_command(
     own directory, not `/work/sub`). `current_dir` is a plain variable this
     closure mutates; `dir_stack` remembers what it was before each `(`, to
     restore at its `)`.
+
+    A session is credited only with its own repository's branches. A
+    matched shape counts only when the command acts in the line's own
+    repository (_in_own_repository); a `cd` or `git -C` target is
+    worktree-path evidence only when it is an fr worktree of that same
+    repository (_same_repository_fr_worktree). A shape's `dir` holding an
+    unexpanded variable is not a directory: the evidence stays, with the
+    line's own `cwd` as `dir`, since the command itself acted there.
     """
-    current_dir = base_cwd
+    own_cwd = _resolve_dir(base_cwd, None) if base_cwd else None
+    current_dir = own_cwd
     dir_stack: list[str | None] = []
+
+    def reached(directory: str | None) -> None:
+        match = _same_repository_fr_worktree(directory, own_cwd)
+        if match is not None:
+            _record_branch(
+                branch_hits,
+                name=match["slug"].replace("__", "/"),
+                branch_dir=match["dir"],
+                evidence="worktree-path",
+                seen_at=seen_at,
+            )
 
     def flush(segment: list[str]) -> None:
         nonlocal current_dir
@@ -604,27 +736,45 @@ def _process_bash_command(
             # uncertainty, not a guess at a specific path.
             if len(segment) >= 2 and segment[1] != "-":
                 current_dir = _resolve_dir(segment[1], current_dir)
+                reached(current_dir)
             else:
-                current_dir = base_cwd
+                current_dir = own_cwd
             return
 
         segment_dir = current_dir
         hit = None
         if segment[0] == "git" and len(segment) >= 2:
-            rest, dir_override = _strip_git_global_options(segment)
+            rest, dir_override, dash_cap_c = _strip_git_global_options(segment)
             if dir_override is not None:
                 segment_dir = _resolve_dir(dir_override, current_dir)
+            if dash_cap_c is not None:
+                reached(_resolve_dir(dash_cap_c, current_dir))
             hit = _match_command_shape(rest, segment_dir=segment_dir, current_dir=current_dir)
         elif segment[0] == "fr":
             hit = _match_command_shape(segment, segment_dir=segment_dir, current_dir=current_dir)
         elif segment[0] == "gh" and len(segment) >= 2:
             hit = _match_gh_shape(segment[1:], segment_dir=segment_dir)
+            # `gh ... --repo|-R OWNER/NAME` acts on the repository it names,
+            # wherever gh runs.
+            named = _flag_value(segment[1:], "--repo", "-R")
+            if hit is not None and named is not None and not _names_own_repository(named, own_cwd):
+                return
 
-        if hit is not None:
-            name, branch_dir = hit
-            _record_branch(
-                branch_hits, name=name, branch_dir=branch_dir, evidence="command", seen_at=seen_at
-            )
+        if hit is None:
+            return
+        name, branch_dir = hit
+        # Where the command acts: `fr isolation ... --repo <path>` names its
+        # repository, and its `dir` is that path. Every other shape acts where
+        # git or gh runs -- including `git worktree add`, whose new worktree
+        # path is only its `dir`.
+        acting_in = branch_dir if segment[0] == "fr" else segment_dir
+        if not _in_own_repository(acting_in, own_cwd):
+            return
+        if not branch_dir or _VARIABLE_RE.search(branch_dir):
+            branch_dir = own_cwd
+        _record_branch(
+            branch_hits, name=name, branch_dir=branch_dir, evidence="command", seen_at=seen_at
+        )
 
     for physical_line in _physical_lines(command_text):
         segment: list[str] = []
@@ -682,7 +832,11 @@ def _bash_commands(line: dict) -> list[str]:
 def extract_command_evidence(
     line: dict, branch_hits: dict[tuple[str, str], dict], *, seen_at: str
 ) -> None:
-    """Evidence `command`: every Bash `tool_use` block's `input.command`.
+    """Evidence from every Bash `tool_use` block's `input.command`.
+
+    `command` evidence for each shape acting in the line's own repository,
+    and `worktree-path` evidence for each fr worktree of that repository a
+    `cd` or `git -C` reaches (see _process_bash_command).
 
     `seen_at` is the caller's already-normalised (second-precision UTC)
     reading of this line's own `timestamp` -- computed once in
@@ -701,16 +855,18 @@ def extract_command_evidence(
 def extract_worktree_path_evidence(
     line: dict, branch_hits: dict[tuple[str, str], dict], *, seen_at: str
 ) -> None:
-    """Evidence `worktree-path`, read from a line's own `cwd` and Bash command text.
+    """Evidence `worktree-path` from a line's own `cwd`: the worktree that contains it.
+
+    Command text is not scanned here. A worktree path merely NAMED in a
+    command (`ls`, `cat`, a pasted `fr isolation status`) credits nothing;
+    extract_command_evidence counts one only when a `cd` or `git -C` reaches
+    it and it is an fr worktree of the line's own repository.
 
     `seen_at` is the caller's already-normalised reading of this line's own
     `timestamp` -- see extract_command_evidence's docstring.
     """
-    texts = []
     cwd = line.get("cwd")
-    if isinstance(cwd, str) and cwd:
-        texts.append(cwd)
-    texts.extend(_bash_commands(line))
+    texts = [cwd] if isinstance(cwd, str) and cwd else []
     for text in texts:
         for path, slug in WORKTREE_PATH_RE.findall(text):
             prefix = next((p for p in _HOME_PREFIXES if path.startswith(p)), None)

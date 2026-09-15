@@ -14,8 +14,10 @@ Layer by layer, each failing closed:
 - **The GitHub layer.** `gh api` calls, each read-only: a non-zero exit, and an
   `errors` array returned with exit 0, both raise GhError. `require_tools`,
   `owners`, `open_prs`, `repo_branches`, `compare`.
-- **The git layer.** One read-only git question per function, its exit status
-  read explicitly: `repo_for`, `local_ref`, `is_ancestor`, `local_default`.
+- **The git layer.** Read-only git questions, each exit status read
+  explicitly: `repo_for`, `local_ref`, `is_ancestor`, `local_default`, all
+  answered through a `GitCache` that asks each directory, repository and ref
+  set once per run.
 - **Merge state.** `classify`, the spec's table as a pure function of gathered
   facts, and `resolve_branches`, which gathers them once per (repository,
   branch).
@@ -42,7 +44,7 @@ import shutil
 import subprocess
 import sys
 import traceback
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -113,18 +115,22 @@ COMPARE_STATUSES = ("AHEAD", "BEHIND", "DIVERGED", "IDENTICAL")
 # builds and compares the answer with the capture of the same operation in
 # tests/fixtures/gh/.
 #
-# One addition to the spec's selection, a named construction: the nested
-# `pullRequests` connection also selects `pageInfo { hasNextPage endCursor }`.
-# Without it a repository with more than 100 open pull requests cannot be told
+# Two additions to the spec's selection, each a named construction. The nested
+# `pullRequests` connection also selects `pageInfo { hasNextPage endCursor }`:
+# without it a repository with more than 100 open pull requests cannot be told
 # from one with exactly 100, and the spec's own HsRepoOpenPullRequests
-# follow-up could never be triggered.
+# follow-up could never be triggered. And `repositories` passes
+# `ownerAffiliations: [OWNER]` and selects `nameWithOwner`: GitHub's default
+# also lists the repositories a user collaborates on, which a live audit found
+# named `<user>/<name>` and listed twice
+# (docs/superpowers/specs/2026-09-14-audit-live-host-findings-design.md).
 QUERY_OWNER_PULL_REQUESTS = """
 query HsOwnerPullRequests($login: String!, $after: String) {
   repositoryOwner(login: $login) {
-    repositories(first: 50, isArchived: false, after: $after) {
+    repositories(first: 50, isArchived: false, ownerAffiliations: [OWNER], after: $after) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        name
+        name nameWithOwner
         pullRequests(states: OPEN, first: 100) {
           pageInfo { hasNextPage endCursor }
           nodes {
@@ -485,15 +491,18 @@ def _open_pr(repo: str, node: dict, label: str) -> dict:
 
 
 def open_prs(login: str) -> list[dict]:
-    """Every open pull request in the non-archived repositories of `login`.
+    """Every open pull request in the non-archived repositories `login` owns.
 
     Pages the owner's repositories 50 at a time, and any repository whose
     open pull requests do not fit in the first 100 through
     HsRepoOpenPullRequests. An owner GitHub does not know raises, naming it.
 
-    Each record's `repo` is `<login>/<name>` with the login spelled as given,
-    so a caller matching it against a remote's slug compares ignoring case,
-    as GitHub does.
+    Owned repositories only: without `ownerAffiliations: [OWNER]` GitHub also
+    lists the repositories a user collaborates on, which a live audit found
+    listed under the wrong owner and twice. Each record's `repo` is the
+    repository's own `nameWithOwner`, never `<login>/<name>`, and a follow-up
+    page is asked by that owner and name. A caller matching `repo` against a
+    remote's slug still compares ignoring case, as GitHub does.
     """
     label = f"gh api graphql HsOwnerPullRequests {login}"
     records: list[dict] = []
@@ -511,17 +520,19 @@ def open_prs(login: str) -> list[dict]:
             owner.get("repositories") if isinstance(owner, dict) else None, label
         )
         for repository in repositories:
-            name = repository.get("name") if isinstance(repository, dict) else None
-            if not isinstance(name, str) or not name:
-                raise GhError(f"{label}: a repository carries no readable name")
+            full = repository.get("nameWithOwner") if isinstance(repository, dict) else None
+            parts = full.split("/") if isinstance(full, str) else []
+            if len(parts) != 2 or not all(parts):
+                raise GhError(f"{label}: a repository carries no readable nameWithOwner")
+            repo_owner, name = parts
             nodes, more_prs, prs_cursor = _connection(repository.get("pullRequests"), label)
             nodes = list(nodes)
             while more_prs:
-                page_label = f"gh api graphql HsRepoOpenPullRequests {login}/{name}"
+                page_label = f"gh api graphql HsRepoOpenPullRequests {full}"
                 page = graphql(
                     "HsRepoOpenPullRequests",
                     QUERY_REPO_OPEN_PULL_REQUESTS,
-                    {"owner": login, "name": name, "after": prs_cursor},
+                    {"owner": repo_owner, "name": name, "after": prs_cursor},
                 )
                 found = page.get("repository")
                 if not isinstance(found, dict):
@@ -533,12 +544,31 @@ def open_prs(login: str) -> list[dict]:
                 if more_prs and prs_cursor == previous:
                     raise GhError(f"{page_label}: pagination did not advance")
                 nodes.extend(more_nodes)
-            records.extend(_open_pr(f"{login}/{name}", node, label) for node in nodes)
+            records.extend(_open_pr(full, node, label) for node in nodes)
         if not more_repositories:
             return records
         if repositories_cursor == after:
             raise GhError(f"{label}: pagination did not advance")
         after = repositories_cursor
+
+
+def open_prs_for(owner_list: list[str]) -> list[dict]:
+    """Every owner's open pull requests, each (repository, number) once, in owner order.
+
+    A safety net across owners. open_prs asks for owned repositories only,
+    which already keeps one repository from appearing under two logins;
+    nothing here relies on GitHub never doing so. The repository compares
+    ignoring case, as GitHub's names do.
+    """
+    records: list[dict] = []
+    seen: set[tuple[str, int]] = set()
+    for login in owner_list:
+        for record in open_prs(login):
+            key = (record["repo"].lower(), record["number"])
+            if key not in seen:
+                seen.add(key)
+                records.append(record)
+    return records
 
 
 @dataclass(frozen=True)
@@ -698,11 +728,14 @@ class Repo:
     remote: str | None = None
 
 
-def _git(directory: str, args: tuple[str, ...]) -> subprocess.CompletedProcess:
+def _git(
+    directory: str, args: tuple[str, ...], stdin: str | None = None
+) -> subprocess.CompletedProcess:
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
     try:
         return subprocess.run(  # noqa: S603
             ["git", "-C", directory, *args],
+            input=stdin,
             capture_output=True,
             text=True,
             timeout=GIT_TIMEOUT,
@@ -780,37 +813,220 @@ def _remote_and_slug(toplevel: str) -> tuple[str | None, str | None]:
     return remote, github_slug(proc.stdout)
 
 
-def repo_for(directory: str | None, fallback: str | None) -> Repo | None:
-    """The repository `directory` is in, else the one `fallback` is in, else None."""
-    for candidate in (directory, fallback):
-        toplevel = _toplevel(candidate)
-        if toplevel is not None:
-            remote, slug = _remote_and_slug(toplevel)
-            return Repo(toplevel, _main_checkout(toplevel), slug, remote)
-    return None
+# The one thing `for-each-ref` says about a ref it cannot read: it exits 0,
+# leaves the ref out, and warns naming it. _git runs with LC_ALL=C, so these
+# stay the words git prints.
+_BROKEN_REF_RE = re.compile(r"warning: ignoring broken ref (?P<ref>\S+)")
 
 
-def _ref_exists(repo: Repo, ref: str) -> bool:
-    """Whether the fully qualified `ref` exists, telling broken from absent.
+@dataclass(frozen=True)
+class RefSet:
+    """The refs one `for-each-ref` listed, and the ones it said it could not read."""
+
+    names: frozenset[str]
+    broken: frozenset[str]
+    # ref -> the object id it names, when the read asked for `%(objectname)`
+    tips: dict[str, str] = field(default_factory=dict)
+
+
+def _for_each_ref(toplevel: str, args: tuple[str, ...]) -> RefSet:
+    """Run one `for-each-ref`, telling a broken ref from an absent one.
 
     `show-ref --verify --quiet` and `rev-parse --verify --quiet` both exit 1
     for a ref git cannot read, exactly as for one that is not there.
-    `for-each-ref` also exits 0 for it, but says `ignoring broken ref` on
-    stderr -- so anything on stderr is an error, never an absence.
+    `for-each-ref` exits 0 for it, and says `ignoring broken ref <ref>` on
+    stderr. So each such line is recorded as broken, and anything else on
+    stderr is an error, never an absence.
+
+    Each output line is `<refname>`, or `<refname> <objectname>` when the
+    format asks for both; the object id is kept in `tips`.
     """
-    args = ("for-each-ref", "--format=%(refname)", ref)
-    proc = _git(repo.toplevel, args)
-    if proc.returncode != 0 or proc.stderr.strip():
-        raise _git_failure(repo.toplevel, args, proc)
-    return ref in proc.stdout.splitlines()
+    proc = _git(toplevel, args)
+    if proc.returncode != 0:
+        raise _git_failure(toplevel, args, proc)
+    broken = set()
+    for line in proc.stderr.splitlines():
+        if not line.strip():
+            continue
+        match = _BROKEN_REF_RE.fullmatch(line.strip())
+        if match is None:
+            raise _git_failure(toplevel, args, proc)
+        broken.add(match["ref"])
+    names, tips = set(), {}
+    for line in proc.stdout.splitlines():
+        name, _, oid = line.partition(" ")
+        names.add(name)
+        if oid:
+            tips[name] = oid
+    return RefSet(frozenset(names), frozenset(broken), tips)
 
 
-def local_ref(repo: Repo, name: str) -> bool:
-    """Whether the local branch refs/heads/<name> exists."""
-    return _ref_exists(repo, f"refs/heads/{name}")
+def _broken_ref(repo: Repo, ref: str) -> GitError:
+    return GitError(f"git in {repo.toplevel}: ignoring broken ref {ref}")
 
 
-def default_ref(repo: Repo, default: str) -> str | None:
+# One `cat-file --batch-check` answer line for an object that is a commit.
+# Anything else -- `<input> missing` for a missing object or for a tip that
+# does not peel to a commit -- is not one.
+_COMMIT_CHECK_RE = re.compile(r"[0-9a-f]+ commit \d+")
+
+
+class GitCache:
+    """One run's git answers, each question asked once.
+
+    A live run asked the same questions once per branch directory: 1,269 git
+    processes, most of an 8-minute audit. Here a directory is resolved to its
+    work tree once, a work tree to its Repo once, and each checkout's local
+    and remote-tracking refs, with the object each names, are read with ONE
+    `for-each-ref`. Ancestry against a default branch takes one
+    `for-each-ref --merged`, and the tips that read left out are checked
+    with one `cat-file --batch-check`. The answers are the per-question
+    functions' answers; only the number of processes changes.
+
+    A cache lives as long as one resolve_branches call, the audit's one
+    resolution pass: repositories do not change under a read-only run, but
+    they do between two runs, so nothing is kept at module level.
+    """
+
+    def __init__(self) -> None:
+        self._toplevels: dict[str, str | None] = {}
+        self._repos: dict[str, Repo] = {}
+        self._refs: dict[tuple[str, str | None], RefSet] = {}
+        self._merged: dict[tuple[str, str], RefSet] = {}
+        self._not_commits: dict[tuple[str, str], frozenset[str]] = {}
+        self._local_defaults: dict[tuple[str, str | None], str | None] = {}
+
+    def toplevel(self, directory: str | None) -> str | None:
+        if not directory:
+            return None
+        if directory not in self._toplevels:
+            self._toplevels[directory] = _toplevel(directory)
+        return self._toplevels[directory]
+
+    def repo(self, toplevel: str) -> Repo:
+        if toplevel not in self._repos:
+            remote, slug = _remote_and_slug(toplevel)
+            self._repos[toplevel] = Repo(toplevel, _main_checkout(toplevel), slug, remote)
+        return self._repos[toplevel]
+
+    def repo_for(self, directory: str | None, fallback: str | None) -> Repo | None:
+        for candidate in (directory, fallback):
+            toplevel = self.toplevel(candidate)
+            if toplevel is not None:
+                return self.repo(toplevel)
+        return None
+
+    def refs(self, repo: Repo) -> RefSet:
+        """refs/heads and the chosen remote's refs/remotes/<remote>, in one read.
+
+        Linked worktrees share their main checkout's refs, so the read is
+        keyed by the main checkout and the remote.
+        """
+        key = (repo.main_checkout, repo.remote)
+        if key not in self._refs:
+            patterns = ("refs/heads",)
+            if repo.remote is not None:
+                patterns += (f"refs/remotes/{repo.remote}",)
+            args = ("for-each-ref", "--format=%(refname) %(objectname)", *patterns)
+            self._refs[key] = _for_each_ref(repo.toplevel, args)
+        return self._refs[key]
+
+    def ref_exists(self, repo: Repo, ref: str) -> bool:
+        refs = self.refs(repo)
+        if ref in refs.broken:
+            raise _broken_ref(repo, ref)
+        return ref in refs.names
+
+    def local_ref(self, repo: Repo, name: str) -> bool:
+        return self.ref_exists(repo, f"refs/heads/{name}")
+
+    def default_ref(self, repo: Repo, default: str) -> str | None:
+        candidates = [f"refs/heads/{default}"]
+        if repo.remote is not None:
+            candidates.insert(0, f"refs/remotes/{repo.remote}/{default}")
+        for ref in candidates:
+            if self.ref_exists(repo, ref):
+                return ref
+        return None
+
+    def is_ancestor(self, repo: Repo, name: str, default: str) -> bool | None:
+        target = self.default_ref(repo, default)
+        if target is None:
+            return None
+        ref = f"refs/heads/{name}"
+        if not self.local_ref(repo, name):
+            raise GitError(f"git in {repo.toplevel}: no local ref {ref} to measure")
+        key = (repo.main_checkout, target)
+        if key not in self._merged:
+            args = ("for-each-ref", "--format=%(refname)", f"--merged={target}", "refs/heads")
+            self._merged[key] = _for_each_ref(repo.toplevel, args)
+        merged = self._merged[key]
+        if ref in merged.broken:
+            raise _broken_ref(repo, ref)
+        if ref in merged.names:
+            return True
+        if ref in self.not_commits(repo, target):
+            raise GitError(f"git in {repo.toplevel}: {ref} does not name a commit")
+        return False
+
+    def not_commits(self, repo: Repo, target: str) -> frozenset[str]:
+        """The local branches whose tip is not a readable commit, among those not merged.
+
+        `for-each-ref --merged` leaves such a tip out without a word, where
+        `merge-base --is-ancestor` exited 128. So every branch the merged read
+        left out has its tip checked, all at once: ONE `cat-file --batch-check`
+        per checkout and default ref, fed `<oid>^{commit}` on stdin. Its
+        stdout decides, a line per tip; the error line it prints on stderr
+        for a blob only repeats what stdout says.
+        """
+        key = (repo.main_checkout, target)
+        if key not in self._not_commits:
+            refs, merged = self.refs(repo), self._merged[key]
+            asked = sorted(
+                ref
+                for ref in refs.names
+                if ref.startswith("refs/heads/") and ref not in merged.names and ref in refs.tips
+            )
+            found: frozenset[str] = frozenset()
+            if asked:
+                args = ("cat-file", "--batch-check")
+                stdin = "".join(f"{refs.tips[ref]}^{{commit}}\n" for ref in asked)
+                proc = _git(repo.toplevel, args, stdin=stdin)
+                answers = proc.stdout.splitlines()
+                if proc.returncode != 0 or len(answers) != len(asked):
+                    raise _git_failure(repo.toplevel, args, proc)
+                found = frozenset(
+                    ref
+                    for ref, answer in zip(asked, answers, strict=True)
+                    if _COMMIT_CHECK_RE.fullmatch(answer) is None
+                )
+            self._not_commits[key] = found
+        return self._not_commits[key]
+
+    def local_default(self, repo: Repo) -> str | None:
+        key = (repo.main_checkout, repo.remote)
+        if key not in self._local_defaults:
+            self._local_defaults[key] = _local_default(repo)
+        return self._local_defaults[key]
+
+
+def repo_for(
+    directory: str | None, fallback: str | None, *, cache: GitCache | None = None
+) -> Repo | None:
+    """The repository `directory` is in, else the one `fallback` is in, else None."""
+    return (cache or GitCache()).repo_for(directory, fallback)
+
+
+def local_ref(repo: Repo, name: str, *, cache: GitCache | None = None) -> bool:
+    """Whether the local branch refs/heads/<name> exists.
+
+    Answered from the repository's one ref read (GitCache.refs). A ref git
+    cannot read is a GitError, never an absence.
+    """
+    return (cache or GitCache()).local_ref(repo, name)
+
+
+def default_ref(repo: Repo, default: str, *, cache: GitCache | None = None) -> str | None:
     """The local ref standing for the default branch, or None when there is none.
 
     refs/remotes/<remote>/<default> for the chosen remote when that exists,
@@ -818,37 +1034,36 @@ def default_ref(repo: Repo, default: str) -> str | None:
     before a default-branch rename, a --single-branch clone, a fork clone --
     not an error.
     """
-    candidates = [f"refs/heads/{default}"]
-    if repo.remote is not None:
-        candidates.insert(0, f"refs/remotes/{repo.remote}/{default}")
-    for ref in candidates:
-        if _ref_exists(repo, ref):
-            return ref
-    return None
+    return (cache or GitCache()).default_ref(repo, default)
 
 
-def is_ancestor(repo: Repo, name: str, default: str) -> bool | None:
+def is_ancestor(repo: Repo, name: str, default: str, *, cache: GitCache | None = None):
     """Whether refs/heads/<name> is reachable from the default branch.
 
     None when the default branch is not present locally at all (default_ref),
-    which makes the branch `unresolved` rather than stopping the run. Otherwise
-    exit 0 is contained, exit 1 is not, and any other exit on refs that do
-    exist is a GitError naming the repository.
+    which makes the branch `unresolved` rather than stopping the run.
+    Otherwise answered from one `for-each-ref --merged=<default ref>` per
+    checkout, which lists the branches `merge-base --is-ancestor` would call
+    contained. A branch that read leaves out is not contained, unless its
+    tip is not a readable commit: `--merged` skips a tip naming a missing
+    object or a blob without a word, so those tips are checked with one
+    `cat-file --batch-check` per checkout (GitCache.not_commits), and such a
+    branch -- that branch only -- is a GitError naming the repository, as
+    merge-base's exit 128 was. A broken or absent branch ref is a GitError too.
+
+    A known limit: a readable tip commit whose PARENT object is missing is
+    not detected. merge-base failed on it; `--merged` reads it as not
+    contained. Finding it means walking history, which is `git fsck`'s job.
     """
-    target = default_ref(repo, default)
-    if target is None:
-        return None
-    args = ("merge-base", "--is-ancestor", f"refs/heads/{name}", target)
-    proc = _git(repo.toplevel, args)
-    if proc.returncode == 0:
-        return True
-    if proc.returncode == 1:
-        return False
-    raise _git_failure(repo.toplevel, args, proc)
+    return (cache or GitCache()).is_ancestor(repo, name, default)
 
 
-def local_default(repo: Repo) -> str | None:
+def local_default(repo: Repo, *, cache: GitCache | None = None) -> str | None:
     """The branch the chosen remote's HEAD points at, or None when it is not set."""
+    return (cache or GitCache()).local_default(repo)
+
+
+def _local_default(repo: Repo) -> str | None:
     if repo.remote is None:
         return None
     head = f"refs/remotes/{repo.remote}/HEAD"
@@ -987,7 +1202,7 @@ def classify(facts: Facts) -> Resolution:
     return Resolution(CONTAINED if all(contained) else UNMERGED, None, facts.repo_slug)
 
 
-def _resolve_repository(repo: Repo, names: list[str]) -> dict[str, Resolution]:
+def _resolve_repository(repo: Repo, names: list[str], cache: GitCache) -> dict[str, Resolution]:
     """Gather the facts for every branch of one repository, batched, and classify.
 
     GitHub first (one HsRepoBranches per chunk): the pull requests may decide
@@ -1001,15 +1216,15 @@ def _resolve_repository(repo: Repo, names: list[str]) -> dict[str, Resolution]:
         github = repo_branches(owner, name, names)
         default = github.default
     else:
-        default = local_default(repo)
+        default = cache.local_default(repo)
 
     prs = {branch: tuple(github.prs[branch]) if github else () for branch in names}
     undecided = []
     if default is not None:
         undecided = [branch for branch in names if pr_decision(repo.slug, prs[branch]) is None]
-    local = {branch: local_ref(repo, branch) for branch in undecided}
+    local = {branch: cache.local_ref(repo, branch) for branch in undecided}
     contained = {
-        branch: is_ancestor(repo, branch, default) for branch in undecided if local[branch]
+        branch: cache.is_ancestor(repo, branch, default) for branch in undecided if local[branch]
     }
     statuses: dict[str, str] = {}
     if github is not None:
@@ -1073,7 +1288,12 @@ def resolve_branches(entries) -> Resolutions:
 
     GhError and GitError propagate: a failed call stops the run, it never
     becomes a state.
+
+    Every git question goes through one GitCache for the whole call, so the
+    number of git processes follows the directories and repositories named,
+    never the branches (tests/test_audit_git_calls.py counts them).
     """
+    cache = GitCache()
     located: dict[tuple, Repo | None] = {}
     repositories: dict[str, tuple[Repo, list[str]]] = {}
     sources: dict[tuple[str, str], list] = {}
@@ -1085,7 +1305,7 @@ def resolve_branches(entries) -> Resolutions:
         directory, cwd = _path_text(item.get("dir")), _path_text(item.get("cwd"))
         spot = (directory, cwd)
         if spot not in located:
-            located[spot] = repo_for(directory, cwd)
+            located[spot] = cache.repo_for(directory, cwd)
         repo = located[spot]
         if repo is None:
             key = (str(directory if directory else cwd), name)
@@ -1102,7 +1322,7 @@ def resolve_branches(entries) -> Resolutions:
         index[(name, directory, cwd)] = key
 
     for repo_key, (repo, names) in repositories.items():
-        for name, resolution in _resolve_repository(repo, names).items():
+        for name, resolution in _resolve_repository(repo, names, cache).items():
             results[(repo_key, name)] = resolution
 
     resolved = {key: replace(value, sources=tuple(sources[key])) for key, value in results.items()}
@@ -1667,7 +1887,7 @@ def run(args, *, out, err, now=_now) -> int:
         gathered = gather_sessions(adapters, args.since, include_sdk=args.include_sdk, warn=say)
         joined = join(pane_list, adapters, gathered, failed_probes=failed_probes)
         resolutions = resolve_branches(resolution_entries(joined, gathered))
-        prs = [pr for login in owner_list for pr in open_prs(login)]
+        prs = open_prs_for(owner_list)
     except (AuditError, feed.HerdrError) as exc:
         say(str(exc))
         return 2

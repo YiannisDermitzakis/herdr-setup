@@ -102,6 +102,21 @@ def without_nested_page_info(answer, connection_path):
     return answer
 
 
+def without_repository_name_with_owner(answer):
+    """Remove and check each repository node's `nameWithOwner`.
+
+    The capture selected only `name`. The module also selects `nameWithOwner`
+    (docs/superpowers/specs/2026-09-14-audit-live-host-findings-design.md,
+    change 3): a login's repository list includes repositories it only
+    collaborates on, so `<login>/<name>` is not the repository's name. Its
+    shape is the captured `headRepository.nameWithOwner` shape, a string.
+    """
+    for node in answer["data"]["repositoryOwner"]["repositories"]["nodes"]:
+        value = node.pop("nameWithOwner")
+        assert isinstance(value, str) and "/" in value, value
+    return answer
+
+
 class TestRequireTools(GhCase):
     # The PATH seam itself: lib/audit.py's own subprocess runner reaches the
     # fake gh through PATH, and the in-process runner answers identically.
@@ -286,6 +301,40 @@ class TestOpenPullRequests(GhCase):
         self.assertEqual(who(("3", 7)), ("example-user", False))
         self.assertIsNone(prs[("3", 7)]["head_repo"])
 
+    def test_a_collaborator_repositorys_pull_request_is_listed_once_under_its_real_name(self):
+        # example-user collaborates on example-org's repository. GitHub lists
+        # it under both logins unless the query asks for owned repositories
+        # only (a construction in tests/helpers/fake-gh).
+        shared = gh_repo(
+            collaborators=["example-user"],
+            prs=[gh_pr(5, "feat/shared", repo=f"{ORG}/example-repo")],
+        )
+        own = gh_repo(prs=[gh_pr(6, "feat/own", repo="example-user/example-repo-9")])
+        self.use(
+            gh_state(repos={f"{ORG}/example-repo": shared, "example-user/example-repo-9": own})
+        )
+        found = sorted(
+            (pr["repo"], pr["number"]) for login in audit.owners([]) for pr in audit.open_prs(login)
+        )
+        self.assertEqual(found, [(f"{ORG}/example-repo", 5), ("example-user/example-repo-9", 6)])
+        calls = self.fake.graphql_calls("HsOwnerPullRequests")
+        self.assertEqual(len(calls), 2)
+        for call in calls:
+            self.assertIn("ownerAffiliations: [OWNER]", call["query"])
+
+    def test_every_record_and_follow_up_page_names_the_repository_as_github_does(self):
+        prs = [gh_pr(number, f"feat/p{number}", repo=f"{ORG}/example-repo") for number in (1, 2)]
+        self.use(gh_state(repos={f"{ORG}/example-repo": gh_repo(prs=prs)}), FAKE_GH_PAGE_SIZE=1)
+        records = audit.open_prs("EXAMPLE-ORG")
+        self.assertEqual(
+            sorted((pr["repo"], pr["number"]) for pr in records),
+            [(f"{ORG}/example-repo", 1), (f"{ORG}/example-repo", 2)],
+        )
+        pages = self.fake.graphql_calls("HsRepoOpenPullRequests")
+        self.assertEqual(len(pages), 1)
+        for call in pages:
+            self.assertEqual((call["raw"]["owner"], call["raw"]["name"]), (ORG, "example-repo"))
+
     def test_an_owner_that_does_not_resolve_is_named(self):
         self.use(gh_state(orgs=[], repos={}))
         with self.assertRaises(audit.GhError) as ctx:
@@ -462,6 +511,7 @@ class TestTheQueriesAreTheCapturedOnes(GhCase):
         answer = without_nested_page_info(
             json.loads(proc.stdout), ["data", "repositoryOwner", "repositories", "nodes"]
         )
+        answer = without_repository_name_with_owner(answer)
         self.assertEqual(shape(answer), shape(capture("owner-pull-requests.json")))
 
     def test_hs_repo_open_pull_requests(self):

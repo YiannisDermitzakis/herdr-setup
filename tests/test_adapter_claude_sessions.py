@@ -610,7 +610,7 @@ class TestCommandEvidence(TempConfigCase):
 
     def test_fr_isolation_attach_with_repo_sets_dir(self):
         sessions = self.sessions_for(
-            "fr isolation attach --session s --branch feat/b --repo /work/r"
+            "fr isolation attach --session s --branch feat/b --repo /work/r", cwd="/work"
         )
         branch = one_branch(sessions)
         self.assertEqual(branch["name"], "feat/b")
@@ -679,16 +679,16 @@ class TestCommandEvidence(TempConfigCase):
         self.assertEqual(one_branch(sessions)["name"], "feat/l")
 
     def test_cd_then_and_and_sets_dir_for_the_later_segment(self):
-        sessions = self.sessions_for("cd /work/other && git checkout -b feat/m")
+        sessions = self.sessions_for("cd /work/alpha/other && git checkout -b feat/m")
         branch = one_branch(sessions)
         self.assertEqual(branch["name"], "feat/m")
-        self.assertEqual(branch["dir"], "/work/other")
+        self.assertEqual(branch["dir"], "/work/alpha/other")
 
     def test_git_dash_cap_c_sets_dir_for_its_own_segment_only(self):
-        sessions = self.sessions_for("git -C /work/third switch -c feat/n")
+        sessions = self.sessions_for("git -C /work/alpha/third switch -c feat/n")
         branch = one_branch(sessions)
         self.assertEqual(branch["name"], "feat/n")
-        self.assertEqual(branch["dir"], "/work/third")
+        self.assertEqual(branch["dir"], "/work/alpha/third")
 
     def test_no_spaces_around_the_segment_separator(self):
         sessions = self.sessions_for("a&&git checkout -b feat/o")
@@ -718,10 +718,10 @@ class TestCommandEvidence(TempConfigCase):
         self.assertEqual(one_branch(sessions)["name"], "feat/nl")
 
     def test_a_cd_line_does_not_swallow_the_next_lines_command(self):
-        sessions = self.sessions_for("cd /work/other\ngit checkout -b feat/nl2")
+        sessions = self.sessions_for("cd /work/alpha/other\ngit checkout -b feat/nl2")
         branch = one_branch(sessions)
         self.assertEqual(branch["name"], "feat/nl2")
-        self.assertEqual(branch["dir"], "/work/other")
+        self.assertEqual(branch["dir"], "/work/alpha/other")
 
     def test_a_backslash_newline_continuation_is_joined(self):
         sessions = self.sessions_for("git checkout \\\n-b feat/cont")
@@ -731,19 +731,19 @@ class TestCommandEvidence(TempConfigCase):
 
     def test_cd_tilde_expands_to_home(self):
         home = os.environ.get("HOME", "")
-        sessions = self.sessions_for("cd ~/x && git checkout -b b")
+        sessions = self.sessions_for("cd ~/x && git checkout -b b", cwd=home)
         self.assertEqual(one_branch(sessions)["dir"], f"{home}/x")
 
     def test_git_dash_cap_c_tilde_expands_to_home(self):
         home = os.environ.get("HOME", "")
-        sessions = self.sessions_for("git -C ~/x switch -c b")
+        sessions = self.sessions_for("git -C ~/x switch -c b", cwd=home)
         self.assertEqual(one_branch(sessions)["dir"], f"{home}/x")
 
     # -- item 4: a relative `cd` resolves against the CURRENT directory (the
     # latest `cd` in this command), not always the line's own `cwd`. --
 
     def test_a_second_relative_cd_resolves_against_the_first_cds_result(self):
-        sessions = self.sessions_for("cd /work/x && cd y && git checkout -b b", cwd="/work/alpha")
+        sessions = self.sessions_for("cd /work/x && cd y && git checkout -b b", cwd="/work")
         self.assertEqual(one_branch(sessions)["dir"], "/work/x/y")
 
     # -- item 6: further command-parsing gaps. --
@@ -817,8 +817,8 @@ class TestCommandEvidence(TempConfigCase):
         self.assertEqual(one_branch(sessions)["name"], "x")
 
     def test_git_work_tree_equals_sets_dir(self):
-        sessions = self.sessions_for("git --work-tree=/work/wt checkout -b x")
-        self.assertEqual(one_branch(sessions)["dir"], "/work/wt")
+        sessions = self.sessions_for("git --work-tree=/work/alpha/wt checkout -b x")
+        self.assertEqual(one_branch(sessions)["dir"], "/work/alpha/wt")
 
     def test_git_dir_equals_is_skipped_without_setting_dir(self):
         sessions = self.sessions_for("git --git-dir=/work/.git checkout -b x", cwd="/work/alpha")
@@ -827,14 +827,17 @@ class TestCommandEvidence(TempConfigCase):
         self.assertEqual(branch["dir"], "/work/alpha")
 
     def test_a_single_ampersand_is_a_segment_boundary(self):
-        sessions = self.sessions_for("cd /work/other & git checkout -b y")
+        sessions = self.sessions_for("cd /work/alpha/other & git checkout -b y")
         branch = one_branch(sessions)
         self.assertEqual(branch["name"], "y")
-        self.assertEqual(branch["dir"], "/work/other")
+        self.assertEqual(branch["dir"], "/work/alpha/other")
 
     def test_dollar_home_worktree_path_in_a_command_is_expanded(self):
         home = os.environ.get("HOME", "")
-        sessions = self.sessions_for("cat $HOME/.cache/fr/worktrees/example-repo/feat__x/notes.txt")
+        sessions = self.sessions_for(
+            "cd $HOME/.cache/fr/worktrees/example-repo/feat__x && cat notes.txt",
+            cwd="/work/example-repo",
+        )
         branch = one_branch(sessions)
         self.assertEqual(branch["name"], "feat/x")
         self.assertEqual(branch["dir"], f"{home}/.cache/fr/worktrees/example-repo/feat__x")
@@ -842,7 +845,8 @@ class TestCommandEvidence(TempConfigCase):
     def test_dollar_brace_home_worktree_path_in_a_command_is_expanded(self):
         home = os.environ.get("HOME", "")
         sessions = self.sessions_for(
-            "cat ${HOME}/.cache/fr/worktrees/example-repo/feat__x/notes.txt"
+            "cd ${HOME}/.cache/fr/worktrees/example-repo/feat__x && cat notes.txt",
+            cwd="/work/example-repo",
         )
         branch = one_branch(sessions)
         self.assertEqual(branch["name"], "feat/x")
@@ -856,17 +860,17 @@ class TestCommandEvidence(TempConfigCase):
         # ("/work" vs "/work/deep"), so resolving "../wt" against the wrong
         # base produces a different, distinguishable path.
         sessions = self.sessions_for(
-            "cd /work/deep/x && git worktree add ../wt -b b", cwd="/work/alpha"
+            "cd /work/deep/x && git worktree add ../wt -b b", cwd="/work/deep"
         )
         self.assertEqual(one_branch(sessions)["dir"], "/work/deep/wt")
 
     def test_git_dash_cap_c_relative_dir_resolves_against_a_prior_cd(self):
-        sessions = self.sessions_for("cd /work/x && git -C sub checkout -b b", cwd="/work/alpha")
+        sessions = self.sessions_for("cd /work/x && git -C sub checkout -b b", cwd="/work")
         self.assertEqual(one_branch(sessions)["dir"], "/work/x/sub")
 
     def test_fr_isolation_repo_relative_path_resolves_against_a_prior_cd(self):
         sessions = self.sessions_for(
-            "cd /work/x && fr isolation up --branch b --repo rr", cwd="/work/alpha"
+            "cd /work/x && fr isolation up --branch b --repo rr", cwd="/work"
         )
         self.assertEqual(one_branch(sessions)["dir"], "/work/x/rr")
 
@@ -943,6 +947,210 @@ class TestBranchNameFilterAgreesWithTheRunner(unittest.TestCase):
             self.assertTrue(self.adapter_module.branch_name_ok(name), name)
 
 
+class TestEvidenceIsLimitedToTheSessionsOwnRepository(TempConfigCase):
+    """docs/superpowers/specs/2026-09-14-audit-live-host-findings-design.md, change 4.
+
+    A live audit credited one hand-audit session, which inspected and cleaned
+    up every repository's worktrees, with about 20 branches across 8
+    repositories. A session is credited only with branches in its own
+    repository: its `cwd`, what lies beneath it, and the fr worktrees of the
+    same repository it reaches with `cd` or `-C`.
+    """
+
+    ROOT = "/work/box/.cache/fr/worktrees"
+    OWN = "/work/example-repo"
+    OTHER = "/work/example-repo-2"
+    OWN_WT = f"{ROOT}/example-repo/feat__mine"
+    OTHER_WT = f"{ROOT}/example-repo-2/feat__theirs"
+
+    def branches_for(self, commands: list[str], cwd: str = OWN) -> list[dict]:
+        timestamps = (f"2026-09-12T18:{minute:02d}:00.000Z" for minute in range(60))
+        self.write_transcript(
+            [bash_line(command, cwd=cwd, timestamp=next(timestamps)) for command in commands]
+        )
+        sessions = sessions_of(self.config_dir, "--since", "30")
+        self.assertEqual(len(sessions), 1)
+        return sessions[0]["branches"]
+
+    def test_another_repositorys_worktrees_and_checkout_credit_nothing(self):
+        other, other_wt = self.OTHER, self.OTHER_WT
+        branches = self.branches_for(
+            [
+                f"ls {other_wt}",
+                f"cat {other_wt}/notes.txt",
+                f"cd {other_wt} && git status",
+                f"git -C {other_wt} log --oneline",
+                f"cd {other_wt} && git push -u origin feat/other-push",
+                f"cd {other} && git checkout -b feat/other-checkout",
+                f"git -C {other} switch -c feat/other-switch",
+                f"git -C {other} worktree add {self.ROOT}/example-repo-2/feat__b -b feat/b",
+                f"cd {other} && gh pr create --head feat/other-pr",
+                f"fr isolation up --branch feat/other-fr --repo {other}",
+                f"cd {other} && fr isolation attach --session s --branch feat/other-attach",
+            ]
+        )
+        self.assertEqual(branches, [])
+
+    def test_a_home_directory_session_is_credited_with_no_ones_worktrees(self):
+        # The fr worktrees lie BENEATH a home-directory cwd, but beneath is not
+        # enough: a directory inside an fr worktree must pass the repository
+        # component rule, and `example-repo` is no component of the home path.
+        home = os.environ["HOME"]
+        branches = self.branches_for(
+            [
+                "cd ~/.cache/fr/worktrees/example-repo/feat__x && git status",
+                "git -C $HOME/.cache/fr/worktrees/example-repo/feat__y log",
+                "cd ~/.cache/fr/worktrees/example-repo/feat__z && git checkout -b feat/z-checkout",
+                "cd ~/.cache/fr/worktrees/example-repo/feat__z && git push -u origin feat/z-push",
+                "git -C ~/.cache/fr/worktrees/example-repo/feat__z switch -c feat/z-switch",
+            ],
+            cwd=home,
+        )
+        self.assertEqual(branches, [])
+
+    def test_a_branch_created_in_a_checkout_beneath_a_non_repository_cwd_still_counts(self):
+        # Decision: without git the adapter cannot see repository boundaries, and
+        # a branch created beneath the session's own cwd is that session's work.
+        branches = self.branches_for(["cd example-repo-2 && git checkout -b feat/p"], cwd="/work")
+        found = [(b["name"], b["dir"], b["evidence"]) for b in branches]
+        self.assertEqual(found, [("feat/p", "/work/example-repo-2", "command")])
+
+    def test_its_own_fr_worktree_reached_only_by_dash_cap_c_counts(self):
+        branches = self.branches_for([f"git -C {self.OWN_WT} log --oneline"])
+        found = [(b["name"], b["dir"], b["evidence"]) for b in branches]
+        self.assertEqual(found, [("feat/mine", self.OWN_WT, "worktree-path")])
+
+    def test_the_repository_must_equal_a_cwd_component_not_be_part_of_one(self):
+        branches = self.branches_for(
+            [
+                f"cd {self.ROOT}/example-repo/feat__s && git checkout -b feat/s-checkout",
+                f"git -C {self.ROOT}/example-repo/feat__t log",
+            ],
+            cwd=self.OTHER,
+        )
+        self.assertEqual(branches, [])
+
+    def test_only_a_whole_home_variable_is_expanded(self):
+        # From the parent of HOME, `$HOMEX/sub` read loosely as `$HOME` + `X/sub`
+        # would land beneath the cwd and count; it is a different variable.
+        parent = os.path.dirname(os.environ["HOME"].rstrip("/"))
+        branches = self.branches_for(
+            [
+                "cd $HOMEX/sub && git checkout -b feat/home-x",
+                "cd ${HOME_DIR}/sub && git checkout -b feat/home-dir",
+                "git -C $HOMEX/sub switch -c feat/home-x-dash-cap-c",
+            ],
+            cwd=parent,
+        )
+        self.assertEqual(branches, [])
+
+    def test_a_cwd_inside_an_fr_worktree_belongs_to_that_worktrees_repository(self):
+        # Inside example-repo's worktree the path also holds `.cache`, `fr`,
+        # `worktrees`, the slug and whatever lies above them. None of those is
+        # the session's repository; example-repo is.
+        branches = self.branches_for(
+            [
+                f"cd {self.ROOT}/example-repo/feat__other && git status",
+                f"cd {self.ROOT}/example-repo-2/feat__b && git status",
+                f"cd {self.ROOT}/fr/feat__named-fr && git status",
+                f"cd {self.ROOT}/worktrees/feat__named-worktrees && git checkout -b feat/w",
+                f"git -C {self.ROOT}/box/feat__named-box log",
+            ],
+            cwd=f"{self.OWN_WT}/src",
+        )
+        found = sorted((b["name"], b["dir"], b["evidence"]) for b in branches)
+        self.assertEqual(
+            found,
+            [
+                ("feat/mine", self.OWN_WT, "worktree-path"),
+                ("feat/other", f"{self.ROOT}/example-repo/feat__other", "worktree-path"),
+            ],
+        )
+
+    def test_a_repository_named_like_an_fr_path_component_is_not_credited(self):
+        branches = self.branches_for(
+            [
+                f"cd {self.ROOT}/fr/feat__named-fr && git checkout -b feat/named-fr",
+                f"git -C {self.ROOT}/work/feat__named-work log",
+            ],
+            cwd=self.OWN_WT,
+        )
+        found = sorted((b["name"], b["evidence"]) for b in branches)
+        self.assertEqual(found, [("feat/mine", "worktree-path")])
+
+    def test_gh_pr_create_with_a_repo_flag_counts_only_for_its_own_repository(self):
+        branches = self.branches_for(
+            [
+                "gh pr create --head feat/own-repo --repo example-org/example-repo",
+                "gh pr create -R example-org/example-repo-2 --head feat/other-repo",
+                "gh pr create --repo=example-org/example-repo-2 --head feat/other-repo-equals",
+                "gh pr create -R github.com/example-org/example-repo --head feat/own-repo-host",
+                "gh pr create --head feat/no-repo",
+            ]
+        )
+        found = sorted((b["name"], b["dir"], b["evidence"]) for b in branches)
+        self.assertEqual(
+            found,
+            [
+                ("feat/no-repo", self.OWN, "command"),
+                ("feat/own-repo", self.OWN, "command"),
+                ("feat/own-repo-host", self.OWN, "command"),
+            ],
+        )
+
+    def test_its_own_fr_worktrees_reached_by_cd_or_dash_cap_c_still_count(self):
+        branches = self.branches_for(
+            [
+                f"cd {self.OWN_WT} && git status",
+                f"cd {self.OWN_WT}/src && git push -u origin feat/mine-push",
+                f"git -C {self.OWN_WT} checkout -b feat/mine-checkout",
+                f"cd {self.OTHER_WT} && git status",
+            ]
+        )
+        found = sorted((b["name"], b["dir"], b["evidence"]) for b in branches)
+        self.assertEqual(
+            found,
+            [
+                ("feat/mine", self.OWN_WT, "worktree-path"),
+                ("feat/mine-checkout", self.OWN_WT, "command"),
+                ("feat/mine-push", f"{self.OWN_WT}/src", "command"),
+            ],
+        )
+
+    def test_commands_in_its_own_checkout_and_beneath_it_still_count(self):
+        branches = self.branches_for(
+            [
+                "fr isolation up --branch feat/x",
+                "cd sub && git checkout -b feat/beneath",
+            ]
+        )
+        found = sorted((b["name"], b["dir"], b["evidence"]) for b in branches)
+        self.assertEqual(
+            found,
+            [
+                ("feat/beneath", f"{self.OWN}/sub", "command"),
+                ("feat/x", self.OWN, "command"),
+            ],
+        )
+
+    def test_a_directory_holding_an_unexpanded_variable_is_not_a_directory(self):
+        branches = self.branches_for(
+            [
+                f"cd {self.OWN}/$W/feat__example-branch && git status",
+                f"cd {self.ROOT}/example-repo/${{W}}/feat__braced && git status",
+                'cd "$W" && git checkout -b feat/var-cd',
+                'git -C "${W}" switch -c feat/var-dash-cap-c',
+                'git worktree add "$W/feat__var" -b feat/var',
+            ]
+        )
+        found = sorted((b["name"], b["dir"], b["evidence"]) for b in branches)
+        # Only the worktree add stays: it runs in the session's own checkout,
+        # so its evidence falls back to that checkout instead of `$W/...`.
+        self.assertEqual(found, [("feat/var", self.OWN, "command")])
+        for branch in branches:
+            self.assertNotIn("$", branch["dir"])
+
+
 class TestWorktreePathEvidence(TempConfigCase):
     # Deliberately not the plan brief's own suggested "/work/" + "home" +
     # "/.cache/..." example: tests/test_public_hygiene.sh's home-directory
@@ -958,8 +1166,10 @@ class TestWorktreePathEvidence(TempConfigCase):
         self.assertEqual(branch["dir"], self.WT_PATH)
         self.assertEqual(branch["evidence"], "worktree-path")
 
-    def test_a_worktree_path_inside_a_command_yields_its_branch(self):
-        self.write_transcript([bash_line(f"cat {self.WT_PATH}/src/notes.txt", cwd="/work/alpha")])
+    def test_a_worktree_path_reached_by_cd_in_a_command_yields_its_branch(self):
+        self.write_transcript(
+            [bash_line(f"cd {self.WT_PATH}/src && cat notes.txt", cwd="/work/example-repo")]
+        )
         sessions = sessions_of(self.config_dir, "--since", "30")
         branch = one_branch(sessions)
         self.assertEqual(branch["name"], "feat/q")
@@ -986,14 +1196,14 @@ class TestWorktreePathEvidence(TempConfigCase):
         self.assertEqual(branch["dir"], f"{home}/.cache/fr/worktrees/example-repo/feat__q")
 
     def test_a_slug_followed_by_a_semicolon_does_not_swallow_it(self):
-        self.write_transcript([bash_line(f"(cd {self.WT_PATH}; ls)", cwd="/work/alpha")])
+        self.write_transcript([bash_line(f"(cd {self.WT_PATH}; ls)", cwd="/work/example-repo")])
         sessions = sessions_of(self.config_dir, "--since", "30")
         branch = one_branch(sessions)
         self.assertEqual(branch["name"], "feat/q")
         self.assertEqual(branch["dir"], self.WT_PATH)
 
     def test_a_slug_followed_by_and_and_does_not_swallow_it(self):
-        self.write_transcript([bash_line(f"cd {self.WT_PATH}&&ls", cwd="/work/alpha")])
+        self.write_transcript([bash_line(f"cd {self.WT_PATH}&&ls", cwd="/work/example-repo")])
         sessions = sessions_of(self.config_dir, "--since", "30")
         branch = one_branch(sessions)
         self.assertEqual(branch["name"], "feat/q")
@@ -1007,7 +1217,7 @@ class TestWorktreePathEvidence(TempConfigCase):
         from the slug's own character class, so it used to be swallowed
         into the branch name (`q>out` instead of `q`).
         """
-        self.write_transcript([bash_line(f"cat {self.WT_PATH}>out", cwd="/work/alpha")])
+        self.write_transcript([bash_line(f"cd {self.WT_PATH}>out", cwd="/work/example-repo")])
         sessions = sessions_of(self.config_dir, "--since", "30")
         branch = one_branch(sessions)
         self.assertEqual(branch["name"], "feat/q")

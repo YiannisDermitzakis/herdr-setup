@@ -307,7 +307,10 @@ Rules:
   so an adapter that forgets cannot inject noise.
 - **Failing** is as for `resolve`: exit non-zero, or print nothing. An empty
   `sessions` list means "no sessions in the window", never "could not read".
-  Timeout: 120 seconds. A malformed SESSION or a malformed BRANCH within an
+  Timeout: 600 seconds. It bounds a hung adapter, not the work, which
+  `--since` already bounds: under host load a month of Claude Code history
+  took 82 seconds, and a tighter limit turned that slow answer into an
+  incomplete report. A malformed SESSION or a malformed BRANCH within an
   otherwise-good answer is tolerated -- each is dropped and counted
   SEPARATELY, never fatal on its own -- but neither count is silently
   swallowed: the runner (`lib/feed.py`'s `sessions()`) warns by the
@@ -364,7 +367,8 @@ Rules:
     relative path -- for `cd`, `-C`, `--work-tree=`, `--repo`, or a
     `worktree add` path -- resolves against the CURRENT directory (the
     latest `cd` already seen in this command, else the line's own `cwd`),
-    and `~` resolves against `$HOME`, as text only. `cd -` and a bare `cd`
+    and a leading `~`, `$HOME` or `${HOME}` resolves against `$HOME`, as
+    text only. `cd -` and a bare `cd`
     leave the current directory unknown rather than inventing a path,
     falling back to the line's own `cwd`.
   - **Shapes read:**
@@ -392,9 +396,50 @@ Rules:
   is the slug with `__` turned back into `/`, and `dir` is the worktree
   path up to and including the slug; a slug immediately followed by `;`,
   `&`, `|`, `(`, `)`, `<` or `>` does not swallow it into the branch name.
-  - **Where it is read.** Only in `cwd` fields and in Bash command text,
-    never in tool output. `fr isolation status` output lists every worktree
-    on the host and would attribute all of them to whichever session ran it.
+  - **Where it is read.** In a line's own `cwd`, and in each directory a
+    Bash command reaches with `cd <dir>` or `git -C <dir>`. Never in tool
+    output, and never from a path a command merely names (`ls`, `cat`):
+    `fr isolation status` output lists every worktree on the host and would
+    attribute all of them to whichever session ran it.
+- **Scope: a session is credited only with its own repository.** Without
+  this, a session that inspects or cleans up other repositories' worktrees
+  is credited with all of their branches.
+  - **The session's repository** is named from the line's `cwd`, since
+    the adapter has no git. A `cwd` inside an fr worktree
+    `.../.cache/fr/worktrees/<repo>/<slug>` belongs to that `<repo>` and to
+    nothing else on its path. Any other `cwd` belongs to one of its path
+    components, leaving out fr's own `.cache`, `fr` and `worktrees`
+    components and everything below them. An fr worktree is "of the same
+    repository" when its `<repo>` is the session's repository.
+  - `git-branch-field` evidence is always the line's own `cwd`, unchanged.
+  - `worktree-path` evidence counts when the worktree is the line's own
+    `cwd` or contains it; or when a `cd` or `git -C` reaches it AND it is an
+    fr worktree of the same repository. fr sessions work through
+    `cd <worktree> && ...` while their recorded `cwd` stays in the base
+    clone, so the second case keeps real fr work.
+  - `command` evidence counts only when the command acts in the session's
+    own repository. A command acts where git or gh runs, after `cd`, `-C`
+    and `--work-tree=` -- `git worktree add` included, whose new path is
+    only its `dir` -- and `fr isolation up|attach --repo <path>` acts in
+    `<path>`. Two rules decide:
+    - **Inside an fr worktree,** the directory must be an fr worktree of the
+      same repository. Being beneath the `cwd` is not enough: a
+      home-directory session has every fr worktree beneath it.
+    - **Anywhere else,** the directory must be the line's `cwd` or beneath
+      it. A branch created in an ordinary checkout beneath a non-repository
+      `cwd` still counts (`cwd=/work`, `cd other-repo && git checkout -b p`):
+      without git the adapter cannot see where one repository ends.
+
+    `gh pr create --repo|-R [HOST/]OWNER/NAME` acts on the repository it
+    names, so it counts only when `NAME` is the session's repository.
+  - Known limits: a subdirectory `cwd` cannot reach upward (`cwd=/work/a/sub`
+    with `cd .. && git checkout -b x` is dropped), and a generic path
+    component still matches (a repository named `work` for `cwd=/work/a`).
+  - A directory holding an unexpanded variable (`$NAME` or `${NAME}`, other
+    than a leading `$HOME` or `${HOME}`) is not a directory. A command that
+    acts in one yields nothing. A shape whose own `dir` is one, from a
+    command acting in the line's own repository, keeps its evidence with
+    the line's `cwd` as `dir`.
 
 ### Codex
 

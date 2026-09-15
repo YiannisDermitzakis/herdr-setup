@@ -320,17 +320,18 @@ class TestWhatIsAsked(MergeStateCase):
         with mock.patch.dict(os.environ, {"PATH": bin_dir + os.pathsep + os.environ["PATH"]}):
             results = audit.resolve_branches(entries)
         # "Resolve once" means the work is done once, not only that one answer
-        # comes back: the local ref is looked up, and its ancestry asked,
-        # exactly one time for the four entries.
+        # comes back: the repository's refs are read, and ancestry asked,
+        # exactly one time for the four entries -- and never per branch.
         recorded = git_log.read_text(encoding="utf-8").splitlines()
         lookups = [
             line
             for line in recorded
-            if line.endswith("for-each-ref " + "--format=%(refname) refs/heads/feat/shared")
+            if line.endswith(
+                "for-each-ref --format=%(refname) %(objectname) refs/heads refs/remotes/origin"
+            )
         ]
-        ancestry = [
-            line for line in recorded if " merge-base " in line and "refs/heads/feat/shared" in line
-        ]
+        ancestry = [line for line in recorded if " --merged=" in line]
+        self.assertEqual([line for line in recorded if "refs/heads/feat/shared" in line], [])
         self.assertEqual(len(lookups), 1, recorded)
         self.assertEqual(len(ancestry), 1, recorded)
         self.assertEqual(list(results), [(str(self.repo), "feat/shared")])
