@@ -7,5 +7,9 @@
 # for the full contract. Edit this by hand, or run `herdr-setup absorb`
 # after changing plugins on a host to rewrite it from that host's own
 # plugins.json.
-kryptamine/herdr-auto-title                    v0.3.3
-ezcorp-org/herdr-pc-ram-and-cpu-usage-overlay  main
+#
+# Written by `herdr-setup absorb` from a host's own Herdr state.
+# Edit here, or run `herdr-setup absorb` again to refresh from a host;
+# `herdr-setup apply` pushes this content back out to a host.
+ezcorp-org/herdr-pc-ram-and-cpu-usage-overlay main
+kryptamine/herdr-auto-title v0.3.3
