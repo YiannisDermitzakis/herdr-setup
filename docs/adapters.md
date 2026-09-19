@@ -371,6 +371,19 @@ Rules:
     text only. `cd -` and a bare `cd`
     leave the current directory unknown rather than inventing a path,
     falling back to the line's own `cwd`.
+  - **Prefixes and bindings.** A segment's shape is read after the words
+    that merely run another command in the same directory are dropped:
+    assignment prefixes (`FR_ISOLATION_TARGET=worktree fr ...`), `env`,
+    `nice`, and `timeout` -- the last consuming its options and its one
+    duration. Only words that run their argument belong here; one that did
+    something else would hand its argument's directory to the wrong shape.
+    A segment that is nothing BUT assignments runs no command and instead
+    BINDS them: a later `cd $VAR`, `git -C $VAR`, `--repo $VAR` or
+    `worktree add $VAR/...` in the SAME command resolves against that
+    value, so a worktree path spelled out once and reached through `$W`
+    afterwards is read. Only a leading `$VAR` or `${VAR}` is expanded, only
+    one level, and only from a binding that command made -- an inherited or
+    exported variable stays unexpanded, which leaves a non-directory.
   - **Shapes read:**
     - `fr isolation up|attach ... --branch <b>` (or `--branch=<b>`), with
       `--repo <path>` as `dir` when present;
@@ -410,7 +423,11 @@ Rules:
     nothing else on its path. Any other `cwd` belongs to one of its path
     components, leaving out fr's own `.cache`, `fr` and `worktrees`
     components and everything below them. An fr worktree is "of the same
-    repository" when its `<repo>` is the session's repository.
+    repository" when its `<repo>` is the session's repository. Every one of
+    these comparisons folds case: GitHub normalises a repository name to
+    lower case, while the folder it was cloned into (and the fr worktree
+    named after that folder) keeps whatever case the operator typed, so
+    `owner/example-repo` and an `Example-Repo` checkout are one repository.
   - `git-branch-field` evidence is always the line's own `cwd`, unchanged.
   - `worktree-path` evidence counts when the worktree is the line's own
     `cwd` or contains it; or when a `cd` or `git -C` reaches it AND it is an

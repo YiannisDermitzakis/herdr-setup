@@ -329,6 +329,73 @@ _PUSH_VALUE_FLAGS = frozenset(
 )
 
 
+# A `VAR=value` token. In front of a command it is a shell assignment prefix;
+# alone on its segment it BINDS a name the command may reach later through
+# `$VAR` (_expand_binding). Group 1 is the name, group 2 the value.
+_ASSIGNMENT_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.DOTALL)
+
+# Words that run ANOTHER command in the same directory. The shape to match is
+# what follows them -- `timeout 600 fr isolation up --branch x` is an
+# `fr isolation up`, not a `timeout` -- so they are stripped before the shape
+# checks. Deliberately short: a word here that does not simply run the command
+# after it would hand that command's directory to the wrong shape.
+_COMMAND_PREFIX_WORDS = frozenset({"env", "timeout", "nice"})
+
+# Options of those words that consume a separate value, so the token after
+# them is neither an option nor the command (`timeout -k 5 60 git ...`).
+_COMMAND_PREFIX_VALUE_FLAGS = frozenset(
+    {"-k", "--kill-after", "-s", "--signal", "-n", "--adjustment", "-u", "--unset"}
+)
+
+# A `$VAR` or `${VAR}` at the START of a path -- the only position a binding is
+# expanded in, since anywhere else the text around it is not a directory
+# either (`/work/$W/sub` names no worktree without a real shell).
+_LEADING_VARIABLE_RE = re.compile(r"^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
+
+
+def _strip_command_prefixes(segment: list[str]) -> list[str]:
+    """The real command in a segment, with any prefix that merely runs it gone.
+
+    Assignment prefixes (`FR_ISOLATION_TARGET=worktree fr ...`) and the
+    command-runner words above (`timeout 600 fr ...`, `env FOO=1 git ...`,
+    `nice -n 10 git ...`) leave the directory alone, so the shape behind them
+    is the session's own work in the same place. `timeout` also consumes one
+    duration after its options. A prefix with nothing after it yields an empty
+    segment, which matches no shape -- the same as the bare word it is.
+    """
+    index = 0
+    while index < len(segment):
+        token = segment[index]
+        if _ASSIGNMENT_RE.match(token):
+            index += 1
+            continue
+        if token in _COMMAND_PREFIX_WORDS:
+            index += 1
+            while index < len(segment) and segment[index].startswith("-"):
+                index += 2 if segment[index] in _COMMAND_PREFIX_VALUE_FLAGS else 1
+            if token == "timeout" and index < len(segment):
+                index += 1
+            continue
+        break
+    return segment[index:]
+
+
+def _expand_binding(raw: str, bindings: dict[str, str]) -> str:
+    """A leading `$VAR`/`${VAR}` replaced by a value bound in the SAME command.
+
+    A long worktree path is typically bound once and reached by `cd $W`
+    afterwards, and the literal path is right there in the command's own text.
+    Only a binding this command made is expanded: an inherited or exported
+    variable is not something the adapter can know, so it stays unexpanded,
+    which keeps it a non-directory (_in_own_repository).
+    """
+    match = _LEADING_VARIABLE_RE.match(raw)
+    if match is None:
+        return raw
+    value = bindings.get(match.group(1) or match.group(2))
+    return raw if value is None else value + raw[match.end() :]
+
+
 def tokenize_command(text: str) -> list[str]:
     """One Bash command line, tokenised the way docs/adapters.md prescribes.
 
@@ -398,7 +465,9 @@ def _physical_lines(command_text: str) -> list[str]:
     return lines
 
 
-def _resolve_dir(raw: str | None, current_dir: str | None) -> str | None:
+def _resolve_dir(
+    raw: str | None, current_dir: str | None, bindings: dict[str, str] | None = None
+) -> str | None:
     """A `cd`/`-C`/`--repo`/`worktree add` path argument, resolved as TEXT only.
 
     No filesystem access: a relative path joins `current_dir` -- the
@@ -406,10 +475,13 @@ def _resolve_dir(raw: str | None, current_dir: str | None) -> str | None:
     or the line's own `cwd` if there has been none yet -- and a leading `~`
     joins `$HOME`, exactly docs/adapters.md's own wording, "as text only".
     `current_dir` missing leaves a relative path unresolved rather than
-    guessing at one.
+    guessing at one. A leading `$VAR` the same command bound earlier is
+    expanded first (_expand_binding); every other variable stays in the text.
     """
     if not raw:
         return current_dir
+    if bindings:
+        raw = _expand_binding(raw, bindings)
     home = os.environ.get("HOME")
     if raw.startswith("~"):
         if home:
@@ -471,12 +543,17 @@ def _session_repositories(own_cwd: str) -> frozenset[str]:
     -- leaving out fr's own `.cache/fr/worktrees` components and everything
     below them. The adapter has no git, so it cannot tell WHICH component is
     the checkout: a generic name such as `work` in `/work/a` still matches.
+
+    Names are folded to lower case, and every comparison against this set
+    folds too: GitHub normalises a repository name to lower case while the
+    folder it was cloned into keeps whatever case the operator typed, so
+    `owner/example-repo` and an `Example-Repo` checkout are one repository.
     """
     fr_path = _FR_WORKTREES_PATH_RE.fullmatch(own_cwd)
     if fr_path is not None and fr_path["repo"]:
-        return frozenset({fr_path["repo"]})
+        return frozenset({fr_path["repo"].lower()})
     head = fr_path["prefix"] if fr_path is not None else own_cwd
-    return frozenset(part for part in head.split("/") if part)
+    return frozenset(part.lower() for part in head.split("/") if part)
 
 
 def _same_repository_fr_worktree(directory: str | None, own_cwd: str | None):
@@ -490,7 +567,7 @@ def _same_repository_fr_worktree(directory: str | None, own_cwd: str | None):
     if not directory or not own_cwd or _VARIABLE_RE.search(directory):
         return None
     match = _FR_WORKTREE_DIR_RE.fullmatch(directory)
-    if match is None or match["repo"] not in _session_repositories(own_cwd):
+    if match is None or match["repo"].lower() not in _session_repositories(own_cwd):
         return None
     return match
 
@@ -498,12 +575,14 @@ def _same_repository_fr_worktree(directory: str | None, own_cwd: str | None):
 def _names_own_repository(repository: str, own_cwd: str | None) -> bool:
     """Whether a `gh --repo [HOST/]OWNER/NAME` value names the line's own repository.
 
-    Only NAME can be compared: the `cwd` carries no owner.
+    Only NAME can be compared: the `cwd` carries no owner. The comparison
+    folds case, because GitHub's own spelling of NAME is lower case whatever
+    the checkout folder is called (_session_repositories).
     """
     if not own_cwd or _VARIABLE_RE.search(repository):
         return False
     name = repository.rstrip("/").rsplit("/", 1)[-1]
-    return bool(name) and name in _session_repositories(own_cwd)
+    return bool(name) and name.lower() in _session_repositories(own_cwd)
 
 
 def _in_own_repository(directory: str | None, own_cwd: str | None) -> bool:
@@ -585,7 +664,9 @@ def _strip_git_global_options(segment: list[str]) -> tuple[list[str], str | None
     return segment[index:], dir_override, dash_cap_c
 
 
-def _match_command_shape(segment: list[str], *, segment_dir, current_dir) -> tuple[str, str] | None:
+def _match_command_shape(
+    segment: list[str], *, segment_dir, current_dir, bindings=None
+) -> tuple[str, str] | None:
     """One (name, dir) pair out of a single `git` or `fr` command, or None.
 
     `gh` has its own _match_gh_shape, since it needs no global-option
@@ -609,7 +690,7 @@ def _match_command_shape(segment: list[str], *, segment_dir, current_dir) -> tup
         if not branch:
             return None
         repo = _flag_value(segment, "--repo")
-        return branch, (_resolve_dir(repo, current_dir) if repo else segment_dir)
+        return branch, (_resolve_dir(repo, current_dir, bindings) if repo else segment_dir)
 
     if segment[0] == "checkout" or segment[0] == "switch":
         rest = segment[1:]
@@ -640,7 +721,7 @@ def _match_command_shape(segment: list[str], *, segment_dir, current_dir) -> tup
                 positionals.append(token)
             index += 1
         if branch and positionals:
-            return branch, _resolve_dir(positionals[0], current_dir)
+            return branch, _resolve_dir(positionals[0], current_dir, bindings)
         return None
 
     if segment[0] == "push":
@@ -713,6 +794,9 @@ def _process_bash_command(
     own_cwd = _resolve_dir(base_cwd, None) if base_cwd else None
     current_dir = own_cwd
     dir_stack: list[str | None] = []
+    # `VAR=value` segments seen so far in THIS command, so a later `cd $VAR`
+    # reaches the path the command itself spelled out (_expand_binding).
+    bindings: dict[str, str] = {}
 
     def reached(directory: str | None) -> None:
         match = _same_repository_fr_worktree(directory, own_cwd)
@@ -729,13 +813,28 @@ def _process_bash_command(
         nonlocal current_dir
         if not segment:
             return
+        # A segment that is nothing BUT assignments binds them for the rest of
+        # this command and runs nothing. The value is bound as it stands: a
+        # leading `$HOME` in it still resolves (_resolve_dir), and any other
+        # variable survives expansion and leaves a non-directory, which the
+        # repository rules drop. Only one level is ever expanded.
+        if all(_ASSIGNMENT_RE.match(token) for token in segment):
+            for token in segment:
+                name, value = _ASSIGNMENT_RE.match(token).groups()
+                if value:
+                    bindings[name] = value
+            return
+        # Everything else may carry a prefix that merely runs it.
+        segment = _strip_command_prefixes(segment)
+        if not segment:
+            return
         if segment[0] == "cd":
             # `cd -` (the previous directory) and a bare `cd` (home) are
             # both directories this adapter cannot know without a real
             # shell -- falling back to the line's own cwd is honest
             # uncertainty, not a guess at a specific path.
             if len(segment) >= 2 and segment[1] != "-":
-                current_dir = _resolve_dir(segment[1], current_dir)
+                current_dir = _resolve_dir(segment[1], current_dir, bindings)
                 reached(current_dir)
             else:
                 current_dir = own_cwd
@@ -746,12 +845,16 @@ def _process_bash_command(
         if segment[0] == "git" and len(segment) >= 2:
             rest, dir_override, dash_cap_c = _strip_git_global_options(segment)
             if dir_override is not None:
-                segment_dir = _resolve_dir(dir_override, current_dir)
+                segment_dir = _resolve_dir(dir_override, current_dir, bindings)
             if dash_cap_c is not None:
-                reached(_resolve_dir(dash_cap_c, current_dir))
-            hit = _match_command_shape(rest, segment_dir=segment_dir, current_dir=current_dir)
+                reached(_resolve_dir(dash_cap_c, current_dir, bindings))
+            hit = _match_command_shape(
+                rest, segment_dir=segment_dir, current_dir=current_dir, bindings=bindings
+            )
         elif segment[0] == "fr":
-            hit = _match_command_shape(segment, segment_dir=segment_dir, current_dir=current_dir)
+            hit = _match_command_shape(
+                segment, segment_dir=segment_dir, current_dir=current_dir, bindings=bindings
+            )
         elif segment[0] == "gh" and len(segment) >= 2:
             hit = _match_gh_shape(segment[1:], segment_dir=segment_dir)
             # `gh ... --repo|-R OWNER/NAME` acts on the repository it names,

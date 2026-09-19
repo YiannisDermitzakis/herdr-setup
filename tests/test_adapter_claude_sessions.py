@@ -1151,6 +1151,182 @@ class TestEvidenceIsLimitedToTheSessionsOwnRepository(TempConfigCase):
             self.assertNotIn("$", branch["dir"])
 
 
+class TestPrefixesAndAssignments(TempConfigCase):
+    """Two shapes a real transcript carries that hid a command from the shapes.
+
+    A command is rarely alone on its segment: `timeout 600 fr isolation up`,
+    `FR_ISOLATION_TARGET=worktree fr ...` and `env FOO=1 git ...` all put a
+    prefix in front of the shape, and a long worktree path is typically bound
+    to a variable once and reached by `cd $W` afterwards. Both dropped real
+    work on the host that produced the 2026-09-19 findings.
+    """
+
+    ROOT = "/work/box/.cache/fr/worktrees"
+    OWN = "/work/example-repo"
+    OTHER = "/work/example-repo-2"
+    OWN_WT = f"{ROOT}/example-repo/feat__mine"
+    OTHER_WT = f"{ROOT}/example-repo-2/feat__theirs"
+
+    def branches_for(self, commands: list[str], cwd: str = OWN) -> list[dict]:
+        timestamps = (f"2026-09-12T18:{minute:02d}:00.000Z" for minute in range(60))
+        self.write_transcript(
+            [bash_line(command, cwd=cwd, timestamp=next(timestamps)) for command in commands]
+        )
+        sessions = sessions_of(self.config_dir, "--since", "30")
+        self.assertEqual(len(sessions), 1)
+        return sessions[0]["branches"]
+
+    def test_a_command_prefix_does_not_hide_the_shape_behind_it(self):
+        branches = self.branches_for(
+            [
+                "timeout 600 fr isolation up --branch feat/timeout",
+                "timeout -k 5 60 git checkout -b feat/timeout-killed",
+                "FR_ISOLATION_TARGET=worktree fr isolation up --branch feat/assignment",
+                "A=1 B=2 git switch -c feat/two-assignments",
+                "env FOO=1 git checkout -b feat/env",
+                "nice -n 10 git switch -c feat/nice",
+            ]
+        )
+        found = sorted(b["name"] for b in branches)
+        self.assertEqual(
+            found,
+            [
+                "feat/assignment",
+                "feat/env",
+                "feat/nice",
+                "feat/timeout",
+                "feat/timeout-killed",
+                "feat/two-assignments",
+            ],
+        )
+        for branch in branches:
+            self.assertEqual(branch["dir"], self.OWN)
+
+    def test_a_prefix_does_not_widen_the_repository_rule(self):
+        # Stripping the prefix reveals the shape; it must not also grant the
+        # command a repository it does not act in.
+        branches = self.branches_for(
+            [
+                f"timeout 60 git -C {self.OTHER} checkout -b feat/other",
+                f"env FOO=1 fr isolation up --branch feat/other-fr --repo {self.OTHER}",
+            ]
+        )
+        self.assertEqual(branches, [])
+
+    def test_a_prefix_is_not_mistaken_for_the_command(self):
+        # `timeout` and `env` are prefixes only in front of a shape. A word
+        # that merely starts with one, or a prefix with no command after it,
+        # yields nothing rather than a misparse.
+        branches = self.branches_for(
+            [
+                "timeoutctl --branch feat/not-a-prefix",
+                "envsubst < in.tmpl > out.txt",
+                "timeout 600",
+                "FOO=bar",
+            ]
+        )
+        self.assertEqual(branches, [])
+
+    def test_gh_repo_names_the_own_repository_whatever_the_case(self):
+        # GitHub normalises a repository name to lower case; the checkout
+        # folder it was cloned into need not be spelled the same way.
+        branches = self.branches_for(
+            ["gh pr create --repo owner/example-repo --head feat/lower"],
+            cwd="/work/Example-Repo",
+        )
+        found = [(b["name"], b["evidence"]) for b in branches]
+        self.assertEqual(found, [("feat/lower", "command")])
+
+    def test_gh_repo_still_drops_a_repository_that_is_not_its_own(self):
+        branches = self.branches_for(["gh pr create --repo owner/example-repo-2 --head feat/x"])
+        self.assertEqual(branches, [])
+
+    def test_a_worktree_path_bound_to_a_variable_is_reached_by_cd(self):
+        branches = self.branches_for(
+            [
+                f"W={self.OWN_WT}; cd $W && git status",
+                f"V={self.ROOT}/example-repo/feat__braced; cd ${{V}} && git status",
+            ]
+        )
+        found = sorted((b["name"], b["dir"], b["evidence"]) for b in branches)
+        self.assertEqual(
+            found,
+            [
+                ("feat/braced", f"{self.ROOT}/example-repo/feat__braced", "worktree-path"),
+                ("feat/mine", self.OWN_WT, "worktree-path"),
+            ],
+        )
+
+    def test_a_bound_variable_does_not_escape_the_repository_rule(self):
+        branches = self.branches_for(
+            [
+                f"W={self.OTHER_WT}; cd $W && git checkout -b feat/other",
+                f"W={self.OTHER}; git -C $W switch -c feat/other-dash-cap-c",
+            ]
+        )
+        self.assertEqual(branches, [])
+
+    def test_a_binding_whose_value_holds_another_variable_reaches_nothing(self):
+        # One level is what the command's own text supports; resolving a
+        # chain would be guessing at a shell this adapter does not run.
+        branches = self.branches_for(
+            [
+                f"W=$BASE/{self.OWN_WT}; cd $W && git checkout -b feat/chained",
+                "V=${OTHER}/sub; cd $V && git switch -c feat/chained-braced",
+            ]
+        )
+        self.assertEqual(branches, [])
+
+    def test_a_binding_that_starts_with_home_is_still_expanded(self):
+        # `$HOME` is the one variable the resolver knows, so a value carrying
+        # it is a real path, not a chain it has to guess at.
+        branches = self.branches_for(
+            ["W=$HOME/.cache/fr/worktrees/example-repo/feat__bound; cd $W && git status"]
+        )
+        home = os.environ["HOME"]
+        found = [(b["name"], b["dir"], b["evidence"]) for b in branches]
+        self.assertEqual(
+            found,
+            [
+                (
+                    "feat/bound",
+                    f"{home}/.cache/fr/worktrees/example-repo/feat__bound",
+                    "worktree-path",
+                )
+            ],
+        )
+
+    def test_a_bound_worktree_is_reached_by_dash_cap_c_alone(self):
+        branches = self.branches_for([f"W={self.OWN_WT}; git -C $W log --oneline"])
+        found = [(b["name"], b["dir"], b["evidence"]) for b in branches]
+        self.assertEqual(found, [("feat/mine", self.OWN_WT, "worktree-path")])
+
+    def test_the_repository_matches_whichever_side_carries_the_capitals(self):
+        # The GitHub name may be the capitalised one, and an fr worktree is
+        # named after the checkout folder rather than after GitHub, so the
+        # fold has to hold in both directions.
+        branches = self.branches_for(
+            [
+                "gh pr create --repo owner/Example-Repo --head feat/upper",
+                f"cd {self.ROOT}/Example-Repo/feat__cased && git status",
+            ]
+        )
+        found = sorted((b["name"], b["evidence"]) for b in branches)
+        self.assertEqual(found, [("feat/cased", "worktree-path"), ("feat/upper", "command")])
+
+    def test_a_variable_that_was_never_bound_is_still_not_a_directory(self):
+        # The binding must be visible in the same command; an inherited or
+        # exported variable is not something the adapter can know.
+        branches = self.branches_for(
+            [
+                "cd $UNBOUND && git checkout -b feat/unbound",
+                f"W={self.OWN_WT}",
+                "cd $W && git checkout -b feat/other-command",
+            ]
+        )
+        self.assertEqual(branches, [])
+
+
 class TestWorktreePathEvidence(TempConfigCase):
     # Deliberately not the plan brief's own suggested "/work/" + "home" +
     # "/.cache/..." example: tests/test_public_hygiene.sh's home-directory
