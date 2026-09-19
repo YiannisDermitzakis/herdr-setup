@@ -134,6 +134,15 @@ sometimes incomplete, and partly wrong.
 
   The contract documents the rule.
 
+  **Amended 2026-09-19.** A later fix round widened what the adapter READS, leaving
+  untouched which repository a session owns: a shape behind a prefix that merely runs it
+  (`timeout`, `env`, `nice`, or an assignment such as `FR_ISOLATION_TARGET=worktree`); a
+  repository name whose case differs between GitHub and the checkout folder it was cloned
+  into; and a path bound to a shell variable earlier in the same command and reached by
+  `cd $W`, which the `$W` limit above had dropped. `docs/adapters.md` carries the current
+  rule; the investigation is in
+  `docs/superpowers/journals/debug/2026-09-19-audit-session-evidence-extraction.md`.
+
 ## Non-goals
 
 - Speeding up the Claude adapter's parsing. The timeout change removes the incompleteness; a faster

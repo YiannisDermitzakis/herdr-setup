@@ -426,6 +426,15 @@ rows:
       Section 2 no longer lists branches a session only inspected or created in another
       repository, because the Claude Code adapter credits a session only with its own repository's
       command and worktree-path evidence (herdr-setup:tests/test_adapter_claude_sessions.py).
+      A 2026-09-19 fix round widens what that adapter READS, without touching which
+      repository a session owns. A shape behind a prefix that merely runs it (timeout,
+      env, nice, or an assignment such as FR_ISOLATION_TARGET=worktree), a repository
+      name whose case differs between GitHub and the checkout folder it was cloned into,
+      and a worktree path bound to a shell variable and reached by cd $W afterwards are
+      all read now, so sections 1 and 2 credit work that used to be dropped; on the
+      operator's host the adapter went from 167 to 189 distinct branches with none lost
+      (herdr-setup:tests/test_adapter_claude_sessions.py, class TestPrefixesAndAssignments,
+      whose guards keep each of the three from widening the own-repository rule).
       The live re-run is that spec's post-merge Test Plan, run by the operator.
       Implemented in the 2026-09-13-session-audit plan, phase 4. Section 1 (every
       Herdr pane with its session's branches, a worktree-path branch from the pane's own
